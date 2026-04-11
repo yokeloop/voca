@@ -22,19 +22,19 @@
 ### DD-3: listener.py operates in two modes — stdin-stub and real openWakeWord
 
 **Decision:** `listener.py` checks for `--stub` flag at startup. With `--stub` it reads stdin and emits events. Without `--stub` it loads openWakeWord models and captures audio via PyAudio.
-**Rationale:** The task requires a working stub before bootstrap installs openWakeWord. A single file with a mode flag avoids maintaining two files. `listener.ts` passes `--stub` flag in dev/before-bootstrap.
+**Rationale:** The task requires a working stub before bootstrap installs openWakeWord. A single file with a mode flag avoids maintaining two files. `listener.ts` passes `--stub` in dev/before-bootstrap.
 **Alternative:** Two separate Python files (`listener-stub.py`, `listener.py`) — more files to maintain, more logic in `listener.ts` to choose which to spawn.
 
 ### DD-4: Sound files ship in the repo, bootstrap copies them
 
 **Decision:** `sounds/wake.wav`, `sounds/stop.wav`, `sounds/error.wav` are generated once via `sox` and committed to the repo. `bootstrap.ts` copies them to `~/.openclaw/assistant/sounds/`.
-**Rationale:** The task says "generate via sox" — do this once during development, commit artifacts. At runtime `sounds.ts` reads from `~/.openclaw/assistant/sounds/`, not the repo. This means `voca` works after `npm install -g` without needing `sox` on the target machine.
+**Rationale:** The task says "generate via sox" — do this once during development, commit artifacts. At runtime `sounds.ts` reads from `~/.openclaw/assistant/sounds/`, not the repo. This means `voca` works after `npm install -g` without `sox` on the target machine.
 **Alternative:** Generate sounds on-demand in `sounds.ts` — requires `sox` at runtime, adds startup latency.
 
 ### DD-5: Config defaults baked into defaultConfig, not scattered
 
 **Decision:** `config.ts` exports `defaultConfig: VocaConfig` with all fields populated (device `plughw:2,0`, language `ru`, wakeWord `hey_jarvis`, stopWord `stop`, piperModel `ru_RU-irina-medium`, agentId `personal`). `readConfig` merges file content over defaults.
-**Rationale:** Merge-on-read means partial config files work. Defaults centralised in one place. Tests import `defaultConfig` directly without filesystem.
+**Rationale:** Merge-on-read makes partial config files work. Defaults are centralised in one place. Tests import `defaultConfig` directly without filesystem.
 **Alternative:** Throw on missing fields — breaks before bootstrap runs.
 
 ### DD-6: whisper-stt-wrapper called with file as first positional argument
@@ -69,7 +69,7 @@
 - **Files:** `src/types.ts` (create)
 - **Depends on:** Task 1
 - **Scope:** S
-- **What:** Declare all TypeScript interfaces and type aliases that the rest of the modules share.
+- **What:** Declare all TypeScript interfaces and type aliases shared across modules.
 - **How:**
   - `VocaConfig`: `inputDevice: string`, `outputDevice: string`, `profile: string`, `wakeWord: string`, `stopWord: string`, `piperModel: string`, `piperBin: string`, `language: string`.
   - `VocaSession`: `sessionId: string`, `messageCount: number`, `profile: string`, `createdAt: string`.
@@ -79,7 +79,7 @@
   - `RecorderHandle`: `{ filePath: string; stop(): void; cancel(): void; on(event: 'done' | 'cancel', cb: () => void): void }`.
   - `AgentResponse`: `{ text: string; sessionId: string }`.
 - **Context:** CLAUDE.md, docs/ai/voca-implementation/voca-implementation-task.md (Requirements section)
-- **Verify:** `npx tsc --noEmit` on types.ts alone passes.
+- **Verify:** `npx tsc --noEmit --strict --target ES2022 --module NodeNext --moduleResolution NodeNext src/types.ts` — zero errors.
 
 ### Task 3: config.ts + session.ts + their tests
 
@@ -140,7 +140,7 @@
     - `playSound(type, opts: { device: string }): Promise<void>` — `execFile('aplay', ['-D', opts.device, soundFile(type)])`; resolves when aplay exits
     - `playWake`, `playStop`, `playError` convenience wrappers that call `playSound` with the right type
 - **Context:** `src/types.ts`, CLAUDE.md (aplay -D plughw:2,0)
-- **Verify:** `ls sounds/` shows three WAV files. `npx tsx -e "import('./src/sounds.js').then(m => m.playSound('wake', {device:'plughw:2,0'}))"` plays beep (requires bootstrap-copied sounds).
+- **Verify:** `ls sounds/` shows three WAV files. `git ls-files sounds/` confirms all three are tracked. `npx tsx -e "import('./src/sounds.js').then(m => m.playSound('wake', {device:'plughw:2,0'}))"` plays beep (requires bootstrap-copied sounds). Note: DD-4 overrides requirement 8 (bootstrap generates sounds) — sounds are generated once during development and committed to avoid requiring sox at runtime.
 
 ### Task 6: listener.py (stub mode) + listener.ts
 
@@ -173,7 +173,7 @@
 - **How:**
   - `startRecording(opts: { device: string; tmpDir?: string }): RecorderHandle`
   - Generate `filePath = path.join(tmpDir || os.tmpdir(), 'voca-rec-' + Date.now() + '.wav')`
-  - Spawn sox: `sox -t alsa plughw:2,0 <filePath> silence 1 0.1 0.1% 1 30 0.1%` — records until silence for 30s
+  - Spawn sox: `sox -t alsa ${opts.device} ${filePath} silence 1 0.1 0.1% 1 30 0.1%` — records until silence for 30s
   - Add `setTimeout` at 120s (2 min): call `cancel()` if still running
   - `stop()` — send SIGTERM to sox child; sox flushes WAV header on SIGTERM
   - `cancel()` — stop() + emit `'cancel'` event + `fs.unlink(filePath)` (best-effort)
@@ -193,7 +193,7 @@
   - Call `execFile('/usr/local/bin/whisper-stt-wrapper', [filePath, '--language', opts.language ?? 'ru'], { maxBuffer: 1024 * 1024 })`
   - Trim stdout: `stdout.trim()`
   - Strip trailing "stop" (case-insensitive): `text.replace(/\s*stop\s*$/i, '').trim()`
-  - If result is empty string after trimming, return empty string (daemon will cancel)
+  - Return empty string if result is empty after trimming (daemon will cancel)
   - On execFile error, throw `TranscribeError` with stderr
   - Test file: mock `node:child_process` `execFile` using `vi.mock`. Test cases:
     - Normal text returned as-is
@@ -253,8 +253,8 @@
   - `transition(state: DaemonState, event: DaemonEvent): DaemonState`
   - Transition table:
     - `IDLE + WAKE → LISTENING`
-    - `LISTENING + WAKE → RECORDING` (wake word triggers start recording)
-    - `LISTENING + STOP → IDLE` (stop word while listening — ignore, stay... actually: LISTENING is a transient state; see below)
+    - `LISTENING + START_RECORD → RECORDING` (daemon emits START_RECORD internally after playWake() resolves)
+    - `LISTENING + STOP → IDLE` (stop word before recording starts cancels the cycle)
     - `RECORDING + STOP → PROCESSING`
     - `RECORDING + RECORD_CANCEL → IDLE`
     - `RECORDING + ERROR → IDLE`
@@ -263,25 +263,24 @@
     - `SPEAKING + SPEAKING_DONE → IDLE`
     - `SPEAKING + ERROR → IDLE`
     - All other combinations → throw `InvalidTransitionError(state, event)`
-  - Note: per CLAUDE.md the flow is `IDLE → LISTENING → RECORDING`. `LISTENING` is the state after wake word — daemon is showing ready-to-record indicator. `WAKE` event in IDLE means: "wake word detected, now in listening-ready state". Then recording starts immediately → transition to RECORDING. Re-examine: the task says `IDLE→LISTENING→RECORDING→PROCESSING→SPEAKING→IDLE`. `WAKE` in IDLE → LISTENING. But then what triggers LISTENING→RECORDING? Per task description: the daemon immediately starts recording after wake. So `LISTENING` is only an intermediate state for the beep sound. In practice `daemon.ts` will transition IDLE→LISTENING on WAKE, play beep, then immediately emit another event. Use `WAKE` event again for LISTENING→RECORDING so listener can buffer wake events. Actually simplest: after playing beep in LISTENING state, daemon emits `START_RECORD` event internally. Add `START_RECORD` to DaemonEvent. `LISTENING + START_RECORD → RECORDING`.
   - Update `src/types.ts` DaemonEvent to include `'START_RECORD'`.
   - Test all valid transitions (one test per row).
   - Test that invalid transitions throw `InvalidTransitionError`.
 - **Context:** `src/types.ts` (DaemonState, DaemonEvent), CLAUDE.md state machine description
 - **Verify:** `npm test test/daemon-state.test.ts` — all green.
 
-### Task 12: daemon.ts — full orchestrator
+### Task 12a: daemon.ts — class scaffold + IDLE→LISTENING→RECORDING cycle
 
 - **Files:** `src/daemon.ts` (create)
-- **Depends on:** Task 3, Task 5, Task 6, Task 7, Task 8, Task 9, Task 10, Task 11
-- **Scope:** L
-- **What:** Implement `VocaDaemon` class that orchestrates all modules via the state machine.
+- **Depends on:** Task 3, Task 5, Task 6, Task 7, Task 11
+- **Scope:** M
+- **What:** Implement `VocaDaemon` class with listener spawn, wake→beep→record cycle, and cancel-on-silence path.
 - **How:**
   - `class VocaDaemon extends EventEmitter`
   - Constructor accepts `config: VocaConfig`
   - Private fields: `state: DaemonState`, `listener: ListenerHandle | null`, `recorder: RecorderHandle | null`
   - `async start(): Promise<void>`:
-    1. Spawn listener with `spawnListener({ stub: config.stub, modelDir: ASSISTANT_DIR + '/models' })`
+    1. Spawn listener with `spawnListener({ stub: true, modelDir: ASSISTANT_DIR + '/models' })`
     2. Set `state = 'IDLE'`
     3. Register listener `'wake'` handler → `handleWake()`
     4. Register listener `'stop'` handler → `handleStop()`
@@ -290,28 +289,39 @@
     1. If state !== IDLE, return (ignore duplicate wake)
     2. `state = transition(state, 'WAKE')` → LISTENING
     3. `listener.pause()`
-    4. `await playWake(config)` (non-blocking in practice, awaited)
+    4. `await playWake(config)`
     5. `state = transition(state, 'START_RECORD')` → RECORDING
     6. Start recorder, register `'done'` and `'cancel'` handlers
-  - `handleStop()`: if state === RECORDING, `recorder.stop()` (sox exits, triggers `done` → PROCESSING flow)
-  - On recorder `'done'`: `state = transition(state, 'STOP')` → PROCESSING, run transcribe→agent→speak pipeline
+  - `handleStop()`: if state === RECORDING, `recorder.stop()` (sox exits, triggers done event)
   - On recorder `'cancel'`: `state = transition(state, 'RECORD_CANCEL')` → IDLE, `listener.resume()`
-  - Pipeline (PROCESSING → SPEAKING → IDLE):
-    1. Transcribe filePath; if empty → ERROR transition → IDLE, `listener.resume()`
-    2. `state = transition(state, 'PROCESSING_DONE')` → SPEAKING
-    3. Increment session message count
-    4. `await speak(...)` with agent response text
-    5. `state = transition(state, 'SPEAKING_DONE')` → IDLE
-    6. `await sleep(500)` (already in speaker.ts — so just resume)
+  - On recorder `'done'`: `state = transition(state, 'STOP')` → PROCESSING (pipeline implemented in Task 12b)
+  - Error handling: catch → `playError`, transition to IDLE via ERROR event, `listener.resume()`
+- **Context:** `src/types.ts`, `src/daemon-state.ts`, `src/listener.ts`, `src/recorder.ts`, `src/sounds.ts`, `src/config.ts`
+- **Verify:** `npx tsx src/cli.ts start` — daemon starts with `--stub` listener. Type "wake" → beep plays, recording starts. Type "stop" → recording stops, state transitions to PROCESSING (no further action yet). Cancel on silence timeout returns to IDLE.
+
+### Task 12b: daemon.ts — PROCESSING→SPEAKING→IDLE pipeline
+
+- **Files:** `src/daemon.ts` (edit — add processing pipeline)
+- **Depends on:** Task 12a, Task 8, Task 9, Task 10
+- **Scope:** M
+- **What:** Wire transcription, agent query, and TTS into the daemon's PROCESSING→SPEAKING→IDLE path.
+- **How:**
+  - On recorder `'done'` (already transitions to PROCESSING in 12a), run pipeline:
+    1. Transcribe filePath via `transcribe()`; if empty → ERROR transition → IDLE, `listener.resume()`
+    2. Query agent via `queryAgent()` with transcript
+    3. `state = transition(state, 'PROCESSING_DONE')` → SPEAKING
+    4. Increment session message count via `incrementMessageCount()`
+    5. `await speak()` with agent response text
+    6. `state = transition(state, 'SPEAKING_DONE')` → IDLE
     7. `listener.resume()`
   - Error handling at every await: catch → `playError`, transition to IDLE via ERROR event, `listener.resume()`
-- **Context:** `src/types.ts`, `src/daemon-state.ts`, `src/listener.ts`, `src/recorder.ts`, `src/transcriber.ts`, `src/agent.ts`, `src/speaker.ts`, `src/sounds.ts`, `src/session.ts`, `src/config.ts`
-- **Verify:** `npx tsx src/cli.ts start` — daemon starts with `--stub` listener. In another terminal, send "wake" via the stub mechanism and observe state transitions logged to stdout.
+- **Context:** `src/daemon.ts` (Task 12a output), `src/transcriber.ts`, `src/agent.ts`, `src/speaker.ts`, `src/session.ts`
+- **Verify:** `npx tsx src/cli.ts start` — type "wake" → beep → recording. Type "stop" → double-beep → transcription logged → agent response logged → TTS speaks. Full cycle returns to IDLE.
 
 ### Task 13: cli.ts — start/stop/status commands
 
 - **Files:** `src/cli.ts` (edit — add start, stop, status implementations)
-- **Depends on:** Task 12
+- **Depends on:** Task 12b
 - **Scope:** M
 - **What:** Wire up `start`, `stop`, `status` commands in the existing cli.ts.
 - **How:**
@@ -325,9 +335,9 @@
 ### Task 14: bootstrap.ts — interactive setup
 
 - **Files:** `src/bootstrap.ts` (create)
-- **Depends on:** Task 3, Task 5
+- **Depends on:** Task 3, Task 5, Task 13
 - **Scope:** L
-- **What:** Implement interactive setup that installs piper, creates Python venv, installs openWakeWord, downloads ONNX models, copies sounds.
+- **What:** Implement interactive setup that installs piper, creates Python venv, installs openWakeWord, downloads ONNX models, and copies sounds.
 - **How:**
   - `ASSISTANT_DIR = path.join(os.homedir(), '.openclaw/assistant')`
   - `VENV_DIR = ASSISTANT_DIR + '/venv'`
@@ -341,7 +351,7 @@
   - Step 5: Python venv — check `VENV_DIR/bin/python3` exists. If not, confirm → `python3 -m venv VENV_DIR`. Then `pip install openwakeword pyaudio` in venv.
   - Step 6: ONNX models — check `ASSISTANT_DIR/models/hey_jarvis.onnx` exists. If not, confirm → download from openWakeWord GitHub releases.
   - Step 7: Copy sounds — `cp sounds/wake.wav stop.wav error.wav ASSISTANT_DIR/sounds/` (mkdir -p first).
-  - Each step prints status, skips if already installed.
+  - Each step prints status and skips if already installed.
   - Wire into `cli.ts` `bootstrap` command.
 - **Context:** `src/config.ts`, `src/sounds.ts`, CLAUDE.md (venv in ~/.openclaw/assistant/venv/, piper binary + models in ~/.openclaw/assistant/bin/)
 - **Verify:** `npx tsx src/cli.ts bootstrap` — runs interactively, installs correctly. `ls ~/.openclaw/assistant/` shows expected directories.
@@ -360,7 +370,7 @@
     3. Load wake model: `openwakeword.Model(wakeword_models=[model_dir + '/' + wake_model + '.onnx'], ...)`
     4. Load stop model separately (or combined)
     5. Inference loop: read chunk from stream, run model prediction, if score > 0.5 for wake model → print `{"event":"wake"}`, flush; if score > 0.5 for stop model → print `{"event":"stop"}`, flush
-    6. Handle SIGSTOP/SIGCONT at OS level (OS handles this — Python process just pauses/resumes naturally)
+    6. Handle SIGSTOP/SIGCONT at OS level (OS handles this — Python process pauses/resumes naturally)
     7. Handle SIGTERM → clean close PyAudio, exit 0
   - Stub mode unchanged from Task 6
 - **Context:** `listener.py` (existing stub from Task 6), CLAUDE.md (listener.py long-lived, SIGSTOP/SIGCONT, models in ~/.openclaw/assistant/models/)
@@ -383,18 +393,18 @@
 - **Context:** `src/cli.ts`, `src/daemon.ts`, CLAUDE.md (daemon.pid, daemon-state.json)
 - **Verify:** `npx tsx src/cli.ts start --daemon` forks and exits. `~/.openclaw/assistant/daemon.pid` exists. `npx tsx src/cli.ts status` shows IDLE. `npx tsx src/cli.ts stop` terminates daemon.
 
-### Task 17: .npmignore + publish prep
+### Task 17: .npmignore + README update + publish prep
 
-- **Files:** `.npmignore` (create)
+- **Files:** `.npmignore` (create), `README.md` (edit)
 - **Depends on:** Task 16
 - **Scope:** S
-- **What:** Create `.npmignore` to exclude dev artifacts from npm publish.
+- **What:** Create `.npmignore` to exclude dev artifacts from npm publish. Update README.md with current requirements and CLI commands.
 - **How:**
-  - Exclude: `docs/`, `test/`, `src/`, `.claude/`, `*.md` (but keep `README.md` — use negation `!README.md`), `tsconfig.json`, `vitest.config.ts`, `.gitignore`
-  - Include: `dist/`, `sounds/`, `listener.py`, `package.json`, `README.md`
-  - Verify `npm pack --dry-run` shows only publish-relevant files
-- **Context:** `package.json` (bin field points to dist/cli.js)
-- **Verify:** `npm pack --dry-run` output includes `dist/cli.js`, `sounds/*.wav`, `listener.py`. Excludes `src/`, `test/`, `docs/`.
+  - `.npmignore`: exclude `docs/`, `test/`, `src/`, `.claude/`, `*.md` (but keep `README.md` — use negation `!README.md`), `tsconfig.json`, `vitest.config.ts`, `.gitignore`. Include: `dist/`, `sounds/`, `listener.py`, `package.json`, `README.md`.
+  - `README.md`: update Requirements section if any dependencies changed. Verify CLI section matches implemented commands. Add "Development" section with `npm run build`, `npm test`, `npm run dev`.
+  - Run `npm pack --dry-run` to verify only publish-relevant files are included.
+- **Context:** `package.json` (bin field points to dist/cli.js), `README.md` (existing content)
+- **Verify:** `npm pack --dry-run` output includes `dist/cli.js`, `sounds/*.wav`, `listener.py`. Excludes `src/`, `test/`, `docs/`. `README.md` lists all implemented CLI commands.
 
 ### Task 18: Validation
 
@@ -402,7 +412,7 @@
 - **Depends on:** all
 - **Scope:** S
 - **What:** Run full test suite and build to verify everything compiles and tests pass.
-- **Context:** —
+- **Context:** `package.json` (scripts: build, test), `test/*.test.ts` (all test files), `src/types.ts` (shared interfaces — common source of compile errors)
 - **Verify:** `npm run build && npm test` — zero compile errors, all tests green (config, session, daemon-state, transcriber, agent tests).
 
 ## File intersection matrix
@@ -411,14 +421,14 @@
 |---|---|
 | `src/types.ts` | Task 2, Task 11 (adds START_RECORD to DaemonEvent) |
 | `src/cli.ts` | Task 4, Task 13, Task 14 (bootstrap wire-up), Task 16 |
-| `src/daemon.ts` | Task 12, Task 16 |
+| `src/daemon.ts` | Task 12a, Task 12b, Task 16 |
 | `listener.py` | Task 6, Task 15 |
 
 Tasks 2 and 11 both touch `src/types.ts` — Task 11 adds `START_RECORD` to the event union. Sequential dependency enforced.
 
 Tasks 4, 13, 14, 16 all touch `src/cli.ts` — each builds on the previous. Fully sequential.
 
-Tasks 12 and 16 both touch `src/daemon.ts`. Sequential.
+Tasks 12a, 12b, and 16 all touch `src/daemon.ts`. Sequential.
 
 Tasks 6 and 15 both touch `listener.py`. Sequential.
 
@@ -446,10 +456,11 @@ Tasks 6 and 15 both touch `listener.py`. Sequential.
     Task 4: cli.ts session/profile commands (depends on Task 3)
   ─── barrier ───
   Group 4 (sequential):
-    Task 12: daemon.ts (depends on Tasks 3,5,6,7,8,9,10,11)
+    Task 12a: daemon.ts IDLE→RECORDING cycle (depends on Tasks 3,5,6,7,8,11)
+    Task 12b: daemon.ts PROCESSING→SPEAKING pipeline (depends on Task 12a,9,10)
   ─── barrier ───
   Group 5 (sequential):
-    Task 13: cli.ts start/stop/status (depends on Task 12)
+    Task 13: cli.ts start/stop/status (depends on Task 12b)
   ─── barrier ───
   Group 6 (parallel):
     Task 14: bootstrap.ts
@@ -465,21 +476,3 @@ Tasks 6 and 15 both touch `listener.py`. Sequential.
 
 - `npm run build` — compiles without errors
 - `npm test` — all unit tests green (state machine, config, session, transcriber, agent)
-- `voca bootstrap` — interactively configures mic/speaker, installs piper, creates venv with openWakeWord
-- `voca start` — daemon starts, listener.py spawns, state is IDLE
-- Say "hey jarvis" → beep, transition to RECORDING
-- Say phrase + "stop" → double-beep, transcription, send to openclaw agent, speak response
-- `voca status` — current state, sessionId, profile
-- `voca session new` — new sessionId, counter reset
-- `voca profile use public` — profile switched, session reset
-- Silence >30s during recording — cancel recording, return to IDLE
-- openclaw gateway error — low tone, speak "Server unavailable"
-- Ctrl+C during `voca start` — clean termination of all child processes
-
-## Materials
-
-- `docs/ai/claw-assistant-voice-daemon/claw-assistant-voice-daemon-task.md` — full project specification
-- `openclaw agent --help` — CLI interface
-- `whisper-stt-wrapper --help` — STT interface (file as first argument)
-- `/home/priney/.openclaw/openclaw.json` — openclaw configuration (timeout 900s, agents)
-- `/home/priney/whisper-stt/.venv/` — Python venv reference
