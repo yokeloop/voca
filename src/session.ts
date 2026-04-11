@@ -5,8 +5,10 @@ import type { VocaSession } from './types.js';
 
 export const SESSION_PATH = path.join(os.homedir(), '.openclaw/assistant/session.json');
 
+let sessionCounter = 0;
+
 export function generateSessionId(): string {
-  return 'asst-' + Date.now();
+  return 'asst-' + Date.now() + '-' + (sessionCounter++);
 }
 
 export function newSession(profile: string): VocaSession {

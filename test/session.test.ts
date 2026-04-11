@@ -26,12 +26,12 @@ describe('session', () => {
 
   it('generateSessionId returns asst- prefixed string', () => {
     const id = generateSessionId();
-    expect(id).toMatch(/^asst-\d+$/);
+    expect(id).toMatch(/^asst-\d+-\d+$/);
   });
 
   it('newSession creates a fresh session object', () => {
     const s = newSession('personal');
-    expect(s.sessionId).toMatch(/^asst-\d+$/);
+    expect(s.sessionId).toMatch(/^asst-\d+-\d+$/);
     expect(s.messageCount).toBe(0);
     expect(s.profile).toBe('personal');
     expect(s.createdAt).toBeTruthy();
@@ -39,7 +39,7 @@ describe('session', () => {
 
   it('readSession returns default session when file does not exist', async () => {
     const s = await readSession(sessionPath);
-    expect(s.sessionId).toMatch(/^asst-\d+$/);
+    expect(s.sessionId).toMatch(/^asst-\d+-\d+$/);
     expect(s.profile).toBe('personal');
     expect(s.messageCount).toBe(0);
   });
