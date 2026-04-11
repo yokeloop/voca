@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 
@@ -16,8 +17,11 @@ import { transcribe } from './transcriber.js';
 import { queryAgent } from './agent.js';
 import { speak } from './speaker.js';
 import { readSession, incrementMessageCount } from './session.js';
+import { readConfig } from './config.js';
 
-const ASSISTANT_DIR = path.join(os.homedir(), '.openclaw', 'assistant');
+export const ASSISTANT_DIR = path.join(os.homedir(), '.openclaw', 'assistant');
+export const PID_FILE = path.join(ASSISTANT_DIR, 'daemon.pid');
+export const STATE_FILE = path.join(ASSISTANT_DIR, 'daemon-state.json');
 
 export class VocaDaemon extends EventEmitter {
   private state: DaemonState = 'IDLE';
@@ -41,6 +45,7 @@ export class VocaDaemon extends EventEmitter {
     });
 
     this.state = 'IDLE';
+    this.writeStateFile();
     console.log('[daemon] state: IDLE — listener spawned');
 
     this.listener.on('wake', () => {
@@ -62,8 +67,32 @@ export class VocaDaemon extends EventEmitter {
       this.listener = null;
     }
     this.state = 'IDLE';
+    this.writeStateFile();
     this.emit('stopped');
     console.log('[daemon] stopped');
+  }
+
+  async cleanup(): Promise<void> {
+    try { await fs.unlink(PID_FILE); } catch { /* best-effort */ }
+    try { await fs.unlink(STATE_FILE); } catch { /* best-effort */ }
+  }
+
+  private writeStateFile(): void {
+    (async () => {
+      try {
+        const session = await readSession();
+        const config = await readConfig();
+        const data = {
+          state: this.state,
+          sessionId: session.sessionId,
+          profile: config.profile,
+          updatedAt: new Date().toISOString(),
+        };
+        await fs.writeFile(STATE_FILE, JSON.stringify(data, null, 2) + '\n');
+      } catch {
+        // fire-and-forget
+      }
+    })().catch(() => {});
   }
 
   private async handleWake(): Promise<void> {
@@ -74,6 +103,7 @@ export class VocaDaemon extends EventEmitter {
 
     try {
       this.state = transition(this.state, 'WAKE');
+      this.writeStateFile();
       console.log(`[daemon] state: ${this.state}`);
 
       this.listener!.pause();
@@ -81,6 +111,7 @@ export class VocaDaemon extends EventEmitter {
       await playWake({ device: this.config.outputDevice });
 
       this.state = transition(this.state, 'START_RECORD');
+      this.writeStateFile();
       console.log(`[daemon] state: ${this.state}`);
 
       this.recorder = startRecording({ device: this.config.inputDevice });
@@ -104,6 +135,7 @@ export class VocaDaemon extends EventEmitter {
       this.recorder.stop();
     } else if (this.state === 'LISTENING') {
       this.state = transition(this.state, 'STOP');
+      this.writeStateFile();
       console.log(`[daemon] state: ${this.state} (stop during LISTENING)`);
       this.listener?.resume();
     }
@@ -112,6 +144,7 @@ export class VocaDaemon extends EventEmitter {
   private async onRecorderDone(): Promise<void> {
     try {
       this.state = transition(this.state, 'STOP');
+      this.writeStateFile();
       console.log(`[daemon] state: ${this.state}`);
 
       await playStop({ device: this.config.outputDevice });
@@ -144,6 +177,7 @@ export class VocaDaemon extends EventEmitter {
         } catch {
           this.state = 'IDLE';
         }
+        this.writeStateFile();
         this.listener?.resume();
         return;
       }
@@ -169,6 +203,7 @@ export class VocaDaemon extends EventEmitter {
 
       // Transition to SPEAKING
       this.state = transition(this.state, 'PROCESSING_DONE');
+      this.writeStateFile();
       console.log(`[daemon] state: ${this.state}`);
 
       try {
@@ -194,6 +229,7 @@ export class VocaDaemon extends EventEmitter {
 
       // Done speaking — back to IDLE
       this.state = transition(this.state, 'SPEAKING_DONE');
+      this.writeStateFile();
       console.log(`[daemon] state: ${this.state}`);
       this.listener?.resume();
     } catch (err) {
@@ -205,6 +241,7 @@ export class VocaDaemon extends EventEmitter {
   private onRecorderCancel(): void {
     try {
       this.state = transition(this.state, 'RECORD_CANCEL');
+      this.writeStateFile();
       console.log(`[daemon] state: ${this.state} (recording cancelled)`);
       this.recorder = null;
       this.listener?.resume();
@@ -226,6 +263,7 @@ export class VocaDaemon extends EventEmitter {
       // If transition fails (e.g. already IDLE), force IDLE
       this.state = 'IDLE';
     }
+    this.writeStateFile();
     console.log(`[daemon] state: ${this.state} (recovered from error)`);
     this.recorder = null;
     this.listener?.resume();

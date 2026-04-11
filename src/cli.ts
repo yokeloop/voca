@@ -2,10 +2,12 @@
 
 import { Command } from 'commander';
 import { createRequire } from 'node:module';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { spawn } from 'node:child_process';
+import fs from 'node:fs/promises';
 import { readConfig, writeConfig } from './config.js';
 import { readSession, resetSessionForProfile } from './session.js';
-import { VocaDaemon } from './daemon.js';
+import { VocaDaemon, PID_FILE, STATE_FILE, ASSISTANT_DIR } from './daemon.js';
 
 const require = createRequire(import.meta.url);
 const pkg = require('../package.json');
@@ -81,7 +83,16 @@ program
   .option('--daemon', 'Run as a background daemon')
   .action(async (opts: { daemon?: boolean }) => {
     if (opts.daemon) {
-      console.log('Not yet implemented — use foreground mode');
+      await fs.mkdir(ASSISTANT_DIR, { recursive: true });
+      const child = spawn(
+        process.execPath,
+        [...process.execArgv, fileURLToPath(import.meta.url), 'start'],
+        { detached: true, stdio: 'ignore' },
+      );
+      child.unref();
+      await fs.writeFile(PID_FILE, String(child.pid) + '\n');
+      console.log(`Daemon started (PID: ${child.pid})`);
+      process.exit(0);
       return;
     }
 
@@ -91,6 +102,7 @@ program
     const shutdown = async () => {
       console.log('\nShutting down…');
       await daemon.stop();
+      await daemon.cleanup();
       process.exit(0);
     };
 
@@ -103,15 +115,42 @@ program
 program
   .command('stop')
   .description('Stop the voice assistant daemon')
-  .action(() => {
-    console.log('Daemon mode not yet available — use Ctrl+C to stop foreground daemon');
+  .action(async () => {
+    let pidStr: string;
+    try {
+      pidStr = await fs.readFile(PID_FILE, 'utf-8');
+    } catch {
+      console.log('Daemon not running');
+      return;
+    }
+    const pid = Number(pidStr.trim());
+    try {
+      process.kill(pid, 'SIGTERM');
+    } catch {
+      // process already gone
+    }
+    // Give the daemon a moment to clean up
+    await new Promise((r) => setTimeout(r, 500));
+    try { await fs.unlink(PID_FILE); } catch { /* already removed */ }
+    console.log('Daemon stopped');
   });
 
 program
   .command('status')
   .description('Show daemon status')
-  .action(() => {
-    console.log('Daemon mode not yet available — daemon not running');
+  .action(async () => {
+    let data: string;
+    try {
+      data = await fs.readFile(STATE_FILE, 'utf-8');
+    } catch {
+      console.log('Daemon not running');
+      return;
+    }
+    const state = JSON.parse(data);
+    console.log(`State:     ${state.state}`);
+    console.log(`Session:   ${state.sessionId}`);
+    console.log(`Profile:   ${state.profile}`);
+    console.log(`Updated:   ${state.updatedAt}`);
   });
 
 program
