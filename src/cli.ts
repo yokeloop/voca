@@ -5,6 +5,7 @@ import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { readConfig, writeConfig } from './config.js';
 import { readSession, resetSessionForProfile } from './session.js';
+import { VocaDaemon } from './daemon.js';
 
 const require = createRequire(import.meta.url);
 const pkg = require('../package.json');
@@ -77,22 +78,40 @@ profile
 program
   .command('start')
   .description('Start the voice assistant daemon')
-  .action(() => {
-    console.log('Not yet implemented');
+  .option('--daemon', 'Run as a background daemon')
+  .action(async (opts: { daemon?: boolean }) => {
+    if (opts.daemon) {
+      console.log('Not yet implemented — use foreground mode');
+      return;
+    }
+
+    const config = await readConfig();
+    const daemon = new VocaDaemon(config);
+
+    const shutdown = async () => {
+      console.log('\nShutting down…');
+      await daemon.stop();
+      process.exit(0);
+    };
+
+    process.on('SIGINT', shutdown);
+    process.on('SIGTERM', shutdown);
+
+    await daemon.start();
   });
 
 program
   .command('stop')
   .description('Stop the voice assistant daemon')
   .action(() => {
-    console.log('Not yet implemented');
+    console.log('Daemon mode not yet available — use Ctrl+C to stop foreground daemon');
   });
 
 program
   .command('status')
   .description('Show daemon status')
   .action(() => {
-    console.log('Not yet implemented');
+    console.log('Daemon mode not yet available — daemon not running');
   });
 
 program
