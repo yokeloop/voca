@@ -55,7 +55,7 @@ describe('config', () => {
     expect(defaultConfig.profile).toBe('personal');
     expect(defaultConfig.wakeWord).toBe('hey_jarvis');
     expect(defaultConfig.stopWord).toBe('stop');
-    expect(defaultConfig.piperModel).toBe('ru_RU-irina-medium');
+    expect(defaultConfig.piperModel).toContain('ru_RU-irina-medium.onnx');
     expect(defaultConfig.piperBin).toContain('.openclaw/assistant/bin/piper');
     expect(defaultConfig.language).toBe('ru');
   });

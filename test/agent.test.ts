@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { queryAgent, AgentError } from '../src/agent.js';
+import { queryAgent, AgentError, OPENCLAW_BIN } from '../src/agent.js';
 
 vi.mock('node:child_process', () => ({
   execFile: vi.fn(),
@@ -81,7 +81,7 @@ describe('agent', () => {
     });
 
     expect(mockExecFile).toHaveBeenCalledWith(
-      '/home/priney/.npm-global/bin/openclaw',
+      OPENCLAW_BIN,
       [
         'agent',
         '--agent', 'public',

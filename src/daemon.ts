@@ -40,14 +40,25 @@ export class VocaDaemon extends EventEmitter {
   }
 
   async start(): Promise<void> {
+    const venvPython = path.join(ASSISTANT_DIR, 'venv', 'bin', 'python3');
+    let useStub = true;
+    try {
+      await fs.access(venvPython);
+      useStub = false;
+    } catch {
+      console.log('[daemon] openWakeWord venv not found, using stub listener');
+    }
+
     this.listener = spawnListener({
-      stub: true,
+      stub: useStub,
+      pythonBin: useStub ? undefined : venvPython,
       modelDir: path.join(ASSISTANT_DIR, 'models'),
+      deviceIndex: useStub ? undefined : 0,
     });
 
     this.state = 'IDLE';
     this.writeStateFile();
-    console.log('[daemon] state: IDLE — listener spawned');
+    console.log(`[daemon] state: IDLE — listener spawned (stub=${useStub})`);
 
     this.listener.on('wake', () => {
       this.handleWake();
@@ -55,6 +66,15 @@ export class VocaDaemon extends EventEmitter {
 
     this.listener.on('stop', () => {
       this.handleStop();
+    });
+
+    this.listener.on('exit', (code) => {
+      console.error(`[daemon] listener process exited with code ${code}`);
+      if (this.state !== 'IDLE') {
+        this.recoverFromError();
+      } else {
+        this.stop();
+      }
     });
   }
 
@@ -106,8 +126,6 @@ export class VocaDaemon extends EventEmitter {
       this.state = transition(this.state, 'WAKE');
       this.writeStateFile();
       console.log(`[daemon] state: ${this.state}`);
-
-      this.listener!.pause();
 
       await playSound('wake', { device: this.config.outputDevice });
 
@@ -168,6 +186,8 @@ export class VocaDaemon extends EventEmitter {
         console.error('[daemon] transcription error:', err);
         await this.recoverFromError();
         return;
+      } finally {
+        await fs.unlink(filePath).catch(() => {});
       }
 
       if (!text) {
@@ -211,6 +231,8 @@ export class VocaDaemon extends EventEmitter {
         // non-fatal, continue speaking
       }
 
+      this.listener?.pause();
+
       try {
         await speak({
           text: response.text,
@@ -220,14 +242,16 @@ export class VocaDaemon extends EventEmitter {
         });
       } catch (err) {
         console.error('[daemon] speaker error:', err);
+        this.listener?.resume();
         await this.recoverFromError();
         return;
       }
 
+      this.listener?.resume();
+
       this.state = transition(this.state, 'SPEAKING_DONE');
       this.writeStateFile();
       console.log(`[daemon] state: ${this.state}`);
-      this.listener?.resume();
     } catch (err) {
       console.error('[daemon] error in onRecorderDone:', err);
       await this.recoverFromError();

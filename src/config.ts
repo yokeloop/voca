@@ -11,7 +11,7 @@ export const defaultConfig: VocaConfig = {
   profile: 'personal',
   wakeWord: 'hey_jarvis',
   stopWord: 'stop',
-  piperModel: 'ru_RU-irina-medium',
+  piperModel: path.join(os.homedir(), '.openclaw/assistant/bin/ru_RU-irina-medium.onnx'),
   piperBin: path.join(os.homedir(), '.openclaw/assistant/bin/piper'),
   language: 'ru',
 };

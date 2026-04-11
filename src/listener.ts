@@ -8,6 +8,7 @@ export interface ListenerOptions {
   pythonBin?: string;
   modelDir: string;
   stub?: boolean;
+  deviceIndex?: number;
 }
 
 export function spawnListener(opts: ListenerOptions): ListenerHandle {
@@ -17,6 +18,10 @@ export function spawnListener(opts: ListenerOptions): ListenerHandle {
   const args = opts.stub
     ? [scriptPath, '--stub']
     : [scriptPath, '--model-dir', opts.modelDir];
+
+  if (!opts.stub && opts.deviceIndex !== undefined) {
+    args.push('--device-index', String(opts.deviceIndex));
+  }
 
   const child: ChildProcess = spawn(pythonBin, args, {
     stdio: ['pipe', 'pipe', 'inherit'],
@@ -49,7 +54,7 @@ export function spawnListener(opts: ListenerOptions): ListenerHandle {
   });
 
   return {
-    on(event: 'wake' | 'stop', cb: () => void): void {
+    on(event: 'wake' | 'stop' | 'exit', cb: (...args: any[]) => void): void {
       emitter.on(event, cb);
     },
     pause(): void {

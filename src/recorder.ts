@@ -33,7 +33,7 @@ export function startRecording(opts: {
   child.on('exit', (code) => {
     clearTimeout(timer);
     if (cancelled) return;
-    if (code === 0) {
+    if (stopped || code === 0) {
       emitter.emit('done');
     } else {
       emitter.emit('cancel');
@@ -52,6 +52,7 @@ export function startRecording(opts: {
   const handle: RecorderHandle = {
     filePath,
 
+    /** Ends recording normally. The resulting WAV is kept and 'done' is emitted. */
     stop() {
       if (stopped) return;
       stopped = true;
@@ -59,6 +60,7 @@ export function startRecording(opts: {
       child.kill('SIGTERM');
     },
 
+    /** Discards the recording, deletes the WAV file, and emits 'cancel'. */
     cancel() {
       if (cancelled) return;
       cancelled = true;

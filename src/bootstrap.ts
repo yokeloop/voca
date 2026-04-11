@@ -18,6 +18,8 @@ const PIPER_VOICE_BASE =
   'https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/ru/ru_RU/irina/medium';
 const WAKE_MODEL_URL =
   'https://github.com/dscripka/openWakeWord/releases/download/v0.6.0/hey_jarvis.onnx';
+const STOP_MODEL_URL =
+  'https://github.com/dscripka/openWakeWord/releases/download/v0.6.0/stop.onnx';
 
 function run(cmd: string, args: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -161,32 +163,56 @@ async function installPythonVenv(rl: ReturnType<typeof createInterface>): Promis
     console.log('Venv created.');
   }
 
-  // Install packages
+  // Install packages (skip if already present)
   const venvPip = path.join(VENV_DIR, 'bin/pip');
-  console.log('Installing openwakeword and pyaudio...');
-  await run(venvPip, ['install', 'openwakeword', 'pyaudio']);
-  console.log('Python dependencies installed.');
+  let alreadyInstalled = false;
+  try {
+    await runCapture(venvPip, ['show', 'openwakeword']);
+    alreadyInstalled = true;
+  } catch {
+    // not installed
+  }
+
+  if (alreadyInstalled) {
+    console.log('openwakeword already installed. Skipping pip install.');
+  } else {
+    console.log('Installing openwakeword and pyaudio...');
+    await run(venvPip, ['install', 'openwakeword', 'pyaudio']);
+    console.log('Python dependencies installed.');
+  }
 }
 
 async function installModels(rl: ReturnType<typeof createInterface>): Promise<void> {
   console.log('\n=== Step 6: Wake word ONNX models ===');
-  const modelPath = path.join(MODELS_DIR, 'hey_jarvis.onnx');
+  const wakeModelPath = path.join(MODELS_DIR, 'hey_jarvis.onnx');
+  const stopModelPath = path.join(MODELS_DIR, 'stop.onnx');
 
-  if (await fileExists(modelPath)) {
-    console.log('Wake word model already downloaded. Skipping.');
+  const wakeExists = await fileExists(wakeModelPath);
+  const stopExists = await fileExists(stopModelPath);
+
+  if (wakeExists && stopExists) {
+    console.log('Wake and stop models already downloaded. Skipping.');
     return;
   }
 
-  if (!(await confirm(rl, 'Wake word model not found. Download hey_jarvis.onnx?'))) {
+  if (!(await confirm(rl, 'Download missing wake/stop word ONNX models?'))) {
     console.log('Skipped.');
     return;
   }
 
   await fs.mkdir(MODELS_DIR, { recursive: true });
 
-  console.log('Downloading hey_jarvis.onnx...');
-  await run('curl', ['-L', '-o', modelPath, WAKE_MODEL_URL]);
-  console.log('Wake word model downloaded.');
+  if (!wakeExists) {
+    console.log('Downloading hey_jarvis.onnx...');
+    await run('curl', ['-L', '-o', wakeModelPath, WAKE_MODEL_URL]);
+    console.log('Wake word model downloaded.');
+  }
+
+  if (!stopExists) {
+    console.log('Downloading stop.onnx...');
+    await run('curl', ['-L', '-o', stopModelPath, STOP_MODEL_URL]);
+    console.log('Stop word model downloaded.');
+  }
 }
 
 async function copySounds(): Promise<void> {

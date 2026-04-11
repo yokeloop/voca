@@ -4,7 +4,7 @@ import type { AgentResponse } from './types.js';
 
 const execFileAsync = promisify(execFile);
 
-const OPENCLAW_BIN = '/home/priney/.npm-global/bin/openclaw';
+export const OPENCLAW_BIN = process.env.OPENCLAW_BIN ?? 'openclaw';
 
 export class AgentError extends Error {
   constructor(message: string) {
