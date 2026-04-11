@@ -25,6 +25,7 @@ export type DaemonState =
 
 export type DaemonEvent =
   | 'WAKE'
+  | 'START_RECORD'
   | 'STOP'
   | 'RECORD_CANCEL'
   | 'PROCESSING_DONE'
