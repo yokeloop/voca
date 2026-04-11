@@ -117,8 +117,9 @@ program
 program
   .command('bootstrap')
   .description('Interactive setup for mic/speaker/dependencies')
-  .action(() => {
-    console.log('Not yet implemented');
+  .action(async () => {
+    const { runBootstrap } = await import('./bootstrap.js');
+    await runBootstrap();
   });
 
 // --- main guard ---
