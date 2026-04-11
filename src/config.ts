@@ -25,10 +25,8 @@ export async function readConfig(configPath: string = CONFIG_PATH): Promise<Voca
     const raw = await fs.readFile(configPath, 'utf-8');
     const parsed = JSON.parse(raw) as Partial<VocaConfig>;
     return { ...defaultConfig, ...parsed };
-  } catch (err: unknown) {
-    if (err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT') {
-      return { ...defaultConfig };
-    }
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { ...defaultConfig };
     throw err;
   }
 }

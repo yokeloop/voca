@@ -14,12 +14,9 @@ export function spawnListener(opts: ListenerOptions): ListenerHandle {
   const pythonBin = opts.pythonBin ?? 'python3';
   const scriptPath = join(import.meta.dirname, '..', 'listener.py');
 
-  const args = [scriptPath];
-  if (opts.stub) {
-    args.push('--stub');
-  } else {
-    args.push('--model-dir', opts.modelDir);
-  }
+  const args = opts.stub
+    ? [scriptPath, '--stub']
+    : [scriptPath, '--model-dir', opts.modelDir];
 
   const child: ChildProcess = spawn(pythonBin, args, {
     stdio: ['pipe', 'pipe', 'inherit'],
@@ -38,7 +35,7 @@ export function spawnListener(opts: ListenerOptions): ListenerHandle {
         emitter.emit('stop');
       }
     } catch {
-      // Ignore non-JSON lines
+      // ignore non-JSON lines
     }
   });
 
@@ -51,27 +48,18 @@ export function spawnListener(opts: ListenerOptions): ListenerHandle {
     emitter.emit('exit', code);
   });
 
-  const handle: ListenerHandle = {
+  return {
     on(event: 'wake' | 'stop', cb: () => void): void {
       emitter.on(event, cb);
     },
-
     pause(): void {
-      if (child.pid) {
-        process.kill(child.pid, 'SIGSTOP');
-      }
+      if (child.pid) process.kill(child.pid, 'SIGSTOP');
     },
-
     resume(): void {
-      if (child.pid) {
-        process.kill(child.pid, 'SIGCONT');
-      }
+      if (child.pid) process.kill(child.pid, 'SIGCONT');
     },
-
     kill(): void {
       child.kill('SIGTERM');
     },
   };
-
-  return handle;
 }

@@ -6,13 +6,14 @@ import os from 'node:os';
 import type {
   VocaConfig,
   DaemonState,
+  AgentResponse,
   ListenerHandle,
   RecorderHandle,
 } from './types.js';
 import { transition } from './daemon-state.js';
 import { spawnListener } from './listener.js';
 import { startRecording } from './recorder.js';
-import { playWake, playStop, playError } from './sounds.js';
+import { playSound } from './sounds.js';
 import { transcribe } from './transcriber.js';
 import { queryAgent } from './agent.js';
 import { speak } from './speaker.js';
@@ -108,7 +109,7 @@ export class VocaDaemon extends EventEmitter {
 
       this.listener!.pause();
 
-      await playWake({ device: this.config.outputDevice });
+      await playSound('wake', { device: this.config.outputDevice });
 
       this.state = transition(this.state, 'START_RECORD');
       this.writeStateFile();
@@ -147,7 +148,7 @@ export class VocaDaemon extends EventEmitter {
       this.writeStateFile();
       console.log(`[daemon] state: ${this.state}`);
 
-      await playStop({ device: this.config.outputDevice });
+      await playSound('stop', { device: this.config.outputDevice });
 
       const filePath = this.recorder?.filePath;
       this.recorder = null;
@@ -160,7 +161,6 @@ export class VocaDaemon extends EventEmitter {
 
       this.emit('recorded', filePath);
 
-      // Transcribe
       let text: string;
       try {
         text = await transcribe(filePath, { language: this.config.language });
@@ -184,8 +184,7 @@ export class VocaDaemon extends EventEmitter {
 
       console.log(`[daemon] transcript: "${text}"`);
 
-      // Query agent
-      let response: { text: string; sessionId: string };
+      let response: AgentResponse;
       try {
         const session = await readSession();
         response = await queryAgent({
@@ -201,7 +200,6 @@ export class VocaDaemon extends EventEmitter {
 
       console.log(`[daemon] agent response: "${response.text.slice(0, 100)}..."`);
 
-      // Transition to SPEAKING
       this.state = transition(this.state, 'PROCESSING_DONE');
       this.writeStateFile();
       console.log(`[daemon] state: ${this.state}`);
@@ -213,7 +211,6 @@ export class VocaDaemon extends EventEmitter {
         // non-fatal, continue speaking
       }
 
-      // Speak response
       try {
         await speak({
           text: response.text,
@@ -227,7 +224,6 @@ export class VocaDaemon extends EventEmitter {
         return;
       }
 
-      // Done speaking — back to IDLE
       this.state = transition(this.state, 'SPEAKING_DONE');
       this.writeStateFile();
       console.log(`[daemon] state: ${this.state}`);
@@ -253,7 +249,7 @@ export class VocaDaemon extends EventEmitter {
 
   private async recoverFromError(): Promise<void> {
     try {
-      await playError({ device: this.config.outputDevice });
+      await playSound('error', { device: this.config.outputDevice });
     } catch {
       // Ignore sound playback errors during recovery
     }

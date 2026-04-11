@@ -20,29 +20,9 @@ export function playSound(
   opts: { device: string },
 ): Promise<void> {
   return new Promise((resolve, reject) => {
-    const child = execFile(
-      'aplay',
-      ['-D', opts.device, soundFile(type)],
-      (error) => {
-        if (error) {
-          reject(error);
-        } else {
-          resolve();
-        }
-      },
-    );
-    child.stdin?.end();
+    execFile('aplay', ['-D', opts.device, soundFile(type)], (error) => {
+      if (error) reject(error);
+      else resolve();
+    });
   });
-}
-
-export function playWake(opts: { device: string }): Promise<void> {
-  return playSound('wake', opts);
-}
-
-export function playStop(opts: { device: string }): Promise<void> {
-  return playSound('stop', opts);
-}
-
-export function playError(opts: { device: string }): Promise<void> {
-  return playSound('error', opts);
 }

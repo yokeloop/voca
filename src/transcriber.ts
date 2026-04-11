@@ -24,12 +24,8 @@ export async function transcribe(
       { maxBuffer: 1024 * 1024 },
     );
     stdout = result.stdout;
-  } catch (err: unknown) {
-    const stderr =
-      err instanceof Error && 'stderr' in err
-        ? String((err as { stderr: unknown }).stderr)
-        : String(err);
-    throw new TranscribeError(stderr);
+  } catch (err) {
+    throw new TranscribeError(String((err as { stderr?: unknown }).stderr ?? err));
   }
 
   let text = stdout.trim();

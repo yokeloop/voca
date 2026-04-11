@@ -21,8 +21,6 @@ program
   .version(pkg.version)
   .description('Voice Operated Claw Assistant');
 
-// --- session ---
-
 const session = program.command('session').description('Session management');
 
 session
@@ -44,8 +42,6 @@ session
     console.log(`Messages: ${s.messageCount}`);
     console.log(`Created:  ${s.createdAt}`);
   });
-
-// --- profile ---
 
 const profile = program.command('profile').description('Profile management');
 
@@ -74,8 +70,6 @@ profile
     console.log(`Switched to profile: ${id}`);
     console.log(`New session: ${s.sessionId}`);
   });
-
-// --- placeholder commands ---
 
 program
   .command('start')
@@ -160,8 +154,6 @@ program
     const { runBootstrap } = await import('./bootstrap.js');
     await runBootstrap();
   });
-
-// --- main guard ---
 
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   program.parse();

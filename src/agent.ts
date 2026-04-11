@@ -41,12 +41,8 @@ export async function queryAgent(opts: QueryAgentOpts): Promise<AgentResponse> {
       },
     );
     stdout = result.stdout;
-  } catch (err: unknown) {
-    const stderr =
-      err instanceof Error && 'stderr' in err
-        ? String((err as { stderr: unknown }).stderr)
-        : String(err);
-    throw new AgentError(stderr);
+  } catch (err) {
+    throw new AgentError(String((err as { stderr?: unknown }).stderr ?? err));
   }
 
   let parsed: unknown;

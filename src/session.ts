@@ -20,24 +20,18 @@ export function newSession(profile: string): VocaSession {
   };
 }
 
-async function ensureSessionDir(sessionPath: string): Promise<void> {
-  await fs.mkdir(path.dirname(sessionPath), { recursive: true });
-}
-
 export async function readSession(sessionPath: string = SESSION_PATH): Promise<VocaSession> {
   try {
     const raw = await fs.readFile(sessionPath, 'utf-8');
     return JSON.parse(raw) as VocaSession;
-  } catch (err: unknown) {
-    if (err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT') {
-      return newSession('personal');
-    }
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return newSession('personal');
     throw err;
   }
 }
 
 export async function writeSession(s: VocaSession, sessionPath: string = SESSION_PATH): Promise<void> {
-  await ensureSessionDir(sessionPath);
+  await fs.mkdir(path.dirname(sessionPath), { recursive: true });
   await fs.writeFile(sessionPath, JSON.stringify(s, null, 2) + '\n', 'utf-8');
 }
 

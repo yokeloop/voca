@@ -7,7 +7,7 @@ export class SpeakerError extends Error {
   }
 }
 
-export function sleep(ms: number): Promise<void> {
+function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 

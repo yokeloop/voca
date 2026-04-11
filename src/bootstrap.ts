@@ -57,53 +57,30 @@ async function fileExists(p: string): Promise<boolean> {
   }
 }
 
-// --- Step 1: Select mic device ---
-
-async function selectMic(rl: ReturnType<typeof createInterface>, config: VocaConfig): Promise<void> {
-  console.log('\n=== Step 1: Select microphone ===');
+async function selectDevice(
+  rl: ReturnType<typeof createInterface>,
+  config: VocaConfig,
+  opts: { step: string; listCmd: string; listArgs: string[]; field: 'inputDevice' | 'outputDevice'; label: string },
+): Promise<void> {
+  console.log(`\n=== ${opts.step} ===`);
   let output: string;
   try {
-    output = await runCapture('arecord', ['-l']);
+    output = await runCapture(opts.listCmd, opts.listArgs);
   } catch {
-    console.log('Could not list recording devices (arecord -l failed). Skipping.');
+    console.log(`Could not list devices (${opts.listCmd} ${opts.listArgs.join(' ')} failed). Skipping.`);
     return;
   }
 
   console.log(output);
-  const answer = await rl.question(`Enter input device (current: ${config.inputDevice}): `);
+  const answer = await rl.question(`Enter ${opts.label} device (current: ${config[opts.field]}): `);
   const trimmed = answer.trim();
   if (trimmed) {
-    config.inputDevice = trimmed;
-    console.log(`Input device set to: ${trimmed}`);
+    config[opts.field] = trimmed;
+    console.log(`${opts.label} device set to: ${trimmed}`);
   } else {
-    console.log(`Keeping current: ${config.inputDevice}`);
+    console.log(`Keeping current: ${config[opts.field]}`);
   }
 }
-
-// --- Step 2: Select speaker device ---
-
-async function selectSpeaker(rl: ReturnType<typeof createInterface>, config: VocaConfig): Promise<void> {
-  console.log('\n=== Step 2: Select speaker ===');
-  let output: string;
-  try {
-    output = await runCapture('aplay', ['-l']);
-  } catch {
-    console.log('Could not list playback devices (aplay -l failed). Skipping.');
-    return;
-  }
-
-  console.log(output);
-  const answer = await rl.question(`Enter output device (current: ${config.outputDevice}): `);
-  const trimmed = answer.trim();
-  if (trimmed) {
-    config.outputDevice = trimmed;
-    console.log(`Output device set to: ${trimmed}`);
-  } else {
-    console.log(`Keeping current: ${config.outputDevice}`);
-  }
-}
-
-// --- Step 3: Select profile ---
 
 async function selectProfile(rl: ReturnType<typeof createInterface>, config: VocaConfig): Promise<void> {
   console.log('\n=== Step 3: Select profile ===');
@@ -119,8 +96,6 @@ async function selectProfile(rl: ReturnType<typeof createInterface>, config: Voc
     console.log(`Keeping current: ${config.profile}`);
   }
 }
-
-// --- Step 4: Install Piper ---
 
 async function installPiper(rl: ReturnType<typeof createInterface>): Promise<void> {
   console.log('\n=== Step 4: Piper TTS ===');
@@ -169,8 +144,6 @@ async function installPiper(rl: ReturnType<typeof createInterface>): Promise<voi
   }
 }
 
-// --- Step 5: Python venv + openWakeWord ---
-
 async function installPythonVenv(rl: ReturnType<typeof createInterface>): Promise<void> {
   console.log('\n=== Step 5: Python venv + openWakeWord ===');
   const venvPython = path.join(VENV_DIR, 'bin/python3');
@@ -195,8 +168,6 @@ async function installPythonVenv(rl: ReturnType<typeof createInterface>): Promis
   console.log('Python dependencies installed.');
 }
 
-// --- Step 6: ONNX wake word models ---
-
 async function installModels(rl: ReturnType<typeof createInterface>): Promise<void> {
   console.log('\n=== Step 6: Wake word ONNX models ===');
   const modelPath = path.join(MODELS_DIR, 'hey_jarvis.onnx');
@@ -217,8 +188,6 @@ async function installModels(rl: ReturnType<typeof createInterface>): Promise<vo
   await run('curl', ['-L', '-o', modelPath, WAKE_MODEL_URL]);
   console.log('Wake word model downloaded.');
 }
-
-// --- Step 7: Copy sounds ---
 
 async function copySounds(): Promise<void> {
   console.log('\n=== Step 7: Copy sound files ===');
@@ -248,8 +217,6 @@ async function copySounds(): Promise<void> {
   console.log(`Copied ${copied} sound file(s) to ${SOUNDS_DIR}.`);
 }
 
-// --- Main bootstrap ---
-
 export async function runBootstrap(): Promise<void> {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
 
@@ -260,11 +227,16 @@ export async function runBootstrap(): Promise<void> {
     await ensureConfigDir();
     const config = await readConfig();
 
-    await selectMic(rl, config);
-    await selectSpeaker(rl, config);
+    await selectDevice(rl, config, {
+      step: 'Step 1: Select microphone', listCmd: 'arecord', listArgs: ['-l'],
+      field: 'inputDevice', label: 'input',
+    });
+    await selectDevice(rl, config, {
+      step: 'Step 2: Select speaker', listCmd: 'aplay', listArgs: ['-l'],
+      field: 'outputDevice', label: 'output',
+    });
     await selectProfile(rl, config);
 
-    // Save config after device/profile selection
     await writeConfig(config);
     console.log('\nConfig saved.');
 
