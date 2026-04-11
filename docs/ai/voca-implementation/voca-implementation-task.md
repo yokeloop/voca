@@ -1,19 +1,19 @@
-# VOCA — реализация голосового ассистента
+# VOCA — Voice Assistant Implementation
 
 **Slug:** voca-implementation
-**Тикет:** —
-**Сложность:** complex
-**Тип:** general
+**Ticket:** —
+**Complexity:** complex
+**Type:** general
 
 ## Task
 
-Реализовать Node.js CLI daemon `voca` поэтапно — от project setup до полного голосового цикла. Каждая фаза даёт работающий результат с проверкой. Семь фаз: setup → sounds+listener → recorder+transcriber → agent+speaker → state machine → bootstrap → daemon mode.
+Implement Node.js CLI daemon `voca` incrementally — from project setup to a full voice cycle. Each phase delivers a working result with verification. Seven phases: setup → sounds+listener → recorder+transcriber → agent+speaker → state machine → bootstrap → daemon mode.
 
 ## Context
 
-### Архитектура области
+### Architecture
 
-Daemon слушает wake word, записывает речь, транскрибирует, отправляет в OpenClaw agent, озвучивает ответ.
+Daemon listens for a wake word, records speech, transcribes it, sends to OpenClaw agent, speaks the response.
 
 ```
 Mic (USB plughw:2,0)
@@ -21,7 +21,7 @@ Mic (USB plughw:2,0)
   ├── listener.py (openWakeWord + PyAudio) ── JSON lines stdout
   │     {"event":"wake"} / {"event":"stop"}
   │
-  └── sox rec (запись WAV с silence detection)
+  └── sox rec (WAV recording with silence detection)
         │
         ▼
   daemon.ts (state machine)
@@ -32,28 +32,28 @@ Mic (USB plughw:2,0)
         └── speaker.ts → echo "<text>" | piper --model <m> --output_raw | aplay -D plughw:2,0 ...
 ```
 
-Daemon сохраняет runtime-данные в `~/.openclaw/assistant/` (config.json, session.json, sounds/, models/, venv/, bin/), вне репозитория.
+Daemon stores runtime data in `~/.openclaw/assistant/` (config.json, session.json, sounds/, models/, venv/, bin/), outside the repository.
 
-### Внешние инструменты (проверены)
+### External Tools (verified)
 
-| Инструмент | Путь | Версия | Статус |
+| Tool | Path | Version | Status |
 |---|---|---|---|
 | Node.js | `/usr/bin/node` | v24.13.1 | OK |
 | npm | — | 11.8.0 | OK |
-| Python 3 | `/usr/bin/python3` | 3.13.5 | OK (externally-managed, нужен venv) |
+| Python 3 | `/usr/bin/python3` | 3.13.5 | OK (externally-managed, needs venv) |
 | openclaw | `/home/priney/.npm-global/bin/openclaw` | 2026.3.8 | OK |
 | whisper-stt | `/usr/local/bin/whisper-stt-wrapper` | faster-whisper 1.2.1 | OK |
-| sox | `/usr/bin/sox` | — | OK (запись + silence + генерация звуко��) |
+| sox | `/usr/bin/sox` | — | OK (recording + silence + sound generation) |
 | aplay | `/usr/bin/aplay` | — | OK |
-| piper | — | — | НЕ установлен (bootstrap) |
-| openWakeWord | — | — | НЕ установлен (bootstrap) |
+| piper | — | — | NOT installed (bootstrap) |
+| openWakeWord | — | — | NOT installed (bootstrap) |
 
-**Критичные отличия от исходной спеки:**
-- whisper-stt: файл ПЕРВЫМ аргументом — `whisper-stt-wrapper <file.wav> --language ru`
-- Запись через `sox rec` вместо `arecord` — встроенный silence detection
-- Аудиоустройство: HyperX Cloud Flight Wireless = `plughw:2,0` (mic и speakers)
+**Critical differences from original spec:**
+- whisper-stt: file as FIRST argument — `whisper-stt-wrapper <file.wav> --language ru`
+- Recording via `sox rec` instead of `arecord` — built-in silence detection
+- Audio device: HyperX Cloud Flight Wireless = `plughw:2,0` (mic and speakers)
 
-### Файлы для создания
+### Files to Create
 
 ```
 ~/voca/
@@ -61,10 +61,10 @@ Daemon сохраняет runtime-данные в `~/.openclaw/assistant/` (conf
 ├── tsconfig.json             # target: ES2022, module: NodeNext, strict
 ├── vitest.config.ts
 ├── src/
-│   ├── types.ts              # VocaConfig, VocaSession, DaemonState, все интерфейсы
+│   ├── types.ts              # VocaConfig, VocaSession, DaemonState, all interfaces
 │   ├── cli.ts                # Commander entry point
 │   ├── daemon.ts             # State machine + I/O orchestration
-│   ├── daemon-state.ts       # Чистая state machine (без I/O, тестируемая)
+│   ├── daemon-state.ts       # Pure state machine (no I/O, testable)
 │   ├── listener.ts           # Spawn/manage openWakeWord process
 │   ├── recorder.ts           # sox rec child process, WAV + silence detection
 │   ├── transcriber.ts        # whisper-stt-wrapper invocation
@@ -72,10 +72,10 @@ Daemon сохраняет runtime-данные в `~/.openclaw/assistant/` (conf
 │   ├── speaker.ts            # piper | aplay pipe
 │   ├── session.ts            # Session/profile management
 │   ├── config.ts             # Config read/write ~/.openclaw/assistant/config.json
-│   ├── sounds.ts             # Звуковые индикаторы через aplay
+│   ├── sounds.ts             # Sound indicators via aplay
 │   └── bootstrap.ts          # Interactive setup + dependency installation
 ├── listener.py               # openWakeWord Python script (PyAudio)
-├── sounds/                   # Генерируются через sox при bootstrap
+├── sounds/                   # Generated via sox during bootstrap
 │   ├── wake.wav
 │   ├── stop.wav
 │   └── error.wav
@@ -87,117 +87,117 @@ Daemon сохраняет runtime-данные в `~/.openclaw/assistant/` (conf
     └── agent.test.ts
 ```
 
-### Паттерны для повторения
+### Patterns to Follow
 
-Проект начинается с нуля — переиспользовать код нельзя. Ориентиры:
-- whisper-stt venv (`/home/priney/whisper-stt/.venv/`) — образец для создания openWakeWord venv
-- openclaw config (`~/.openclaw/openclaw.json`) — хранит timeout 900s, агенты personal/public
-- Каждый модуль: отдельный файл, child process через `spawn`/`execFile`, EventEmitter для событий
+Project starts from scratch — no code to reuse. Reference points:
+- whisper-stt venv (`/home/priney/whisper-stt/.venv/`) — template for creating openWakeWord venv
+- openclaw config (`~/.openclaw/openclaw.json`) — stores timeout 900s, agents personal/public
+- Each module: separate file, child process via `spawn`/`execFile`, EventEmitter for events
 
-### Тесты
+### Tests
 
-Создай тесты с нуля. Фреймворк: vitest (devDependency).
+Create tests from scratch. Framework: vitest (devDependency).
 
-Покрытие:
-- `daemon-state.ts` — все переходы state machine
+Coverage:
+- `daemon-state.ts` — all state machine transitions
 - `config.ts` — read/write/default
-- `session.ts` — new/increment/reset при смене профиля
-- `transcriber.ts` — парсинг stdout, обрезка "stop"/"стоп"
-- `agent.ts` — парсинг JSON ответа, обработка ошибок (mock child process)
+- `session.ts` — new/increment/reset on profile change
+- `transcriber.ts` — stdout parsing, trimming "stop"
+- `agent.ts` — JSON response parsing, error handling (mock child process)
 
 ## Requirements
 
-### Фаза 1 — Project setup + Config + Session CLI
+### Phase 1 — Project setup + Config + Session CLI
 
-1. Создать `package.json` с `"name": "@yokeloop/voca"`, `"type": "module"`, `"bin": { "voca": "./dist/cli.js" }`, scripts: build (tsc), dev (tsx src/cli.ts), test (vitest).
-2. Создать `tsconfig.json`: target ES2022, module NodeNext, moduleResolution NodeNext, strict true, outDir dist.
-3. Реализовать `src/config.ts` — readConfig, writeConfig, ensureConfigDir, defaultConfig. Путь: `~/.openclaw/assistant/config.json`.
-4. Реализовать `src/session.ts` — readSession, writeSession, newSession, generateSessionId (`asst-<unix-ts>`), incrementMessageCount. Смена профиля сбрасывает сессию.
-5. Реализовать `src/cli.ts` через commander: `session new`, `session info`, `profile list`, `profile use <id>`.
-6. Написать тесты для config и session.
+1. Create `package.json` with `"name": "@yokeloop/voca"`, `"type": "module"`, `"bin": { "voca": "./dist/cli.js" }`, scripts: build (tsc), dev (tsx src/cli.ts), test (vitest).
+2. Create `tsconfig.json`: target ES2022, module NodeNext, moduleResolution NodeNext, strict true, outDir dist.
+3. Implement `src/config.ts` — readConfig, writeConfig, ensureConfigDir, defaultConfig. Path: `~/.openclaw/assistant/config.json`.
+4. Implement `src/session.ts` — readSession, writeSession, newSession, generateSessionId (`asst-<unix-ts>`), incrementMessageCount. Changing profile resets session.
+5. Implement `src/cli.ts` via commander: `session new`, `session info`, `profile list`, `profile use <id>`.
+6. Write tests for config and session.
 
-**Проверка:** `npm run build` компилируется. `npx tsx src/cli.ts session new` создаёт session. `npx tsx src/cli.ts profile use public` переключает профиль и сбрасывает сессию. `npm test` проходит.
+**Verification:** `npm run build` compiles. `npx tsx src/cli.ts session new` creates a session. `npx tsx src/cli.ts profile use public` switches profile and resets session. `npm test` passes.
 
-### Фаза 2 — Sounds + Listener skeleton
+### Phase 2 — Sounds + Listener skeleton
 
-7. Реализовать `src/sounds.ts` — playSound(type, opts) через `aplay -D <device> <wav-file>`.
-8. Сгенерировать звуковые файлы через sox: wake.wav (880Hz 0.1s), stop.wav (880Hz 0.1s x2), error.wav (220Hz 0.3s).
-9. Реализовать `src/listener.ts` — spawnListener возвращает ListenerHandle с on('wake'/'stop'), pause() (SIGSTOP), resume() (SIGCONT), kill().
-10. Создать `listener.py` skeleton: читает stdin, при вводе "wake" → `{"event":"wake"}`, при "stop" → `{"event":"stop"}`. Для тестирования без реальных моделей.
+7. Implement `src/sounds.ts` — playSound(type, opts) via `aplay -D <device> <wav-file>`.
+8. Generate sound files via sox: wake.wav (880Hz 0.1s), stop.wav (880Hz 0.1s x2), error.wav (220Hz 0.3s).
+9. Implement `src/listener.ts` — spawnListener returns ListenerHandle with on('wake'/'stop'), pause() (SIGSTOP), resume() (SIGCONT), kill().
+10. Create `listener.py` skeleton: reads stdin, on input "wake" → `{"event":"wake"}`, on "stop" → `{"event":"stop"}`. For testing without real models.
 
-**Проверка:** `npx tsx -e "import('./src/sounds.js').then(m => m.playSound('wake', {...}))"` — слышен beep. listener.py в stdin-режиме эмитит JSON lines.
+**Verification:** `npx tsx -e "import('./src/sounds.js').then(m => m.playSound('wake', {...}))"` — beep is audible. listener.py in stdin mode emits JSON lines.
 
-### Фаза 3 — Recorder + Transcriber
+### Phase 3 — Recorder + Transcriber
 
-11. Реализовать `src/recorder.ts` — startRecording через `sox rec`. Sox автоматически останавливает запись при тишине >30s (silence detection). Максимальная длительность 2 min. Возвращает RecorderHandle: filePath, stop(), cancel().
-12. Реализовать `src/transcriber.ts` — transcribe(filePath, opts) через `execFile(whisperBin, [filePath, '--language', language])`. Обрежь trailing "stop"/"стоп" из текста.
-13. Написать тесты для transcriber (mock execFile, проверка обрезки).
+11. Implement `src/recorder.ts` — startRecording via `sox rec`. Sox automatically stops recording on silence >30s (silence detection). Maximum duration 2 min. Returns RecorderHandle: filePath, stop(), cancel().
+12. Implement `src/transcriber.ts` — transcribe(filePath, opts) via `execFile(whisperBin, [filePath, '--language', language])`. Trim trailing "stop" from text.
+13. Write tests for transcriber (mock execFile, verify trimming).
 
-**Проверка:** запись 3s → файл WAV создан. `transcribe('/tmp/test.wav', {language: 'ru'})` возвращает текст.
+**Verification:** 3s recording → WAV file created. `transcribe('/tmp/test.wav', {language: 'ru'})` returns text.
 
-### Фаза 4 — Agent + Speaker
+### Phase 4 — Agent + Speaker
 
-14. Реализовать `src/agent.ts` — queryAgent(opts) через `execFile(openclaw, ['agent', '--agent', agentId, '--session-id', sessionId, '--message', message, '--json', '--timeout', String(timeoutS)])`. Парсить JSON ответ. Timeout: 900s. При ошибке — throw AgentError.
-15. Реализовать `src/speaker.ts` — speak(opts) через pipe: `echo text → piper --model M --output_raw → aplay -D device -r 22050 -f S16_LE -c 1`. Без промежуточных файлов. await на завершение aplay. Пауза 500ms после.
-16. Написать тест для agent (mock child process, проверка парсинга).
+14. Implement `src/agent.ts` — queryAgent(opts) via `execFile(openclaw, ['agent', '--agent', agentId, '--session-id', sessionId, '--message', message, '--json', '--timeout', String(timeoutS)])`. Parse JSON response. Timeout: 900s. On error — throw AgentError.
+15. Implement `src/speaker.ts` — speak(opts) via pipe: `echo text → piper --model M --output_raw → aplay -D device -r 22050 -f S16_LE -c 1`. No intermediate files. await aplay completion. 500ms pause after.
+16. Write test for agent (mock child process, verify parsing).
 
-**Проверка:** `queryAgent({...message: 'привет'...})` возвращает ответ от OpenClaw. `speak({text: 'Привет мир', ...})` озвучивает текст (требует установленный piper).
+**Verification:** `queryAgent({...message: 'hello'...})` returns response from OpenClaw. `speak({text: 'Hello world', ...})` speaks text (requires installed piper).
 
-### Фаза 5 — State Machine
+### Phase 5 — State Machine
 
-17. Реализовать `src/daemon-state.ts` — чистая функция transition(state, event) → newState. Типы: State = IDLE|LISTENING|RECORDING|PROCESSING|SPEAKING. Events: WAKE, STOP, RECORD_CANCEL, PROCESSING_DONE, SPEAKING_DONE, ERROR.
-18. Реализовать `src/daemon.ts` — класс VocaDaemon extends EventEmitter. Метод start() запускает listener, входит в IDLE. Метод stop() — graceful shutdown. Оркестрирует все модули по state machine.
-19. Написать тесты daemon-state: все валидные переходы, отклонение невалидных.
+17. Implement `src/daemon-state.ts` — pure function transition(state, event) → newState. Types: State = IDLE|LISTENING|RECORDING|PROCESSING|SPEAKING. Events: WAKE, STOP, RECORD_CANCEL, PROCESSING_DONE, SPEAKING_DONE, ERROR.
+18. Implement `src/daemon.ts` — class VocaDaemon extends EventEmitter. Method start() spawns listener, enters IDLE. Method stop() — graceful shutdown. Orchestrates all modules via state machine.
+19. Write daemon-state tests: all valid transitions, rejection of invalid ones.
 
-**Проверка:** `npm test` — тесты state machine зелёные. `npx tsx src/cli.ts start` — daemon работает с listener.py в stdin-режиме. Ввод "wake" �� beep → запись. Ввод "stop" → double-beep → transcription → agent → TTS.
+**Verification:** `npm test` — state machine tests green. `npx tsx src/cli.ts start` — daemon runs with listener.py in stdin mode. Input "wake" → beep → recording. Input "stop" → double-beep → transcription → agent → TTS.
 
-### Фаза 6 — Bootstrap + полный listener.py
+### Phase 6 — Bootstrap + full listener.py
 
-20. Реализовать `src/bootstrap.ts` — интерактивный setup: выбор mic (из `sox --help` или `arecord -l`), speaker, профиля, wake/stop words. Установка piper (скачать aarch64 бинарь + ru_RU-irina-medium модель). Создание venv + `pip install openwakeword pyaudio`. Скачивание ONNX-моделей (hey_jarvis, stop). Копирование sounds/. Подтверждай каждую установку.
-21. Реализуй `listener.py` — реальный openWakeWord: загрузка моделей, захват аудио через PyAudio, inference, вывод JSON lines. Обе модели (wake + stop) работают одновременно.
+20. Implement `src/bootstrap.ts` — interactive setup: mic selection (from `sox --help` or `arecord -l`), speaker, profile, wake/stop words. Install piper (download aarch64 binary + ru_RU-irina-medium model). Create venv + `pip install openwakeword pyaudio`. Download ONNX models (hey_jarvis, stop). Copy sounds/. Confirm each installation.
+21. Implement `listener.py` — real openWakeWord: load models, capture audio via PyAudio, inference, emit JSON lines. Both models (wake + stop) run simultaneously.
 
-**Проверка:** `npx tsx src/cli.ts bootstrap` — устанавливает piper, venv, openWakeWord, модели. `npx tsx src/cli.ts start` — произносим "hey jarvis" → wake word detection срабатывает.
+**Verification:** `npx tsx src/cli.ts bootstrap` — installs piper, venv, openWakeWord, models. `npx tsx src/cli.ts start` — say "hey jarvis" → wake word detection triggers.
 
-### Фаза 7 — Daemon mode + полный CLI + публикация
+### Phase 7 — Daemon mode + full CLI + publishing
 
-22. Добавить `start --daemon` — fork процесса, запись PID в `~/.openclaw/assistant/daemon.pid`, статус в `~/.openclaw/assistant/daemon-state.json`.
-23. Реализовать `stop` — читает PID-файл, посылает SIGTERM. `status` — читает daemon-state.json.
-24. Graceful shutdown по SIGINT/SIGTERM: kill всех child processes (listener.py, sox, piper, aplay, openclaw).
-25. Подготовить к публикации: `.npmignore`, обновить README.md.
+22. Add `start --daemon` — fork process, write PID to `~/.openclaw/assistant/daemon.pid`, status to `~/.openclaw/assistant/daemon-state.json`.
+23. Implement `stop` — reads PID file, sends SIGTERM. `status` — reads daemon-state.json.
+24. Graceful shutdown on SIGINT/SIGTERM: kill all child processes (listener.py, sox, piper, aplay, openclaw).
+25. Prepare for publishing: `.npmignore`, update README.md.
 
-**Проверка:** полный голосовой цикл — `voca start --daemon` → "hey jarvis" → beep → фраза → "stop" → double-beep → ответ озвучен. `voca status` покажет состояние. `voca stop` завершит daemon. `npm test` — все тесты зелёные. Ctrl+C завершит процесс чисто.
+**Verification:** full voice cycle — `voca start --daemon` → "hey jarvis" → beep → phrase → "stop" → double-beep → response spoken. `voca status` shows state. `voca stop` terminates daemon. `npm test` — all tests green. Ctrl+C terminates process cleanly.
 
 ## Constraints
 
-- Не модифицировать openclaw — интеграция только через `openclaw agent` CLI
-- Runtime данные (`config.json`, `session.json`, `sounds/`, `models/`, `venv/`) — в `~/.openclaw/assistant/`, не в репозитории
-- Зависимости минимальны: `commander` (runtime), `tsx` + `vitest` + `typescript` (dev). Без express, socket.io
-- Python venv для openWakeWord — в `~/.openclaw/assistant/venv/`, не системный pip
-- TTS без промежуточных файлов — piper pipe в aplay
-- listener.py — long-lived process, SIGSTOP/SIGCONT для паузы (не перезапуск)
-- Запись через sox rec (не arecord) — встроенный silence detection
-- Звуковые файлы генерируются через sox (не скачиваются)
-- whisper-stt: файл первым аргументом — `whisper-stt-wrapper <file.wav> --language ru`
+- Do not modify openclaw — integrate only via `openclaw agent` CLI
+- Runtime data (`config.json`, `session.json`, `sounds/`, `models/`, `venv/`) — in `~/.openclaw/assistant/`, not in the repository
+- Dependencies minimal: `commander` (runtime), `tsx` + `vitest` + `typescript` (dev). No express, socket.io
+- Python venv for openWakeWord — in `~/.openclaw/assistant/venv/`, not system pip
+- TTS without intermediate files — piper pipes to aplay
+- listener.py — long-lived process, SIGSTOP/SIGCONT for pausing (not restart)
+- Recording via sox rec (not arecord) — built-in silence detection
+- Sound files generated via sox (not downloaded)
+- whisper-stt: file as first argument — `whisper-stt-wrapper <file.wav> --language ru`
 
 ## Verification
 
-- `npm run build` — компиляция без ошибок
-- `npm test` — все unit-тесты зелёные (state machine, config, session, transcriber, agent)
-- `voca bootstrap` — интерактивно настраивает mic/speaker, устанавливает piper, создаёт venv с openWakeWord
-- `voca start` — daemon запускается, listener.py стартует, состояние IDLE
-- Произнести "hey jarvis" → beep, переход в RECORDING
-- Произнести фразу + "stop" → double-beep, транскрипция, отправка в openclaw agent, озвучивание ответа
-- `voca status` — текущее состояние, sessionId, profile
-- `voca session new` — новый sessionId, счётчик сброшен
-- `voca profile use public` — профиль переключён, сессия сброшена
-- Тишина >30s при записи — отмена записи, возврат в IDLE
-- Ошибка openclaw gateway — low tone, озвучивание "Сервер недоступен"
-- Ctrl+C при `voca start` — чистое завершение всех child processes
+- `npm run build` — compiles without errors
+- `npm test` — all unit tests green (state machine, config, session, transcriber, agent)
+- `voca bootstrap` — interactively configures mic/speaker, installs piper, creates venv with openWakeWord
+- `voca start` — daemon starts, listener.py spawns, state is IDLE
+- Say "hey jarvis" → beep, transition to RECORDING
+- Say phrase + "stop" → double-beep, transcription, send to openclaw agent, speak response
+- `voca status` — current state, sessionId, profile
+- `voca session new` — new sessionId, counter reset
+- `voca profile use public` — profile switched, session reset
+- Silence >30s during recording — cancel recording, return to IDLE
+- openclaw gateway error — low tone, speak "Server unavailable"
+- Ctrl+C during `voca start` — clean termination of all child processes
 
-## Материалы
+## Materials
 
-- `docs/ai/claw-assistant-voice-daemon/claw-assistant-voice-daemon-task.md` — полная спецификация проекта
-- `openclaw agent --help` — интерфейс CLI
-- `whisper-stt-wrapper --help` — интерфейс STT (файл первым аргументом)
-- `/home/priney/.openclaw/openclaw.json` — конфигурация openclaw (timeout 900s, агенты)
-- `/home/priney/whisper-stt/.venv/` — образец Python venv для reference
+- `docs/ai/claw-assistant-voice-daemon/claw-assistant-voice-daemon-task.md` — full project specification
+- `openclaw agent --help` — CLI interface
+- `whisper-stt-wrapper --help` — STT interface (file as first argument)
+- `/home/priney/.openclaw/openclaw.json` — openclaw configuration (timeout 900s, agents)
+- `/home/priney/whisper-stt/.venv/` — Python venv reference

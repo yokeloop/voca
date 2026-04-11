@@ -18,8 +18,8 @@
 
 ## Architecture
 
-- Pattern: flat (стадия спецификации, код не написан)
-- Key dirs: docs/ (документация), src/ (планируется — исходный код)
+- Pattern: flat (specification stage, code not yet written)
+- Key dirs: docs/ (documentation), src/ (planned — source code)
 - Entry points: src/cli.ts (CLI), src/daemon.ts (daemon), listener.py (openWakeWord)
 - Layers: cli (src/cli.ts), core (src/daemon.ts), io-adapters (listener, recorder, transcriber, agent, speaker), infra (config, session, bootstrap, sounds)
 
