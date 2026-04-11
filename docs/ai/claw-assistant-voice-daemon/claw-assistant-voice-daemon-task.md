@@ -1,4 +1,4 @@
-# Voice Interface Daemon for OpenClaw on RPi5
+# VOCA — Voice Operated Claw Assistant
 
 **Slug:** claw-assistant-voice-daemon
 **Тикет:** —
@@ -7,16 +7,16 @@
 
 ## Task
 
-Build a Node.js CLI daemon `claw-assistant` in a separate repository (`~/claw-assistant`). The daemon listens continuously for a wake word, records speech, transcribes it with whisper-stt-wrapper, sends the transcript to OpenClaw agent, and speaks the response through Piper TTS.
+Build a Node.js CLI daemon `voca` in a separate repository (`~/voca`). The daemon listens continuously for a wake word, records speech, transcribes it with whisper-stt-wrapper, sends the transcript to OpenClaw agent, and speaks the response through Piper TTS.
 
 ## Context
 
 ### Архитектура области
 
-Build a new project from scratch and integrate it with existing RPi5 components:
+Build a new project from scratch and integrate it with existing system components:
 
 ```
-                    claw-assistant (Node.js daemon)
+                    voca (Node.js daemon)
                     ┌──────────────────────────────────┐
                     │                                  │
 Mic (USB) ──arecord─┤  State Machine:                  │
@@ -66,8 +66,8 @@ Mic (USB) ──arecord─┤  State Machine:                  │
 Create the following directory structure:
 
 ```
-~/claw-assistant/
-├── package.json              # bin: { "claw-assistant": "./dist/cli.js" }
+~/voca/
+├── package.json              # bin: { "voca": "./dist/cli.js" }
 ├── tsconfig.json
 ├── src/
 │   ├── cli.ts                # Entry point (commander), subcommands
@@ -129,14 +129,14 @@ Create tests from scratch. Cover:
 9. Config file `~/.openclaw/assistant/config.json` stores: inputDevice, outputDevice, profile, sessionId, wakeWord, stopWord, piper model, timeouts.
 10. Session file `~/.openclaw/assistant/session.json` stores: sessionId with format `asst-<unix-ts>`, messageCount, profile, createdAt. Changing the profile resets the session.
 11. Bootstrap: interactive setup for mic, speaker, profile, wake/stop words. Install dependencies (piper, openwakeword venv, Python deps, models) if missing, requesting confirmation before each installation.
-12. Use npm link to make the `claw-assistant` command globally available.
+12. Publish as `@yokeloop/voca` — install globally via `npm install -g @yokeloop/voca`.
 13. Create GitHub repository using `gh repo create`.
 
 ## Constraints
 
 - Do not modify openclaw — integrate only via the `openclaw agent` CLI
 - Store runtime data (`config.json`, `session.json`, `sounds/`, `models/`, `venv/`) in `~/.openclaw/assistant/`, not in the repository
-- Keep source code in `~/claw-assistant/` separate from runtime data
+- Keep source code in `~/voca/` — separate from runtime data
 - Keep Node.js dependencies minimal: `commander`, `tsx` (dev). No express, no socket.io, no unnecessary packages.
 - Use Python venv in `~/.openclaw/assistant/venv/` instead of system pip
 - Do not use intermediate files for TTS — pipe piper directly to aplay
@@ -144,17 +144,17 @@ Create tests from scratch. Cover:
 
 ## Verification
 
-- `claw-assistant bootstrap` — interactively configures mic and speaker, installs piper if missing, creates venv with openWakeWord
-- `claw-assistant start` — daemon starts, spawns openWakeWord process, enters IDLE state
+- `voca bootstrap` — interactively configures mic and speaker, installs piper if missing, creates venv with openWakeWord
+- `voca start` — daemon starts, spawns openWakeWord process, enters IDLE state
 - Say "hey jarvis" — produces beep, transitions to RECORDING state
 - Say a phrase + "stop" — produces double beep, transitions to PROCESSING state, transcribes the recording, sends it to openclaw agent, speaks the response
-- `claw-assistant status` — displays current state machine status
-- `claw-assistant session new` — creates new sessionId, resets message counter
-- `claw-assistant profile use public` — switches profile, resets session
+- `voca status` — displays current state machine status
+- `voca session new` — creates new sessionId, resets message counter
+- `voca profile use public` — switches profile, resets session
 - Silence exceeding 30s during recording — cancels recording, returns to IDLE without sending
 - Connection error to OpenClaw gateway — produces low tone, speaks "Server nedostupen"
 - `npm test` — unit tests pass for state machine, config, and session
-- Ctrl+C during `claw-assistant start` — daemon cleanly terminates all child processes
+- Ctrl+C during `voca start` — daemon cleanly terminates all child processes
 
 ## Материалы
 
