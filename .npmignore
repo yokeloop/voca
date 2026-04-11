@@ -1,0 +1,15 @@
+# Dev artifacts
+src/
+test/
+docs/
+.claude/
+.sp/
+
+# Config files
+tsconfig.json
+vitest.config.ts
+.gitignore
+
+# Markdown (except README)
+*.md
+!README.md

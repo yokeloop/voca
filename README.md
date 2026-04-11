@@ -34,18 +34,25 @@ voca start        # launch the daemon
 
 ## CLI
 
+```bash
+voca bootstrap              # Interactive setup: mic, speaker, dependencies
+voca start [--daemon]       # Start the voice assistant (foreground or daemon)
+voca stop                   # Stop the daemon
+voca status                 # Show daemon status
+
+voca session new            # Create new session
+voca session info           # Show session info (id, profile, message count)
+
+voca profile list           # List available profiles
+voca profile use <id>       # Switch active profile (resets session)
 ```
-voca bootstrap          # Interactive setup: mic, speaker, profile, wake/stop words
-voca start              # Start daemon in foreground
-voca start --daemon     # Start as background process
-voca stop               # Stop daemon
-voca status             # Current state: IDLE/LISTENING/RECORDING/PROCESSING/SPEAKING
 
-voca session new        # New session
-voca session info       # Current session-id, profile, message count
+## Development
 
-voca profile list       # List profiles (personal, public)
-voca profile use <id>   # Switch active profile
+```bash
+npm run build               # Compile TypeScript to dist/
+npm test                    # Run unit tests
+npm run dev                 # Run in development mode
 ```
 
 ## License
