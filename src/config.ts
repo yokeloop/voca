@@ -6,8 +6,6 @@ import type { VocaConfig } from './types.js';
 export const CONFIG_PATH = path.join(os.homedir(), '.openclaw/assistant/config.json');
 
 export const defaultConfig: VocaConfig = {
-  inputDevice: 'plughw:2,0',
-  outputDevice: 'plughw:2,0',
   profile: 'personal',
   wakeWord: 'hey_jarvis',
   stopWord: 'stop',

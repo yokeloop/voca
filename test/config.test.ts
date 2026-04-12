@@ -29,7 +29,6 @@ describe('config', () => {
     const read = await readConfig(configPath);
     expect(read.profile).toBe('public');
     expect(read.language).toBe('en');
-    expect(read.inputDevice).toBe(defaultConfig.inputDevice);
   });
 
   it('readConfig merges partial file over defaults', async () => {
@@ -50,13 +49,27 @@ describe('config', () => {
   });
 
   it('defaultConfig has expected fields', () => {
-    expect(defaultConfig.inputDevice).toBe('plughw:2,0');
-    expect(defaultConfig.outputDevice).toBe('plughw:2,0');
+    expect(defaultConfig.inputDevice).toBeUndefined();
+    expect(defaultConfig.outputDevice).toBeUndefined();
     expect(defaultConfig.profile).toBe('personal');
     expect(defaultConfig.wakeWord).toBe('hey_jarvis');
     expect(defaultConfig.stopWord).toBe('stop');
     expect(defaultConfig.piperModel).toContain('ru_RU-irina-medium.onnx');
     expect(defaultConfig.piperBin).toContain('.openclaw/assistant/bin/piper');
     expect(defaultConfig.language).toBe('ru');
+  });
+
+  it('readConfig returns undefined device fields when file is empty', async () => {
+    await fs.writeFile(configPath, JSON.stringify({}), 'utf-8');
+    const cfg = await readConfig(configPath);
+    expect(cfg.inputDevice).toBeUndefined();
+    expect(cfg.outputDevice).toBeUndefined();
+    expect(cfg.inputDeviceIndex).toBeUndefined();
+  });
+
+  it('readConfig preserves inputDeviceIndex from JSON', async () => {
+    await fs.writeFile(configPath, JSON.stringify({ inputDeviceIndex: 3 }), 'utf-8');
+    const cfg = await readConfig(configPath);
+    expect(cfg.inputDeviceIndex).toBe(3);
   });
 });
