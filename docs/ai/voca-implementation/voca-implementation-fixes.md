@@ -35,7 +35,7 @@
 ## Fix 3: Check and install portaudio19-dev before pip install in bootstrap
 
 **Status:** done
-**Commit:** pending `docs(voca-implementation): update docs for fix-3`
+**Commit:** `ea2db02` fix(voca-implementation): check and install portaudio19-dev before pip install
 
 **Problem:** `pip install pyaudio` failed during bootstrap on systems without `portaudio19-dev` because pyaudio requires the native PortAudio headers to compile. There was no check or prompt to install it.
 
