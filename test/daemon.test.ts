@@ -80,6 +80,7 @@ vi.mock('node:fs/promises', async (importOriginal) => {
 /* ------------------------------------------------------------------ */
 
 import { VocaDaemon } from '../src/daemon.js';
+import { spawnListener } from '../src/listener.js';
 import { playSound } from '../src/sounds.js';
 import { transcribe } from '../src/transcriber.js';
 import { queryAgent } from '../src/agent.js';
@@ -228,5 +229,44 @@ describe('VocaDaemon', () => {
       expect(daemon.getState()).toBe('IDLE');
       expect(mockListenerHandle.kill).toHaveBeenCalled();
     });
+  });
+});
+
+describe('VocaDaemon with default devices (no config fields)', () => {
+  const mockConfigDefault: VocaConfig = {
+    profile: 'personal',
+    wakeWord: 'hey_jarvis',
+    stopWord: 'стоп',
+    piperModel: 'ru_RU-irina-medium',
+    piperBin: '/usr/bin/piper',
+    language: 'ru',
+  };
+
+  let daemon: VocaDaemon;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockListenerHandle.removeAllListeners();
+    daemon = new VocaDaemon(mockConfigDefault);
+  });
+
+  it('spawns listener without deviceIndex and plays sounds without device', async () => {
+    await daemon.start();
+
+    // spawnListener received deviceIndex: undefined
+    const spawnCall = vi.mocked(spawnListener).mock.calls[0][0];
+    expect(spawnCall.deviceIndex).toBeUndefined();
+
+    // Simulate full flow
+    mockListenerHandle.emit('wake');
+    await flush();
+    expect(playSound).toHaveBeenCalledWith('wake', { device: undefined });
+
+    mockListenerHandle.emit('recorded', '/tmp/voca-rec-test.wav');
+    await flush();
+    expect(playSound).toHaveBeenCalledWith('stop', { device: undefined });
+    expect(speak).toHaveBeenCalledWith(expect.objectContaining({
+      device: undefined,
+    }));
   });
 });
