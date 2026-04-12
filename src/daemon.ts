@@ -85,6 +85,8 @@ export class VocaDaemon extends EventEmitter {
   }
 
   async stop(): Promise<void> {
+    this.activeSpeech?.interrupt();
+    this.activeSpeech = null;
     if (this.listener) {
       this.listener.kill();
       this.listener = null;
@@ -167,6 +169,10 @@ export class VocaDaemon extends EventEmitter {
       this.writeStateFile();
       console.log(`[daemon] state: ${this.state} (stop during LISTENING)`);
       this.listener?.resume();
+    } else {
+      // Stop events in SPEAKING/IDLE/PROCESSING are not actionable;
+      // listener.py already suppresses stop-word detection during SPEAKING.
+      console.log(`[daemon] ignoring stop in state ${this.state}`);
     }
   }
 

@@ -5,6 +5,8 @@ import { constants as osConstants } from 'node:os';
 import { join } from 'node:path';
 import type { ListenerHandle } from './types.js';
 
+// Linux-only real-time signal number used to notify listener.py of SPEAKING entry/exit.
+// Node maps `SIGRTMIN` string on Linux; other platforms fall back to 34 (glibc default).
 const SIGRTMIN = (osConstants.signals as Record<string, number | undefined>).SIGRTMIN ?? 34;
 
 export interface ListenerOptions {
