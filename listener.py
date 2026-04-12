@@ -125,7 +125,7 @@ def main():
     )
     parser.add_argument(
         "--wake-model",
-        default="hey_jarvis",
+        default="hey_jarvis_v0.1",
         help="Wake model name (without .onnx extension)",
     )
     parser.add_argument(
