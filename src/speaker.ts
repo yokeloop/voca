@@ -26,10 +26,10 @@ export function speak(opts: {
     });
 
     const aplayArgs = [
+      ...(opts.device !== undefined ? ['-D', opts.device] : []),
       '-r', '22050',
       '-f', 'S16_LE',
       '-c', '1',
-      ...(opts.device !== undefined ? ['-D', opts.device] : []),
     ];
     const aplay = spawn('aplay', aplayArgs, {
       stdio: ['pipe', 'inherit', 'inherit'],
