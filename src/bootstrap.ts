@@ -59,8 +59,93 @@ async function fileExists(p: string): Promise<boolean> {
   }
 }
 
+function select(options: string[], prompt: string): Promise<string> {
+  return new Promise((resolve) => {
+    let cursor = 0;
+
+    const render = () => {
+      // Move up to overwrite previous render (skip on first render)
+      if (rendered) {
+        process.stdout.write(`\x1B[${options.length}A`);
+      }
+      for (let i = 0; i < options.length; i++) {
+        process.stdout.write('\x1B[2K');
+        if (i === cursor) {
+          process.stdout.write(`  > ${options[i]}\n`);
+        } else {
+          process.stdout.write(`    ${options[i]}\n`);
+        }
+      }
+    };
+
+    let rendered = false;
+    process.stdout.write(`${prompt}\n`);
+    render();
+    rendered = true;
+
+    const wasRaw = process.stdin.isRaw;
+    const wasPaused = process.stdin.isPaused();
+    process.stdin.setRawMode(true);
+    process.stdin.resume();
+    process.stdin.setEncoding('utf8');
+
+    const onData = (key: string) => {
+      // Ctrl+C
+      if (key === '\x03') {
+        cleanup();
+        process.exit(0);
+      }
+      // Enter
+      if (key === '\r' || key === '\n') {
+        cleanup();
+        resolve(options[cursor]);
+        return;
+      }
+      // Arrow Up: \x1B[A or k
+      if (key === '\x1B[A' || key === 'k') {
+        cursor = (cursor - 1 + options.length) % options.length;
+        render();
+        return;
+      }
+      // Arrow Down: \x1B[B or j
+      if (key === '\x1B[B' || key === 'j') {
+        cursor = (cursor + 1) % options.length;
+        render();
+        return;
+      }
+    };
+
+    const cleanup = () => {
+      process.stdin.removeListener('data', onData);
+      process.stdin.setRawMode(wasRaw ?? false);
+      if (wasPaused) process.stdin.pause();
+    };
+
+    process.stdin.on('data', onData);
+  });
+}
+
+interface ParsedDevice {
+  alsa: string;
+  name: string;
+  label: string;
+}
+
+function parseDeviceList(output: string): ParsedDevice[] {
+  const devices: ParsedDevice[] = [];
+  const re = /^card\s+(\d+):\s+\w+\s+\[([^\]]+)\],\s+device\s+(\d+):/gm;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(output)) !== null) {
+    const card = m[1];
+    const name = m[2];
+    const dev = m[3];
+    const alsa = `plughw:${card},${dev}`;
+    devices.push({ alsa, name, label: `${alsa} — ${name}` });
+  }
+  return devices;
+}
+
 async function selectDevice(
-  rl: ReturnType<typeof createInterface>,
   config: VocaConfig,
   opts: { step: string; listCmd: string; listArgs: string[]; field: 'inputDevice' | 'outputDevice'; label: string },
 ): Promise<void> {
@@ -73,30 +158,34 @@ async function selectDevice(
     return;
   }
 
-  console.log(output);
-  const answer = await rl.question(`Enter ${opts.label} device (current: ${config[opts.field]}): `);
-  const trimmed = answer.trim();
-  if (trimmed) {
-    config[opts.field] = trimmed;
-    console.log(`${opts.label} device set to: ${trimmed}`);
-  } else {
+  const devices = parseDeviceList(output);
+  if (devices.length === 0) {
+    console.log('No devices found. Skipping.');
+    return;
+  }
+
+  const options = devices.map((d) => d.label);
+  options.push(`Keep current: ${config[opts.field]}`);
+
+  const selected = await select(options, `Select ${opts.label} device:`);
+
+  if (selected.startsWith('Keep current:')) {
     console.log(`Keeping current: ${config[opts.field]}`);
+  } else {
+    const device = devices.find((d) => d.label === selected);
+    if (device) {
+      config[opts.field] = device.alsa;
+      console.log(`${opts.label} device set to: ${device.alsa}`);
+    }
   }
 }
 
-async function selectProfile(rl: ReturnType<typeof createInterface>, config: VocaConfig): Promise<void> {
+async function selectProfile(config: VocaConfig): Promise<void> {
   console.log('\n=== Step 3: Select profile ===');
-  console.log('Available profiles: personal, public');
-  const answer = await rl.question(`Enter profile (current: ${config.profile}): `);
-  const trimmed = answer.trim();
-  if (trimmed === 'personal' || trimmed === 'public') {
-    config.profile = trimmed;
-    console.log(`Profile set to: ${trimmed}`);
-  } else if (trimmed) {
-    console.log(`Invalid profile "${trimmed}". Keeping current: ${config.profile}`);
-  } else {
-    console.log(`Keeping current: ${config.profile}`);
-  }
+  const options = ['personal', 'public'];
+  const selected = await select(options, `Select profile (current: ${config.profile}):`);
+  config.profile = selected;
+  console.log(`Profile set to: ${selected}`);
 }
 
 async function installPiper(rl: ReturnType<typeof createInterface>): Promise<void> {
@@ -253,15 +342,15 @@ export async function runBootstrap(): Promise<void> {
     await ensureConfigDir();
     const config = await readConfig();
 
-    await selectDevice(rl, config, {
+    await selectDevice(config, {
       step: 'Step 1: Select microphone', listCmd: 'arecord', listArgs: ['-l'],
       field: 'inputDevice', label: 'input',
     });
-    await selectDevice(rl, config, {
+    await selectDevice(config, {
       step: 'Step 2: Select speaker', listCmd: 'aplay', listArgs: ['-l'],
       field: 'outputDevice', label: 'output',
     });
-    await selectProfile(rl, config);
+    await selectProfile(config);
 
     await writeConfig(config);
     console.log('\nConfig saved.');
