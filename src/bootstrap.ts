@@ -150,6 +150,32 @@ async function selectDevice(
   opts: { step: string; listCmd: string; listArgs: string[]; field: 'inputDevice' | 'outputDevice'; label: string },
 ): Promise<void> {
   console.log(`\n=== ${opts.step} ===`);
+
+  if (opts.field === 'inputDevice') {
+    console.log(
+      'Input device: PyAudio uses the system default. For explicit override, ' +
+      'set "inputDeviceIndex" (integer) in ~/.openclaw/assistant/config.json.',
+    );
+
+    const options: string[] = [DEFAULT_OPTION];
+    if (config.inputDevice !== undefined || config.inputDeviceIndex !== undefined) {
+      const parts: string[] = [];
+      if (config.inputDevice !== undefined) parts.push(`inputDevice=${config.inputDevice}`);
+      if (config.inputDeviceIndex !== undefined) parts.push(`inputDeviceIndex=${config.inputDeviceIndex}`);
+      options.push(`Keep current: ${parts.join(', ')}`);
+    }
+
+    const selected = await select(options, 'Select input device:');
+    if (selected === DEFAULT_OPTION) {
+      delete config.inputDevice;
+      delete config.inputDeviceIndex;
+      console.log('Input device: system default');
+    } else {
+      console.log('Keeping current input device settings');
+    }
+    return;
+  }
+
   console.log('Note: ALSA plughw:X,Y indices may shift after reboot or USB re-plug. "Use system default" survives that.');
   let output: string;
   try {
@@ -161,11 +187,10 @@ async function selectDevice(
 
   const devices = parseDeviceList(output);
   if (devices.length === 0) {
-    console.log('No devices found. Skipping.');
-    return;
+    console.log('No ALSA devices listed. You can still choose system default.');
   }
 
-  const options = [DEFAULT_OPTION, ...devices.map((d) => d.label)];
+  const options: string[] = [DEFAULT_OPTION, ...devices.map((d) => d.label)];
   if (config[opts.field] !== undefined) {
     options.push(`Keep current: ${config[opts.field]}`);
   }
@@ -174,9 +199,6 @@ async function selectDevice(
 
   if (selected === DEFAULT_OPTION) {
     delete config[opts.field];
-    if (opts.field === 'inputDevice') {
-      delete config.inputDeviceIndex;
-    }
     console.log(`${opts.label} device: system default`);
     return;
   }
