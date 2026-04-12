@@ -10,8 +10,8 @@ VOCA (Voice Operated Claw Assistant) — a Node.js CLI daemon for voice control 
 src/
   cli.ts          # Entry point (commander) — bootstrap/start/stop/status/session/profile commands
   daemon.ts       # State machine: IDLE → LISTENING → RECORDING → PROCESSING → SPEAKING → IDLE
-  listener.ts     # Spawn and manage listener.py (openWakeWord child process)
-  recorder.ts     # sox rec child process, records to temporary WAV with silence detection
+  listener.ts     # Spawn and manage listener.py (openWakeWord + recording child process)
+  recorder.ts     # sox rec child process (no longer used by daemon — recording is handled by listener.py)
   transcriber.ts  # Invokes whisper-stt
   agent.ts        # Invokes openclaw agent CLI
   speaker.ts      # Pipes piper | aplay (no intermediate files)
@@ -19,11 +19,11 @@ src/
   config.ts       # Reads/writes ~/.openclaw/assistant/config.json
   sounds.ts       # Sound indicators (beep/double-beep/error tone)
   bootstrap.ts    # Interactive setup: mic, speaker, dependencies
-listener.py       # Python openWakeWord script — emits JSON lines on stdout
+listener.py       # Python openWakeWord + recording script — emits JSON lines on stdout
 sounds/           # Default sounds: wake.wav, stop.wav, error.wav
 ```
 
-**Data flow:** Mic → `listener.py` (JSON lines) → `daemon.ts` state machine → `recorder.ts` (WAV) → `transcriber.ts` (text) → `agent.ts` (OpenClaw :18789) → `speaker.ts` (piper | aplay)
+**Data flow:** Mic → `listener.py` (wake/stop detection + WAV recording via PyAudio) → `daemon.ts` state machine → `transcriber.ts` (text) → `agent.ts` (OpenClaw :18789) → `speaker.ts` (piper | aplay)
 
 **Runtime data** stored in `~/.openclaw/assistant/` (not in the repository):
 ```
@@ -86,13 +86,13 @@ echo "<text>" | piper --model ru_RU-irina-medium --output_raw | aplay -r 22050 -
 
 ## Non-obvious
 
-- **listener.py is not restarted between iterations** — the process lives for the entire daemon lifetime. During SPEAKING state it is paused (SIGSTOP/SIGCONT) to prevent self-triggering on its own voice. Uses the openwakeword 0.4.0 API (`wakeword_model_paths=`, no `inference_framework`). The stop model is optional — loaded only if its `.onnx` file exists in `~/.openclaw/assistant/models/`.
+- **listener.py is not restarted between iterations** — the process lives for the entire daemon lifetime. It handles both wake word detection and audio recording through the same PyAudio stream. SIGUSR1 signals it to start recording (transitions from wake word detection mode to recording mode), SIGUSR2 signals it to stop recording and flush the WAV file. When recording completes, it emits `{"event": "recorded", "path": "..."}` with the path to the temporary WAV file; if the recording is cancelled (silence >30s or duration >2min) it emits `{"event": "cancelled"}`. During SPEAKING state the process is paused (SIGSTOP/SIGCONT) to prevent self-triggering on its own voice. Uses the openwakeword 0.4.0 API (`wakeword_model_paths=`, no `inference_framework`). The stop model is optional — loaded only if its `.onnx` file exists in `~/.openclaw/assistant/models/`.
 
 - **OpenClaw integrates only via CLI**, not through the API directly. Binary path: `/home/priney/.npm-global/bin/openclaw`. The `--json` flag returns the response as JSON. Timeout is 900s (not the default 600s) — the agent may take long to think.
 
 - **TTS without intermediate files** — `piper` pipes directly to `aplay` (`--output_raw | aplay -r 22050 -f S16_LE -c 1`). After playback ends — 500ms pause before resuming openWakeWord.
 
-- **Recording cancels** without sending to the agent if silence >30s or duration >2min — returns to IDLE. Trailing "stop" is trimmed from the transcript before sending.
+- **Recording cancels** without sending to the agent if silence >30s or duration >2min — listener.py detects this internally and emits `{"event": "cancelled"}`, returning daemon to IDLE. Trailing "stop" is trimmed from the transcript before sending.
 
 - **Changing profile resets session** — `voca profile use public` creates a new `sessionId`. Session format: `asst-<unix-ts>`.
 
