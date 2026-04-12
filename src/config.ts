@@ -24,11 +24,19 @@ export async function readConfig(configPath: string = CONFIG_PATH): Promise<Voca
   try {
     const raw = await fs.readFile(configPath, 'utf-8');
     const parsed = JSON.parse(raw) as Partial<VocaConfig>;
-    return { ...defaultConfig, ...parsed };
+    const cfg = { ...defaultConfig, ...parsed };
+    cfg.piperModel = resolvePiperModel(cfg.piperModel);
+    return cfg;
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { ...defaultConfig };
     throw err;
   }
+}
+
+function resolvePiperModel(model: string): string {
+  if (path.isAbsolute(model) && model.endsWith('.onnx')) return model;
+  const name = model.replace(/\.onnx$/, '');
+  return path.join(os.homedir(), '.openclaw/assistant/bin', `${name}.onnx`);
 }
 
 export async function getAvailableProfiles(): Promise<string[]> {
