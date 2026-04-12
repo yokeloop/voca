@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { readConfig, writeConfig, ensureConfigDir, CONFIG_PATH } from './config.js';
+import { readConfig, writeConfig, ensureConfigDir, CONFIG_PATH, getAvailableProfiles } from './config.js';
 import type { VocaConfig } from './types.js';
 
 const ASSISTANT_DIR = path.join(os.homedir(), '.openclaw/assistant');
@@ -182,7 +182,7 @@ async function selectDevice(
 
 async function selectProfile(config: VocaConfig): Promise<void> {
   console.log('\n=== Step 3: Select profile ===');
-  const options = ['personal', 'public'];
+  const options = await getAvailableProfiles();
   const selected = await select(options, `Select profile (current: ${config.profile}):`);
   config.profile = selected;
   console.log(`Profile set to: ${selected}`);

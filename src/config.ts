@@ -31,6 +31,21 @@ export async function readConfig(configPath: string = CONFIG_PATH): Promise<Voca
   }
 }
 
+export async function getAvailableProfiles(): Promise<string[]> {
+  const openclawConfigPath = path.join(os.homedir(), '.openclaw/openclaw.json');
+  try {
+    const raw = await fs.readFile(openclawConfigPath, 'utf-8');
+    const data = JSON.parse(raw);
+    const list = data?.agents?.list;
+    if (Array.isArray(list) && list.length > 0) {
+      return list.map((a: any) => a.id).filter(Boolean);
+    }
+  } catch {
+    // openclaw config not found or invalid
+  }
+  return ['personal', 'public']; // fallback
+}
+
 export async function writeConfig(cfg: VocaConfig, configPath: string = CONFIG_PATH): Promise<void> {
   await ensureConfigDir(configPath);
   await fs.writeFile(configPath, JSON.stringify(cfg, null, 2) + '\n', 'utf-8');

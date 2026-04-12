@@ -5,14 +5,12 @@ import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
-import { readConfig, writeConfig } from './config.js';
+import { readConfig, writeConfig, getAvailableProfiles } from './config.js';
 import { readSession, resetSessionForProfile } from './session.js';
 import { VocaDaemon, PID_FILE, STATE_FILE, ASSISTANT_DIR } from './daemon.js';
 
 const require = createRequire(import.meta.url);
 const pkg = require('../package.json');
-
-const VALID_PROFILES = ['personal', 'public'];
 
 export const program = new Command();
 
@@ -48,8 +46,9 @@ const profile = program.command('profile').description('Profile management');
 profile
   .command('list')
   .description('List available profiles')
-  .action(() => {
-    for (const p of VALID_PROFILES) {
+  .action(async () => {
+    const profiles = await getAvailableProfiles();
+    for (const p of profiles) {
       console.log(p);
     }
   });
@@ -58,8 +57,9 @@ profile
   .command('use <id>')
   .description('Switch to a profile')
   .action(async (id: string) => {
-    if (!VALID_PROFILES.includes(id)) {
-      console.error(`Unknown profile: ${id}. Valid profiles: ${VALID_PROFILES.join(', ')}`);
+    const profiles = await getAvailableProfiles();
+    if (!profiles.includes(id)) {
+      console.error(`Unknown profile: ${id}. Valid profiles: ${profiles.join(', ')}`);
       process.exitCode = 1;
       return;
     }
