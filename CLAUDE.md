@@ -86,7 +86,7 @@ echo "<text>" | piper --model ru_RU-irina-medium --output_raw | aplay -r 22050 -
 
 ## Non-obvious
 
-- **listener.py is not restarted between iterations** — the process lives for the entire daemon lifetime. During SPEAKING state it is paused (SIGSTOP/SIGCONT) to prevent self-triggering on its own voice.
+- **listener.py is not restarted between iterations** — the process lives for the entire daemon lifetime. During SPEAKING state it is paused (SIGSTOP/SIGCONT) to prevent self-triggering on its own voice. Uses the openwakeword 0.4.0 API (`wakeword_model_paths=`, no `inference_framework`). The stop model is optional — loaded only if its `.onnx` file exists in `~/.openclaw/assistant/models/`.
 
 - **OpenClaw integrates only via CLI**, not through the API directly. Binary path: `/home/priney/.npm-global/bin/openclaw`. The `--json` flag returns the response as JSON. Timeout is 900s (not the default 600s) — the agent may take long to think.
 
@@ -96,6 +96,6 @@ echo "<text>" | piper --model ru_RU-irina-medium --output_raw | aplay -r 22050 -
 
 - **Changing profile resets session** — `voca profile use public` creates a new `sessionId`. Session format: `asst-<unix-ts>`.
 
-- **Bootstrap installs dependencies step by step** — piper (if missing), Python venv in `~/.openclaw/assistant/venv/`, portaudio19-dev (checked via `dpkg -s` and installed via `apt-get` if missing), openWakeWord + pyaudio, ONNX models. Confirmation is requested before each installation.
+- **Bootstrap installs dependencies step by step** — piper (if missing), Python venv in `~/.openclaw/assistant/venv/`, portaudio19-dev (checked via `dpkg -s` and installed via `apt-get` if missing), openWakeWord + pyaudio, wake word ONNX model. The wake model (`hey_jarvis_v0.1.onnx`) is copied from the installed openwakeword pip package in the venv; if not found there, it falls back to downloading from GitHub. No stop model is downloaded. Confirmation is requested before each installation.
 
 - **Sound indicators**: single beep — wake word, double beep — stop phrase, low tone — error. Default files in `sounds/`, copied to `~/.openclaw/assistant/sounds/` during bootstrap.
