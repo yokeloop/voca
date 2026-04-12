@@ -8,7 +8,7 @@ import fs from 'node:fs/promises';
 import { readConfig, writeConfig, getAvailableProfiles } from './config.js';
 import { readSession, resetSessionForProfile } from './session.js';
 import { VocaDaemon, PID_FILE, STATE_FILE, ASSISTANT_DIR } from './daemon.js';
-import { installVoice, listAvailable, listInstalled, useVoice } from './voice.js';
+import { installVoice, listAvailable, listInstalled, useVoice, voicePath } from './voice.js';
 
 const require = createRequire(import.meta.url);
 const pkg = require('../package.json');
@@ -85,7 +85,7 @@ voice
     }
     const config = await readConfig();
     for (const name of installed) {
-      const marker = config.piperModel.endsWith(`${name}.onnx`) ? '*' : ' ';
+      const marker = config.piperModel === voicePath(name) ? '*' : ' ';
       console.log(`${marker} ${name}`);
     }
   });

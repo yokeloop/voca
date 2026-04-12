@@ -39,6 +39,10 @@ export interface VoicePaths {
   jsonPath: string;
 }
 
+export function voicePath(name: string): string {
+  return path.join(PIPER_DIR, `${name}.onnx`);
+}
+
 export function deriveVoicePaths(name: string): VoicePaths {
   const parts = name.split('-');
   if (parts.length < 3) {
@@ -122,10 +126,6 @@ export async function installVoice(name: string): Promise<void> {
 }
 
 export async function useVoice(name: string): Promise<void> {
-  const catalog = await fetchCatalog();
-  if (!(name in catalog)) {
-    throw new Error(`Unknown voice: ${name}. Run: voca voice available`);
-  }
   const paths = deriveVoicePaths(name);
 
   if (!(await fileExists(paths.onnxPath))) {
