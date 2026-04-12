@@ -96,6 +96,6 @@ echo "<text>" | piper --model ru_RU-irina-medium --output_raw | aplay -r 22050 -
 
 - **Changing profile resets session** — `voca profile use public` creates a new `sessionId`. Session format: `asst-<unix-ts>`.
 
-- **Bootstrap installs dependencies step by step** — piper (if missing), Python venv in `~/.openclaw/assistant/venv/`, openWakeWord, ONNX models. Confirmation is requested before each installation.
+- **Bootstrap installs dependencies step by step** — piper (if missing), Python venv in `~/.openclaw/assistant/venv/`, portaudio19-dev (checked via `dpkg -s` and installed via `apt-get` if missing), openWakeWord + pyaudio, ONNX models. Confirmation is requested before each installation.
 
 - **Sound indicators**: single beep — wake word, double beep — stop phrase, low tone — error. Default files in `sounds/`, copied to `~/.openclaw/assistant/sounds/` during bootstrap.

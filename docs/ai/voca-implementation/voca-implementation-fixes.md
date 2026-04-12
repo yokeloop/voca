@@ -31,3 +31,18 @@
 | `src/bootstrap.ts` | `selectProfile()` now calls `getAvailableProfiles()` to populate arrow-key menu. |
 
 **Validation:** build ✅, 67 tests ✅
+
+## Fix 3: Check and install portaudio19-dev before pip install in bootstrap
+
+**Status:** done
+**Commit:** pending `docs(voca-implementation): update docs for fix-3`
+
+**Problem:** `pip install pyaudio` failed during bootstrap on systems without `portaudio19-dev` because pyaudio requires the native PortAudio headers to compile. There was no check or prompt to install it.
+
+**Changes:**
+
+| File | Description |
+|---|---|
+| `src/bootstrap.ts` | In `installPythonVenv()`: added `dpkg -s portaudio19-dev` check before pip install. If not installed, prompts user and runs `sudo apt-get install -y portaudio19-dev`. |
+
+**Validation:** build ✅, 67 tests ✅
