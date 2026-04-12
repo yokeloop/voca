@@ -6,13 +6,19 @@ Stub mode (--stub): reads lines from stdin, emits JSON events on stdout.
   Type "stop" → {"event":"stop"}
 
 Real mode: uses openWakeWord + PyAudio for continuous wake-word detection.
+Also handles recording to WAV when signalled (SIGUSR1 = start, SIGUSR2 = stop).
 """
 
 import argparse
 import json
 import os
 import signal
+import struct
 import sys
+import tempfile
+import time
+import wave
+import math
 
 
 def run_stub():
@@ -51,7 +57,8 @@ def run_real(model_dir: str, wake_model: str, stop_model: str, device_index: int
 
     # Build model paths list (stop model is optional)
     model_paths = [wake_model_path]
-    if os.path.isfile(stop_model_path):
+    has_stop_model = os.path.isfile(stop_model_path)
+    if has_stop_model:
         model_paths.append(stop_model_path)
 
     # Load openWakeWord model(s)
@@ -59,7 +66,7 @@ def run_real(model_dir: str, wake_model: str, stop_model: str, device_index: int
 
     # Derive prediction keys from model filenames (openwakeword uses basename without .onnx)
     wake_key = os.path.splitext(os.path.basename(wake_model_path))[0]
-    stop_key = os.path.splitext(os.path.basename(stop_model_path))[0] if os.path.isfile(stop_model_path) else None
+    stop_key = os.path.splitext(os.path.basename(stop_model_path))[0] if has_stop_model else None
 
     # Init PyAudio and open mic stream
     pa = pyaudio.PyAudio()
@@ -72,42 +79,178 @@ def run_real(model_dir: str, wake_model: str, stop_model: str, device_index: int
         input_device_index=device_index,
     )
 
-    # Clean shutdown on SIGTERM
+    # State
     running = True
+    paused = False
+    recording = False
 
+    # Recording state
+    rec_wav_file = None
+    rec_wav_path = None
+    rec_start_time = 0.0
+    rec_speech_detected = False
+    rec_silence_start = 0.0
+
+    # Constants
+    THRESHOLD = 0.5          # Wake/stop word detection threshold
+    RMS_THRESHOLD = 200      # RMS threshold for speech detection (int16 scale)
+    SILENCE_AFTER_SPEECH = 2.0   # Seconds of silence after speech to stop recording
+    MAX_SILENCE_NO_SPEECH = 30.0 # Seconds of silence with no speech before cancel
+    MAX_RECORDING_DURATION = 120.0  # Max recording duration in seconds
+
+    def compute_rms(audio_bytes):
+        """Compute RMS of int16 audio data."""
+        n_samples = len(audio_bytes) // 2
+        if n_samples == 0:
+            return 0
+        fmt = "<%dh" % n_samples
+        samples = struct.unpack(fmt, audio_bytes)
+        sum_sq = sum(s * s for s in samples)
+        return math.sqrt(sum_sq / n_samples)
+
+    def start_recording():
+        nonlocal recording, rec_wav_file, rec_wav_path, rec_start_time
+        nonlocal rec_speech_detected, rec_silence_start
+        recording = True
+        rec_speech_detected = False
+        rec_start_time = time.time()
+        rec_silence_start = time.time()
+        # Create temp WAV file
+        fd, rec_wav_path = tempfile.mkstemp(prefix="voca-rec-", suffix=".wav", dir="/tmp")
+        os.close(fd)
+        rec_wav_file = wave.open(rec_wav_path, "wb")
+        rec_wav_file.setnchannels(1)
+        rec_wav_file.setsampwidth(2)  # 16-bit
+        rec_wav_file.setframerate(16000)
+
+    def stop_recording_save():
+        """Stop recording and emit recorded event."""
+        nonlocal recording, rec_wav_file, rec_wav_path
+        recording = False
+        path = rec_wav_path
+        if rec_wav_file is not None:
+            rec_wav_file.close()
+            rec_wav_file = None
+        rec_wav_path = None
+        if path:
+            print(json.dumps({"event": "recorded", "path": path}), flush=True)
+
+    def cancel_recording():
+        """Cancel recording, delete file, emit cancelled event."""
+        nonlocal recording, rec_wav_file, rec_wav_path
+        recording = False
+        if rec_wav_file is not None:
+            rec_wav_file.close()
+            rec_wav_file = None
+        if rec_wav_path:
+            try:
+                os.unlink(rec_wav_path)
+            except OSError:
+                pass
+            rec_wav_path = None
+        print(json.dumps({"event": "cancelled"}), flush=True)
+
+    # Signal handlers
     def handle_sigterm(signum, frame):
         nonlocal running
         running = False
 
-    signal.signal(signal.SIGTERM, handle_sigterm)
+    def handle_sigusr1(signum, frame):
+        """SIGUSR1 = start recording."""
+        nonlocal paused
+        if not recording:
+            paused = False
+            start_recording()
 
-    # Detection threshold
-    THRESHOLD = 0.5
+    def handle_sigusr2(signum, frame):
+        """SIGUSR2 = stop recording (explicit stop)."""
+        if recording:
+            stop_recording_save()
+
+    signal.signal(signal.SIGTERM, handle_sigterm)
+    signal.signal(signal.SIGUSR1, handle_sigusr1)
+    signal.signal(signal.SIGUSR2, handle_sigusr2)
 
     try:
         while running:
+            if paused:
+                time.sleep(0.1)
+                continue
+
             # Read audio chunk from mic
-            raw = stream.read(1280, exception_on_overflow=False)
+            try:
+                raw = stream.read(1280, exception_on_overflow=False)
+            except Exception:
+                if paused or not running:
+                    continue
+                raise
             audio = np.frombuffer(raw, dtype=np.int16)
 
-            # Run inference
-            scores = model.predict(audio)
+            if recording:
+                # Write audio to WAV file
+                if rec_wav_file is not None:
+                    rec_wav_file.writeframes(raw)
 
-            # Check wake model score
-            if scores.get(wake_key, 0) > THRESHOLD:
-                print(json.dumps({"event": "wake"}), flush=True)
-                model.reset()
+                now = time.time()
+                elapsed = now - rec_start_time
 
-            # Check stop model score
-            if stop_key is not None and scores.get(stop_key, 0) > THRESHOLD:
-                print(json.dumps({"event": "stop"}), flush=True)
-                model.reset()
+                # Check max duration
+                if elapsed >= MAX_RECORDING_DURATION:
+                    cancel_recording()
+                    continue
+
+                # Compute RMS for silence detection
+                rms = compute_rms(raw)
+
+                if rms > RMS_THRESHOLD:
+                    rec_speech_detected = True
+                    rec_silence_start = now
+                else:
+                    # Silence
+                    silence_duration = now - rec_silence_start
+
+                    if rec_speech_detected and silence_duration >= SILENCE_AFTER_SPEECH:
+                        # Speech happened, then silence — done recording
+                        stop_recording_save()
+                        continue
+
+                    if not rec_speech_detected and silence_duration >= MAX_SILENCE_NO_SPEECH:
+                        # No speech detected for too long — cancel
+                        cancel_recording()
+                        continue
+
+                # Run inference for stop word detection during recording
+                if stop_key is not None:
+                    scores = model.predict(audio)
+                    if scores.get(stop_key, 0) > THRESHOLD:
+                        print(json.dumps({"event": "stop"}), flush=True)
+                        stop_recording_save()
+                        model.reset()
+                        continue
+            else:
+                # Normal wake word detection mode
+                scores = model.predict(audio)
+
+                # Check wake model score
+                if scores.get(wake_key, 0) > THRESHOLD:
+                    print(json.dumps({"event": "wake"}), flush=True)
+                    model.reset()
+
+                # Check stop model score
+                if stop_key is not None and scores.get(stop_key, 0) > THRESHOLD:
+                    print(json.dumps({"event": "stop"}), flush=True)
+                    model.reset()
 
     except KeyboardInterrupt:
         pass
     finally:
-        stream.stop_stream()
-        stream.close()
+        # Clean up recording if still active
+        if recording and rec_wav_file is not None:
+            rec_wav_file.close()
+            rec_wav_file = None
+        if not paused:
+            stream.stop_stream()
+            stream.close()
         pa.terminate()
 
 

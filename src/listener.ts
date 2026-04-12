@@ -38,6 +38,10 @@ export function spawnListener(opts: ListenerOptions): ListenerHandle {
         emitter.emit('wake');
       } else if (data.event === 'stop') {
         emitter.emit('stop');
+      } else if (data.event === 'recorded') {
+        emitter.emit('recorded', data.path);
+      } else if (data.event === 'cancelled') {
+        emitter.emit('cancelled');
       }
     } catch {
       // ignore non-JSON lines
@@ -54,14 +58,14 @@ export function spawnListener(opts: ListenerOptions): ListenerHandle {
   });
 
   return {
-    on(event: 'wake' | 'stop' | 'exit', cb: (...args: any[]) => void): void {
+    on(event: 'wake' | 'stop' | 'recorded' | 'cancelled' | 'exit', cb: (...args: any[]) => void): void {
       emitter.on(event, cb);
     },
     pause(): void {
-      if (child.pid) process.kill(child.pid, 'SIGSTOP');
+      if (child.pid) process.kill(child.pid, 'SIGUSR1');
     },
     resume(): void {
-      if (child.pid) process.kill(child.pid, 'SIGCONT');
+      if (child.pid) process.kill(child.pid, 'SIGUSR2');
     },
     kill(): void {
       child.kill('SIGTERM');

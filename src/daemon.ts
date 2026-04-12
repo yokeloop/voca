@@ -8,11 +8,9 @@ import type {
   DaemonState,
   AgentResponse,
   ListenerHandle,
-  RecorderHandle,
 } from './types.js';
 import { transition } from './daemon-state.js';
 import { spawnListener } from './listener.js';
-import { startRecording } from './recorder.js';
 import { playSound } from './sounds.js';
 import { transcribe } from './transcriber.js';
 import { queryAgent } from './agent.js';
@@ -27,7 +25,6 @@ export const STATE_FILE = path.join(ASSISTANT_DIR, 'daemon-state.json');
 export class VocaDaemon extends EventEmitter {
   private state: DaemonState = 'IDLE';
   private listener: ListenerHandle | null = null;
-  private recorder: RecorderHandle | null = null;
   private config: VocaConfig;
 
   constructor(config: VocaConfig) {
@@ -68,6 +65,14 @@ export class VocaDaemon extends EventEmitter {
       this.handleStop();
     });
 
+    this.listener.on('recorded', (filePath: string) => {
+      this.onRecorderDone(filePath);
+    });
+
+    this.listener.on('cancelled', () => {
+      this.onRecorderCancel();
+    });
+
     this.listener.on('exit', (code) => {
       console.error(`[daemon] listener process exited with code ${code}`);
       if (this.state !== 'IDLE') {
@@ -79,10 +84,6 @@ export class VocaDaemon extends EventEmitter {
   }
 
   async stop(): Promise<void> {
-    if (this.recorder) {
-      this.recorder.cancel();
-      this.recorder = null;
-    }
     if (this.listener) {
       this.listener.kill();
       this.listener = null;
@@ -129,19 +130,12 @@ export class VocaDaemon extends EventEmitter {
 
       await playSound('wake', { device: this.config.outputDevice });
 
+      // Send SIGUSR1 to listener.py to start recording
+      this.listener?.pause();
+
       this.state = transition(this.state, 'START_RECORD');
       this.writeStateFile();
       console.log(`[daemon] state: ${this.state}`);
-
-      this.recorder = startRecording({ device: this.config.inputDevice });
-
-      this.recorder.on('done', () => {
-        this.onRecorderDone();
-      });
-
-      this.recorder.on('cancel', () => {
-        this.onRecorderCancel();
-      });
     } catch (err) {
       console.error('[daemon] error in handleWake:', err);
       await this.recoverFromError();
@@ -149,9 +143,9 @@ export class VocaDaemon extends EventEmitter {
   }
 
   private handleStop(): void {
-    if (this.state === 'RECORDING' && this.recorder) {
+    if (this.state === 'RECORDING') {
       console.log('[daemon] stop phrase detected — stopping recorder');
-      this.recorder.stop();
+      this.listener?.resume();
     } else if (this.state === 'LISTENING') {
       this.state = transition(this.state, 'STOP');
       this.writeStateFile();
@@ -160,16 +154,13 @@ export class VocaDaemon extends EventEmitter {
     }
   }
 
-  private async onRecorderDone(): Promise<void> {
+  private async onRecorderDone(filePath: string): Promise<void> {
     try {
       this.state = transition(this.state, 'STOP');
       this.writeStateFile();
       console.log(`[daemon] state: ${this.state}`);
 
       await playSound('stop', { device: this.config.outputDevice });
-
-      const filePath = this.recorder?.filePath;
-      this.recorder = null;
 
       if (!filePath) {
         console.error('[daemon] no recorded file path');
@@ -198,7 +189,6 @@ export class VocaDaemon extends EventEmitter {
           this.state = 'IDLE';
         }
         this.writeStateFile();
-        this.listener?.resume();
         return;
       }
 
@@ -231,8 +221,6 @@ export class VocaDaemon extends EventEmitter {
         // non-fatal, continue speaking
       }
 
-      this.listener?.pause();
-
       try {
         await speak({
           text: response.text,
@@ -242,12 +230,9 @@ export class VocaDaemon extends EventEmitter {
         });
       } catch (err) {
         console.error('[daemon] speaker error:', err);
-        this.listener?.resume();
         await this.recoverFromError();
         return;
       }
-
-      this.listener?.resume();
 
       this.state = transition(this.state, 'SPEAKING_DONE');
       this.writeStateFile();
@@ -263,8 +248,6 @@ export class VocaDaemon extends EventEmitter {
       this.state = transition(this.state, 'RECORD_CANCEL');
       this.writeStateFile();
       console.log(`[daemon] state: ${this.state} (recording cancelled)`);
-      this.recorder = null;
-      this.listener?.resume();
     } catch (err) {
       console.error('[daemon] error in onRecorderCancel:', err);
       this.recoverFromError();
@@ -285,7 +268,6 @@ export class VocaDaemon extends EventEmitter {
     }
     this.writeStateFile();
     console.log(`[daemon] state: ${this.state} (recovered from error)`);
-    this.recorder = null;
     this.listener?.resume();
   }
 }

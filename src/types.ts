@@ -33,7 +33,7 @@ export type DaemonEvent =
   | 'ERROR';
 
 export interface ListenerHandle {
-  on(event: 'wake' | 'stop' | 'exit', cb: (...args: any[]) => void): void;
+  on(event: 'wake' | 'stop' | 'recorded' | 'cancelled' | 'exit', cb: (...args: any[]) => void): void;
   pause(): void;
   resume(): void;
   kill(): void;

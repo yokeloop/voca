@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { EventEmitter } from 'node:events';
-import type { ListenerHandle, RecorderHandle, VocaConfig } from '../src/types.js';
+import type { ListenerHandle, VocaConfig } from '../src/types.js';
 
 /* ------------------------------------------------------------------ */
 /*  Mock all I/O modules                                               */
@@ -17,18 +17,9 @@ vi.mock('../src/listener.js', () => ({
   spawnListener: vi.fn(() => mockListenerHandle),
 }));
 
-// Recorder mock — returns an EventEmitter-based handle
-let mockRecorderHandle: EventEmitter & RecorderHandle;
-function createMockRecorder(): EventEmitter & RecorderHandle {
-  return Object.assign(new EventEmitter(), {
-    filePath: '/tmp/voca-rec-test.wav',
-    stop: vi.fn(),
-    cancel: vi.fn(),
-  }) as EventEmitter & RecorderHandle;
-}
-
+// Recorder mock — kept for import compatibility but no longer used by daemon
 vi.mock('../src/recorder.js', () => ({
-  startRecording: vi.fn(() => mockRecorderHandle),
+  startRecording: vi.fn(),
 }));
 
 vi.mock('../src/sounds.js', () => ({
@@ -126,8 +117,6 @@ describe('VocaDaemon', () => {
     vi.clearAllMocks();
     // Reset the listener EventEmitter listeners from previous tests
     mockListenerHandle.removeAllListeners();
-    // Create a fresh recorder for each test
-    mockRecorderHandle = createMockRecorder();
     daemon = new VocaDaemon(mockConfig);
   });
 
@@ -143,15 +132,16 @@ describe('VocaDaemon', () => {
       mockListenerHandle.emit('wake');
       await flush();
 
-      // After wake: plays wake sound, starts recording → RECORDING
+      // After wake: plays wake sound, sends SIGUSR1 (pause) to start recording → RECORDING
       expect(playSound).toHaveBeenCalledWith('wake', { device: 'hw:0,0' });
+      expect(mockListenerHandle.pause).toHaveBeenCalled();
       expect(daemon.getState()).toBe('RECORDING');
 
-      // Simulate recorder finishing (stop phrase or silence detected)
-      mockRecorderHandle.emit('done');
+      // Simulate listener.py finishing recording and emitting 'recorded' event
+      mockListenerHandle.emit('recorded', '/tmp/voca-rec-test.wav');
       await flush();
 
-      // After done: plays stop sound, transcribes, queries agent, speaks
+      // After recorded: plays stop sound, transcribes, queries agent, speaks
       expect(playSound).toHaveBeenCalledWith('stop', { device: 'hw:0,0' });
       expect(transcribe).toHaveBeenCalledWith('/tmp/voca-rec-test.wav', { language: 'ru' });
       expect(queryAgent).toHaveBeenCalledWith({
@@ -166,10 +156,6 @@ describe('VocaDaemon', () => {
         piperModel: 'ru_RU-irina-medium',
         device: 'hw:0,0',
       });
-
-      // Listener should have been paused during speaking, then resumed
-      expect(mockListenerHandle.pause).toHaveBeenCalled();
-      expect(mockListenerHandle.resume).toHaveBeenCalled();
 
       // Final state: back to IDLE
       expect(daemon.getState()).toBe('IDLE');
@@ -186,8 +172,8 @@ describe('VocaDaemon', () => {
       await flush();
       expect(daemon.getState()).toBe('RECORDING');
 
-      // Cancel recording (silence >30s or duration >2min)
-      mockRecorderHandle.emit('cancel');
+      // Cancel recording (silence >30s or duration >2min) — emitted by listener.py
+      mockListenerHandle.emit('cancelled');
       await flush();
 
       // Should return to IDLE without transcription or agent call
@@ -195,25 +181,22 @@ describe('VocaDaemon', () => {
       expect(transcribe).not.toHaveBeenCalled();
       expect(queryAgent).not.toHaveBeenCalled();
       expect(speak).not.toHaveBeenCalled();
-
-      // Listener should be resumed
-      expect(mockListenerHandle.resume).toHaveBeenCalled();
     });
   });
 
   describe('stop during RECORDING', () => {
-    it('calls recorder.stop() when stop phrase detected during recording', async () => {
+    it('sends SIGUSR2 (resume) to stop recording when stop phrase detected', async () => {
       await daemon.start();
 
       mockListenerHandle.emit('wake');
       await flush();
       expect(daemon.getState()).toBe('RECORDING');
 
-      // Stop phrase detected while recording
+      // Stop phrase detected while recording — daemon sends SIGUSR2
       mockListenerHandle.emit('stop');
       await flush();
 
-      expect(mockRecorderHandle.stop).toHaveBeenCalled();
+      expect(mockListenerHandle.resume).toHaveBeenCalled();
     });
   });
 
@@ -234,7 +217,7 @@ describe('VocaDaemon', () => {
   });
 
   describe('daemon stop', () => {
-    it('cleans up listener and recorder on stop', async () => {
+    it('cleans up listener on stop', async () => {
       await daemon.start();
 
       mockListenerHandle.emit('wake');
@@ -244,7 +227,6 @@ describe('VocaDaemon', () => {
       await daemon.stop();
       expect(daemon.getState()).toBe('IDLE');
       expect(mockListenerHandle.kill).toHaveBeenCalled();
-      expect(mockRecorderHandle.cancel).toHaveBeenCalled();
     });
   });
 });
