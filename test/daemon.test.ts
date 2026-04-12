@@ -257,16 +257,28 @@ describe('VocaDaemon with default devices (no config fields)', () => {
     const spawnCall = vi.mocked(spawnListener).mock.calls[0][0];
     expect(spawnCall.deviceIndex).toBeUndefined();
 
-    // Simulate full flow
+    // Simulate full flow.
+    // Note: argv coverage for aplay/-D lives in test/speaker.test.ts and
+    // test/sounds.test.ts. The assertions below verify that the `device`
+    // property is literally the JS `undefined` value (not a stringified
+    // "undefined") and that the key is present in the prop bag — which
+    // catches a stringification regression at the daemon layer.
     mockListenerHandle.emit('wake');
     await flush();
-    expect(playSound).toHaveBeenCalledWith('wake', { device: undefined });
+    const wakePlayArgs = vi.mocked(playSound).mock.calls[0];
+    expect(wakePlayArgs[0]).toBe('wake');
+    expect('device' in (wakePlayArgs[1] as object)).toBe(true);
+    expect((wakePlayArgs[1] as { device: unknown }).device).toBeUndefined();
 
     mockListenerHandle.emit('recorded', '/tmp/voca-rec-test.wav');
     await flush();
-    expect(playSound).toHaveBeenCalledWith('stop', { device: undefined });
-    expect(speak).toHaveBeenCalledWith(expect.objectContaining({
-      device: undefined,
-    }));
+    const stopPlayArgs = vi.mocked(playSound).mock.calls[1];
+    expect(stopPlayArgs[0]).toBe('stop');
+    expect('device' in (stopPlayArgs[1] as object)).toBe(true);
+    expect((stopPlayArgs[1] as { device: unknown }).device).toBeUndefined();
+
+    const speakArgs = vi.mocked(speak).mock.calls[0][0];
+    expect('device' in (speakArgs as object)).toBe(true);
+    expect((speakArgs as { device: unknown }).device).toBeUndefined();
   });
 });
