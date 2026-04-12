@@ -45,6 +45,22 @@ describe('sanitizeForTts', () => {
     expect(sanitizeForTts('1. first\n2. second')).toBe('first second');
   });
 
+  it('preserves sentence punctuation after URLs', () => {
+    expect(sanitizeForTts('visit https://example.com, please')).toBe('visit Link, please');
+    expect(sanitizeForTts('see https://example.com.')).toBe('see Link.');
+    expect(sanitizeForTts('really? https://ya.ru!')).toBe('really? Link!');
+  });
+
+  it('preserves URL query strings while trimming trailing punctuation', () => {
+    expect(sanitizeForTts('go http://a.b/c?x=1, now')).toBe('go Link, now');
+  });
+
+  it('strips image markdown including the leading exclamation', () => {
+    expect(sanitizeForTts('see ![alt text](https://example.com/img.png) here')).toBe(
+      'see alt text here',
+    );
+  });
+
   it('returns empty string for empty input', () => {
     expect(sanitizeForTts('')).toBe('');
   });

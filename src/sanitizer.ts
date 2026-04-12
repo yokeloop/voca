@@ -1,6 +1,7 @@
 const FENCED_CODE_BLOCK = /```[\s\S]*?```/g;
 const URL = /\bhttps?:\/\/\S+|\bwww\.\S+/gi;
-const INLINE_LINK = /\[([^\]]+)\]\(([^)]+)\)/g;
+const URL_TRAILING_PUNCT = /[,.!?;:)\]}"']+$/;
+const INLINE_LINK = /!?\[([^\]]+)\]\(([^)]+)\)/g;
 const EMOJI = /\p{Extended_Pictographic}/gu;
 const VARIATION_SELECTOR = /[\uFE0E\uFE0F\u200D]/g;
 const MARKDOWN_PUNCT = /[*_`#>]/g;
@@ -12,7 +13,10 @@ export function sanitizeForTts(text: string): string {
   return text
     .replace(FENCED_CODE_BLOCK, ' Code block ')
     .replace(INLINE_LINK, '$1')
-    .replace(URL, ' Link ')
+    .replace(URL, (match) => {
+      const tail = match.match(URL_TRAILING_PUNCT)?.[0] ?? '';
+      return ' Link' + tail + ' ';
+    })
     .replace(EMOJI, '')
     .replace(VARIATION_SELECTOR, '')
     .replace(LIST_BULLET_LINE, '')
