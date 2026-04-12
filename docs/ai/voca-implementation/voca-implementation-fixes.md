@@ -46,3 +46,21 @@
 | `src/bootstrap.ts` | In `installPythonVenv()`: added `dpkg -s portaudio19-dev` check before pip install. If not installed, prompts user and runs `sudo apt-get install -y portaudio19-dev`. |
 
 **Validation:** build ✅, 67 tests ✅
+
+## Fix 4: Fix openwakeword 0.4.0 API compatibility and broken model download URLs
+
+**Status:** done
+**Commits:** 
+- `4ee6319` fix(voca-implementation): fix openwakeword 0.4.0 API and model download URLs
+- `200ed56` docs(voca-implementation): update docs for fix-4
+
+**Problem:** openwakeword 0.4.0 introduced breaking API changes. The `Model()` constructor changed parameter names, the old inference framework parameter was removed, and hardcoded model download URLs were broken or unavailable.
+
+**Changes:**
+
+| File | Description |
+|---|---|
+| `listener.py` | Updated `Model()` constructor: `wakeword_models` → `wakeword_model_paths`, removed `inference_framework="onnx"`. Made stop model optional (loaded only if file exists). Fixed `predict()` key lookup to use filename stems instead of CLI args. |
+| `src/bootstrap.ts` | Updated WAKE_MODEL_URL to v0.5.1/hey_jarvis_v0.1.onnx, removed STOP_MODEL_URL. Restructured `installModels()` to copy wake model from venv pip package first, with curl --fail download as fallback. Removed stop model download entirely. |
+
+**Validation:** type-check ✅, test ✅ (67/67), build ✅, python-syntax ✅
