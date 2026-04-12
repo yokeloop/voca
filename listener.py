@@ -42,19 +42,24 @@ def run_real(model_dir: str, wake_model: str, stop_model: str, device_index: int
     wake_model_path = os.path.join(model_dir, wake_model + ".onnx")
     stop_model_path = os.path.join(model_dir, stop_model + ".onnx")
 
-    for path, label in [(wake_model_path, "wake"), (stop_model_path, "stop")]:
-        if not os.path.isfile(path):
-            print(
-                f"Error: {label} model not found at {path}",
-                file=sys.stderr,
-            )
-            sys.exit(1)
+    if not os.path.isfile(wake_model_path):
+        print(
+            f"Error: wake model not found at {wake_model_path}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # Build model paths list (stop model is optional)
+    model_paths = [wake_model_path]
+    if os.path.isfile(stop_model_path):
+        model_paths.append(stop_model_path)
 
     # Load openWakeWord model(s)
-    model = openwakeword.Model(
-        wakeword_models=[wake_model_path, stop_model_path],
-        inference_framework="onnx",
-    )
+    model = openwakeword.Model(wakeword_model_paths=model_paths)
+
+    # Derive prediction keys from model filenames (openwakeword uses basename without .onnx)
+    wake_key = os.path.splitext(os.path.basename(wake_model_path))[0]
+    stop_key = os.path.splitext(os.path.basename(stop_model_path))[0] if os.path.isfile(stop_model_path) else None
 
     # Init PyAudio and open mic stream
     pa = pyaudio.PyAudio()
@@ -89,12 +94,12 @@ def run_real(model_dir: str, wake_model: str, stop_model: str, device_index: int
             scores = model.predict(audio)
 
             # Check wake model score
-            if scores.get(wake_model, 0) > THRESHOLD:
+            if scores.get(wake_key, 0) > THRESHOLD:
                 print(json.dumps({"event": "wake"}), flush=True)
                 model.reset()
 
             # Check stop model score
-            if scores.get(stop_model, 0) > THRESHOLD:
+            if stop_key is not None and scores.get(stop_key, 0) > THRESHOLD:
                 print(json.dumps({"event": "stop"}), flush=True)
                 model.reset()
 

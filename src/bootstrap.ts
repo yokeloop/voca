@@ -17,9 +17,7 @@ const PIPER_URL =
 const PIPER_VOICE_BASE =
   'https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/ru/ru_RU/irina/medium';
 const WAKE_MODEL_URL =
-  'https://github.com/dscripka/openWakeWord/releases/download/v0.6.0/hey_jarvis.onnx';
-const STOP_MODEL_URL =
-  'https://github.com/dscripka/openWakeWord/releases/download/v0.6.0/stop.onnx';
+  'https://github.com/dscripka/openWakeWord/releases/download/v0.5.1/hey_jarvis_v0.1.onnx';
 
 function run(cmd: string, args: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -293,34 +291,35 @@ async function installPythonVenv(rl: ReturnType<typeof createInterface>): Promis
 
 async function installModels(rl: ReturnType<typeof createInterface>): Promise<void> {
   console.log('\n=== Step 6: Wake word ONNX models ===');
-  const wakeModelPath = path.join(MODELS_DIR, 'hey_jarvis.onnx');
-  const stopModelPath = path.join(MODELS_DIR, 'stop.onnx');
+  const wakeModelPath = path.join(MODELS_DIR, 'hey_jarvis_v0.1.onnx');
 
-  const wakeExists = await fileExists(wakeModelPath);
-  const stopExists = await fileExists(stopModelPath);
-
-  if (wakeExists && stopExists) {
-    console.log('Wake and stop models already downloaded. Skipping.');
+  if (await fileExists(wakeModelPath)) {
+    console.log('Wake model already installed. Skipping.');
     return;
   }
 
-  if (!(await confirm(rl, 'Download missing wake/stop word ONNX models?'))) {
+  if (!(await confirm(rl, 'Wake word ONNX model not found. Install?'))) {
     console.log('Skipped.');
     return;
   }
 
   await fs.mkdir(MODELS_DIR, { recursive: true });
 
-  if (!wakeExists) {
-    console.log('Downloading hey_jarvis.onnx...');
-    await run('curl', ['-L', '-o', wakeModelPath, WAKE_MODEL_URL]);
-    console.log('Wake word model downloaded.');
-  }
+  // Primary: copy from installed openwakeword package in venv
+  const venvModelPath = path.join(
+    ASSISTANT_DIR, 'venv', 'lib', 'python3.13', 'site-packages',
+    'openwakeword', 'resources', 'models', 'hey_jarvis_v0.1.onnx',
+  );
 
-  if (!stopExists) {
-    console.log('Downloading stop.onnx...');
-    await run('curl', ['-L', '-o', stopModelPath, STOP_MODEL_URL]);
-    console.log('Stop word model downloaded.');
+  if (await fileExists(venvModelPath)) {
+    console.log('Copying hey_jarvis_v0.1.onnx from venv...');
+    await fs.copyFile(venvModelPath, wakeModelPath);
+    console.log('Wake word model installed from venv.');
+  } else {
+    // Fallback: download from GitHub
+    console.log('Downloading hey_jarvis_v0.1.onnx...');
+    await run('curl', ['--fail', '-L', '-o', wakeModelPath, WAKE_MODEL_URL]);
+    console.log('Wake word model downloaded.');
   }
 }
 
