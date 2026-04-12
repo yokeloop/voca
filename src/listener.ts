@@ -1,8 +1,11 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { EventEmitter } from 'node:events';
+import { constants as osConstants } from 'node:os';
 import { join } from 'node:path';
 import type { ListenerHandle } from './types.js';
+
+const SIGRTMIN = (osConstants.signals as Record<string, number | undefined>).SIGRTMIN ?? 34;
 
 export interface ListenerOptions {
   pythonBin?: string;
@@ -66,6 +69,12 @@ export function spawnListener(opts: ListenerOptions): ListenerHandle {
     },
     resume(): void {
       if (child.pid) process.kill(child.pid, 'SIGUSR2');
+    },
+    speakingStart(): void {
+      if (child.pid) process.kill(child.pid, SIGRTMIN);
+    },
+    speakingEnd(): void {
+      if (child.pid) process.kill(child.pid, SIGRTMIN + 1);
     },
     kill(): void {
       child.kill('SIGTERM');
