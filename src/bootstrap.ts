@@ -1,9 +1,9 @@
 import { createInterface } from 'node:readline/promises';
-import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { readConfig, writeConfig, ensureConfigDir, CONFIG_PATH, getAvailableProfiles } from './config.js';
+import { run, runCapture, fileExists } from './util.js';
 import type { VocaConfig } from './types.js';
 
 const ASSISTANT_DIR = path.join(os.homedir(), '.openclaw/assistant');
@@ -19,42 +19,9 @@ const PIPER_VOICE_BASE =
 const WAKE_MODEL_URL =
   'https://github.com/dscripka/openWakeWord/releases/download/v0.5.1/hey_jarvis_v0.1.onnx';
 
-function run(cmd: string, args: string[]): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, { stdio: 'inherit' });
-    child.on('error', reject);
-    child.on('close', (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(`${cmd} exited with code ${code}`));
-    });
-  });
-}
-
-function runCapture(cmd: string, args: string[]): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, { stdio: ['pipe', 'pipe', 'pipe'] });
-    let stdout = '';
-    child.stdout.on('data', (d: Buffer) => { stdout += d.toString(); });
-    child.on('error', reject);
-    child.on('close', (code) => {
-      if (code === 0) resolve(stdout);
-      else reject(new Error(`${cmd} exited with code ${code}`));
-    });
-  });
-}
-
 async function confirm(rl: ReturnType<typeof createInterface>, question: string): Promise<boolean> {
   const answer = await rl.question(`${question} [y/N] `);
   return answer.trim().toLowerCase() === 'y';
-}
-
-async function fileExists(p: string): Promise<boolean> {
-  try {
-    await fs.access(p);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 function select(options: string[], prompt: string): Promise<string> {
