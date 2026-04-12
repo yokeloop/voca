@@ -143,11 +143,14 @@ function parseDeviceList(output: string): ParsedDevice[] {
   return devices;
 }
 
+const DEFAULT_OPTION = 'Use system default (recommended)';
+
 async function selectDevice(
   config: VocaConfig,
   opts: { step: string; listCmd: string; listArgs: string[]; field: 'inputDevice' | 'outputDevice'; label: string },
 ): Promise<void> {
   console.log(`\n=== ${opts.step} ===`);
+  console.log('Note: ALSA plughw:X,Y indices may shift after reboot or USB re-plug. "Use system default" survives that.');
   let output: string;
   try {
     output = await runCapture(opts.listCmd, opts.listArgs);
@@ -162,19 +165,31 @@ async function selectDevice(
     return;
   }
 
-  const options = devices.map((d) => d.label);
-  options.push(`Keep current: ${config[opts.field]}`);
+  const options = [DEFAULT_OPTION, ...devices.map((d) => d.label)];
+  if (config[opts.field] !== undefined) {
+    options.push(`Keep current: ${config[opts.field]}`);
+  }
 
   const selected = await select(options, `Select ${opts.label} device:`);
 
+  if (selected === DEFAULT_OPTION) {
+    delete config[opts.field];
+    if (opts.field === 'inputDevice') {
+      delete config.inputDeviceIndex;
+    }
+    console.log(`${opts.label} device: system default`);
+    return;
+  }
+
   if (selected.startsWith('Keep current:')) {
     console.log(`Keeping current: ${config[opts.field]}`);
-  } else {
-    const device = devices.find((d) => d.label === selected);
-    if (device) {
-      config[opts.field] = device.alsa;
-      console.log(`${opts.label} device set to: ${device.alsa}`);
-    }
+    return;
+  }
+
+  const device = devices.find((d) => d.label === selected);
+  if (device) {
+    config[opts.field] = device.alsa;
+    console.log(`${opts.label} device set to: ${device.alsa}`);
   }
 }
 
