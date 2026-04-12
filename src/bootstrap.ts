@@ -252,6 +252,26 @@ async function installPythonVenv(rl: ReturnType<typeof createInterface>): Promis
     console.log('Venv created.');
   }
 
+  // Ensure portaudio19-dev is installed (required for pyaudio compilation)
+  let portaudioInstalled = false;
+  try {
+    await runCapture('dpkg', ['-s', 'portaudio19-dev']);
+    portaudioInstalled = true;
+  } catch {
+    // not installed
+  }
+
+  if (portaudioInstalled) {
+    console.log('portaudio19-dev already installed. Skipping.');
+  } else {
+    if (await confirm(rl, 'portaudio19-dev not found (required for pyaudio). Install via apt?')) {
+      await run('sudo', ['apt-get', 'install', '-y', 'portaudio19-dev']);
+      console.log('portaudio19-dev installed.');
+    } else {
+      console.log('Skipped.');
+    }
+  }
+
   // Install packages (skip if already present)
   const venvPip = path.join(VENV_DIR, 'bin/pip');
   let alreadyInstalled = false;
