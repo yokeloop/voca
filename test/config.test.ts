@@ -72,4 +72,11 @@ describe('config', () => {
     const cfg = await readConfig(configPath);
     expect(cfg.inputDeviceIndex).toBe(3);
   });
+
+  it('defaultConfig JSON omits device fields', () => {
+    const serialized = JSON.parse(JSON.stringify(defaultConfig));
+    expect('inputDevice' in serialized).toBe(false);
+    expect('outputDevice' in serialized).toBe(false);
+    expect('inputDeviceIndex' in serialized).toBe(false);
+  });
 });
