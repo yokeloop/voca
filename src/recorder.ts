@@ -24,7 +24,12 @@ export function startRecording(opts: {
     '-t', 'alsa', opts.device,
     filePath,
     'silence', '1', '0.1', '0.1%', '1', '30', '0.1%',
-  ]);
+  ], { stdio: ['pipe', 'pipe', 'pipe'] });
+
+  let stderrData = '';
+  child.stderr?.on('data', (chunk) => {
+    stderrData += chunk.toString();
+  });
 
   const timer = setTimeout(() => {
     handle.cancel();
@@ -36,6 +41,7 @@ export function startRecording(opts: {
     if (stopped || code === 0) {
       emitter.emit('done');
     } else {
+      console.error(`[recorder] sox exited with code ${code}: ${stderrData.trim()}`);
       emitter.emit('cancel');
     }
   });
