@@ -15,7 +15,7 @@ export function speak(opts: {
   text: string;
   piperBin: string;
   piperModel: string;
-  device: string;
+  device?: string;
 }): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     const piper = spawn(opts.piperBin, [
@@ -25,12 +25,13 @@ export function speak(opts: {
       stdio: ['pipe', 'pipe', 'inherit'],
     });
 
-    const aplay = spawn('aplay', [
-      '-D', opts.device,
+    const aplayArgs = [
       '-r', '22050',
       '-f', 'S16_LE',
       '-c', '1',
-    ], {
+      ...(opts.device !== undefined ? ['-D', opts.device] : []),
+    ];
+    const aplay = spawn('aplay', aplayArgs, {
       stdio: ['pipe', 'inherit', 'inherit'],
     });
 
