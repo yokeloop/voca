@@ -32,26 +32,38 @@ async function confirm(rl: ReturnType<typeof createInterface>, question: string)
 function select(options: string[], prompt: string): Promise<string> {
   return new Promise((resolve) => {
     let cursor = 0;
+    const windowSize = Math.max(3, Math.min(options.length, (process.stdout.rows ?? 20) - 4));
+    let winTop = 0;
+    let lastRendered = 0;
 
     const render = () => {
-      // Move up to overwrite previous render (skip on first render)
-      if (rendered) {
-        process.stdout.write(`\x1B[${options.length}A`);
+      // Keep cursor inside the visible window.
+      if (cursor < winTop) winTop = cursor;
+      else if (cursor >= winTop + windowSize) winTop = cursor - windowSize + 1;
+      const winBottom = Math.min(winTop + windowSize, options.length);
+
+      // Move up to overwrite the previous render block.
+      if (lastRendered > 0) {
+        process.stdout.write(`\x1B[${lastRendered}A`);
       }
-      for (let i = 0; i < options.length; i++) {
+
+      const lines: string[] = [];
+      if (winTop > 0) lines.push(`    ↑ ${winTop} more`);
+      for (let i = winTop; i < winBottom; i++) {
+        lines.push(i === cursor ? `  > ${options[i]}` : `    ${options[i]}`);
+      }
+      const hiddenBelow = options.length - winBottom;
+      if (hiddenBelow > 0) lines.push(`    ↓ ${hiddenBelow} more`);
+
+      for (const line of lines) {
         process.stdout.write('\x1B[2K');
-        if (i === cursor) {
-          process.stdout.write(`  > ${options[i]}\n`);
-        } else {
-          process.stdout.write(`    ${options[i]}\n`);
-        }
+        process.stdout.write(`${line}\n`);
       }
+      lastRendered = lines.length;
     };
 
-    let rendered = false;
     process.stdout.write(`${prompt}\n`);
     render();
-    rendered = true;
 
     const wasRaw = process.stdin.isRaw;
     const wasPaused = process.stdin.isPaused();
