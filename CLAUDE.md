@@ -16,7 +16,8 @@ src/
   agent.ts        # Invokes openclaw agent CLI
   speaker.ts      # Pipes piper | aplay (no intermediate files)
   session.ts      # Session and profile management
-  config.ts       # Reads/writes ~/.openclaw/assistant/config.json
+  config.ts       # Reads/writes <VOCA_HOME>/config.json
+  paths.ts        # Centralised storage-root resolution (VOCA_HOME + pointer file)
   sounds.ts       # Sound indicators (beep/double-beep/error tone)
   bootstrap.ts    # Interactive setup: mic, speaker, dependencies
 listener.py       # Python openWakeWord + recording script — emits JSON lines on stdout
@@ -25,16 +26,23 @@ sounds/           # Default sounds: wake.wav, stop.wav, error.wav
 
 **Data flow:** Mic → `listener.py` (wake/stop detection + WAV recording via PyAudio) → `daemon.ts` state machine → `transcriber.ts` (text) → `agent.ts` (OpenClaw :18789) → `speaker.ts` (piper | aplay)
 
-**Runtime data** stored in `~/.openclaw/assistant/` (not in the repository):
+**Runtime data** stored under `<VOCA_HOME>` (default `~/.voca`, not in the repository):
 ```
-~/.openclaw/assistant/
+<VOCA_HOME>/
   config.json     # inputDevice, outputDevice, profile, wakeWord, stopWord, piper model
   session.json    # sessionId (asst-<unix-ts>), messageCount, profile, createdAt
   sounds/         # Copied during bootstrap
   models/         # Wake word .onnx models
   venv/           # Python venv for openWakeWord
-  bin/            # piper binary + models
+  bin/            # piper binary + voice models
+  daemon.pid      # daemon PID (while running)
+  daemon-state.json
 ```
+
+**Storage-root discovery** (in order):
+1. `VOCA_HOME` environment variable (absolute path). Wins if set.
+2. Pointer file at `~/.config/voca/root` — plain text, one absolute path, written by `voca bootstrap`.
+3. Neither set — the CLI errors with `run 'voca bootstrap'`.
 
 ## Commands
 
@@ -72,7 +80,7 @@ Integration tools (already installed):
 openclaw agent --agent personal --session-id asst-<ts> --message "<text>" --json
 whisper-stt-wrapper <file.wav> --language ru
 echo "<text>" | piper --model ru_RU-irina-medium --output_raw | aplay -r 22050 -f S16_LE -c 1
-# Note: piper is not installed globally — installed to ~/.openclaw/assistant/bin/ via `voca bootstrap`
+# Note: piper is not installed globally — installed to <VOCA_HOME>/bin/ via `voca bootstrap`
 ```
 
 ## Conventions
@@ -86,7 +94,7 @@ echo "<text>" | piper --model ru_RU-irina-medium --output_raw | aplay -r 22050 -
 
 ## Non-obvious
 
-- **listener.py is not restarted between iterations** — the process lives for the entire daemon lifetime. It handles both wake word detection and audio recording through the same PyAudio stream. SIGUSR1 signals it to start recording (transitions from wake word detection mode to recording mode), SIGUSR2 signals it to stop recording and flush the WAV file. When recording completes, it emits `{"event": "recorded", "path": "..."}` with the path to the temporary WAV file; if the recording is cancelled (silence >30s or duration >2min) it emits `{"event": "cancelled"}`. During SPEAKING state the daemon sends `SIGRTMIN` (speakingStart) and `SIGRTMIN+1` (speakingEnd) to listener.py: wake detection stays active but uses a raised threshold (`SPEAKING_THRESHOLD = 0.85`) to reduce self-triggering on TTS output, and stop-word detection is disabled. When wake fires during SPEAKING, the daemon calls `speak().interrupt()` to kill `piper|aplay` and transitions directly to RECORDING without playing the wake sound. Uses the openwakeword 0.4.0 API (`wakeword_model_paths=`, no `inference_framework`). The stop model is optional — loaded only if its `.onnx` file exists in `~/.openclaw/assistant/models/`.
+- **listener.py is not restarted between iterations** — the process lives for the entire daemon lifetime. It handles both wake word detection and audio recording through the same PyAudio stream. SIGUSR1 signals it to start recording (transitions from wake word detection mode to recording mode), SIGUSR2 signals it to stop recording and flush the WAV file. When recording completes, it emits `{"event": "recorded", "path": "..."}` with the path to the temporary WAV file; if the recording is cancelled (silence >30s or duration >2min) it emits `{"event": "cancelled"}`. During SPEAKING state the daemon sends `SIGRTMIN` (speakingStart) and `SIGRTMIN+1` (speakingEnd) to listener.py: wake detection stays active but uses a raised threshold (`SPEAKING_THRESHOLD = 0.85`) to reduce self-triggering on TTS output, and stop-word detection is disabled. When wake fires during SPEAKING, the daemon calls `speak().interrupt()` to kill `piper|aplay` and transitions directly to RECORDING without playing the wake sound. Uses the openwakeword 0.4.0 API (`wakeword_model_paths=`, no `inference_framework`). The stop model is optional — loaded only if its `.onnx` file exists in `<VOCA_HOME>/models/` (daemon passes `modelsDir()` from `paths.ts` as `--model-dir`).
 
 - **OpenClaw integrates only via CLI**, not through the API directly. Binary path: `/home/priney/.npm-global/bin/openclaw`. The `--json` flag returns the response as JSON. Timeout is 900s (not the default 600s) — the agent may take long to think.
 
@@ -96,6 +104,13 @@ echo "<text>" | piper --model ru_RU-irina-medium --output_raw | aplay -r 22050 -
 
 - **Changing profile resets session** — `voca profile use public` creates a new `sessionId`. Session format: `asst-<unix-ts>`.
 
-- **Bootstrap installs dependencies step by step** — piper (if missing), Python venv in `~/.openclaw/assistant/venv/`, portaudio19-dev (checked via `dpkg -s` and installed via `apt-get` if missing), openWakeWord + pyaudio, wake word ONNX model. The wake model (`hey_jarvis_v0.1.onnx`) is copied from the installed openwakeword pip package in the venv; if not found there, it falls back to downloading from GitHub. No stop model is downloaded. Confirmation is requested before each installation.
+- **Bootstrap installs dependencies step by step** — Step 0 prompts for the storage root (default `~/.voca`), writes the pointer file at `~/.config/voca/root`, and creates the root directory. Later steps install piper (if missing), Python venv in `<VOCA_HOME>/venv/`, portaudio19-dev (checked via `dpkg -s` and installed via `apt-get` if missing), openWakeWord + pyaudio, and the wake word ONNX model. The wake model (`hey_jarvis_v0.1.onnx`) is copied from the installed openwakeword pip package in the venv; if not found there, it falls back to downloading from GitHub. No stop model is downloaded. Confirmation is requested before each installation.
 
-- **Sound indicators**: single beep — wake word, double beep — stop phrase, low tone — error. Default files in `sounds/`, copied to `~/.openclaw/assistant/sounds/` during bootstrap.
+- **Sound indicators**: single beep — wake word, double beep — stop phrase, low tone — error. Default files in `sounds/`, copied to `<VOCA_HOME>/sounds/` during bootstrap.
+
+## Migration
+
+Upgrading from the old `~/.openclaw/assistant/` layout — no automatic migration runs. Pick one:
+
+1. **Keep the old path.** Run `voca bootstrap` and type `~/.openclaw/assistant` at Step 0. The pointer file will point at the old directory and every subsequent run uses it.
+2. **Move to the new default.** Stop the daemon, then `mv ~/.openclaw/assistant ~/.voca` and run `voca bootstrap` accepting the `~/.voca` default. The config file retains its values because `piperBin` and `piperModel` are stored relative to the storage root.

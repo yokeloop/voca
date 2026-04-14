@@ -47,6 +47,28 @@ voca profile list           # List available profiles
 voca profile use <id>       # Switch active profile (resets session)
 ```
 
+## Storage layout and migration
+
+VOCA keeps its runtime data (config, session, Piper binary and voices, wake-word models, Python venv, sounds) under a single root directory. The default is `~/.voca`.
+
+**Discovery order** (first match wins):
+
+1. `VOCA_HOME` environment variable
+2. Pointer file at `~/.config/voca/root` (written by `voca bootstrap`)
+3. If neither is set, VOCA exits with an error asking you to run `voca bootstrap`
+
+**Override the root:**
+
+```bash
+export VOCA_HOME=/mnt/data/voca
+voca start
+```
+
+**Migrating from an older install** (data previously under `~/.openclaw/assistant/`):
+
+- Option A — re-bootstrap from scratch: `rm -rf ~/.openclaw/assistant` and run `voca bootstrap` again.
+- Option B — move files manually: `mv ~/.openclaw/assistant ~/.voca` and point VOCA at the new location by either running `voca bootstrap` (accept the default) or writing the path yourself to `~/.config/voca/root`.
+
 ## Development
 
 ```bash
