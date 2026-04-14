@@ -70,12 +70,12 @@ describe('transcriber', () => {
     );
   });
 
-  it('defaults language to ru', async () => {
-    mockExecFile('текст\n');
+  it('defaults language to en', async () => {
+    mockExecFile('text\n');
     await transcribe('/tmp/test.wav');
     expect(execFile).toHaveBeenCalledWith(
       '/usr/local/bin/whisper-stt-wrapper',
-      ['/tmp/test.wav', '--language', 'ru'],
+      ['/tmp/test.wav', '--language', 'en'],
       { maxBuffer: 1024 * 1024 },
       expect.any(Function),
     );

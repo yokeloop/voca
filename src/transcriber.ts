@@ -14,7 +14,7 @@ export async function transcribe(
   filePath: string,
   opts: { language?: string } = {},
 ): Promise<string> {
-  const language = opts.language ?? 'ru';
+  const language = opts.language ?? 'en';
 
   let stdout: string;
   try {
