@@ -7,7 +7,8 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import { readConfig, writeConfig, getAvailableProfiles } from './config.js';
 import { readSession, resetSessionForProfile } from './session.js';
-import { VocaDaemon, PID_FILE, STATE_FILE, ASSISTANT_DIR } from './daemon.js';
+import { VocaDaemon } from './daemon.js';
+import { pidFile, stateFile, storageRoot } from './paths.js';
 import { installVoice, listAvailable, listInstalled, useVoice, voicePath } from './voice.js';
 
 const require = createRequire(import.meta.url);
@@ -140,14 +141,14 @@ program
   .option('--daemon', 'Run as a background daemon')
   .action(async (opts: { daemon?: boolean }) => {
     if (opts.daemon) {
-      await fs.mkdir(ASSISTANT_DIR, { recursive: true });
+      await fs.mkdir(storageRoot(), { recursive: true });
       const child = spawn(
         process.execPath,
         [...process.execArgv, fileURLToPath(import.meta.url), 'start'],
         { detached: true, stdio: 'ignore' },
       );
       child.unref();
-      await fs.writeFile(PID_FILE, String(child.pid) + '\n');
+      await fs.writeFile(pidFile(), String(child.pid) + '\n');
       console.log(`Daemon started (PID: ${child.pid})`);
       process.exit(0);
       return;
@@ -175,7 +176,7 @@ program
   .action(async () => {
     let pidStr: string;
     try {
-      pidStr = await fs.readFile(PID_FILE, 'utf-8');
+      pidStr = await fs.readFile(pidFile(), 'utf-8');
     } catch {
       console.log('Daemon not running');
       return;
@@ -188,7 +189,7 @@ program
     }
     // Give the daemon a moment to clean up
     await new Promise((r) => setTimeout(r, 500));
-    try { await fs.unlink(PID_FILE); } catch { /* already removed */ }
+    try { await fs.unlink(pidFile()); } catch { /* already removed */ }
     console.log('Daemon stopped');
   });
 
@@ -198,7 +199,7 @@ program
   .action(async () => {
     let data: string;
     try {
-      data = await fs.readFile(STATE_FILE, 'utf-8');
+      data = await fs.readFile(stateFile(), 'utf-8');
     } catch {
       console.log('Daemon not running');
       return;
