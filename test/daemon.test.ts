@@ -84,6 +84,7 @@ vi.mock('node:fs/promises', async (importOriginal) => {
 /* ------------------------------------------------------------------ */
 
 import { VocaDaemon } from '../src/daemon.js';
+import { spawnListener } from '../src/listener.js';
 import { playSound } from '../src/sounds.js';
 import { transcribe } from '../src/transcriber.js';
 import { queryAgent } from '../src/agent.js';
@@ -294,5 +295,56 @@ describe('VocaDaemon', () => {
       expect(daemon.getState()).toBe('IDLE');
       expect(mockListenerHandle.kill).toHaveBeenCalled();
     });
+  });
+});
+
+describe('VocaDaemon with default devices (no config fields)', () => {
+  const mockConfigDefault: VocaConfig = {
+    profile: 'personal',
+    wakeWord: 'hey_jarvis',
+    stopWord: 'стоп',
+    piperModel: 'ru_RU-irina-medium',
+    piperBin: '/usr/bin/piper',
+    language: 'ru',
+  };
+
+  let daemon: VocaDaemon;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockListenerHandle.removeAllListeners();
+    daemon = new VocaDaemon(mockConfigDefault);
+  });
+
+  it('spawns listener without deviceIndex and plays sounds without device', async () => {
+    await daemon.start();
+
+    // spawnListener received deviceIndex: undefined
+    const spawnCall = vi.mocked(spawnListener).mock.calls[0][0];
+    expect(spawnCall.deviceIndex).toBeUndefined();
+
+    // Simulate full flow.
+    // Note: argv coverage for aplay/-D lives in test/speaker.test.ts and
+    // test/sounds.test.ts. The assertions below verify that the `device`
+    // property is literally the JS `undefined` value (not a stringified
+    // "undefined") and that the key is present in the prop bag — which
+    // catches a stringification regression at the daemon layer.
+    mockListenerHandle.emit('wake');
+    await flush();
+    const wakePlayArgs = vi.mocked(playSound).mock.calls[0];
+    expect(wakePlayArgs[0]).toBe('wake');
+    expect('device' in (wakePlayArgs[1] as object)).toBe(true);
+    expect((wakePlayArgs[1] as { device: unknown }).device).toBeUndefined();
+
+    mockListenerHandle.emit('recorded', '/tmp/voca-rec-test.wav');
+    await flush();
+    const stopPlayArgs = vi.mocked(playSound).mock.calls[1];
+    expect(stopPlayArgs[0]).toBe('stop');
+    expect('device' in (stopPlayArgs[1] as object)).toBe(true);
+    expect((stopPlayArgs[1] as { device: unknown }).device).toBeUndefined();
+
+    const speakArgs = vi.mocked(speak).mock.calls[0][0];
+    expect('device' in (speakArgs as object)).toBe(true);
+    expect((speakArgs as { device: unknown }).device).toBeUndefined();
   });
 });

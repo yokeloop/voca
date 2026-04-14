@@ -20,7 +20,7 @@ export function speak(opts: {
   text: string;
   piperBin: string;
   piperModel: string;
-  device: string;
+  device?: string;
 }): SpeechHandle {
   let settled = false;
   let resolveDone!: () => void;
@@ -38,12 +38,13 @@ export function speak(opts: {
     stdio: ['pipe', 'pipe', 'inherit'],
   });
 
-  const aplay = spawn('aplay', [
-    '-D', opts.device,
+  const aplayArgs = [
+    ...(opts.device !== undefined ? ['-D', opts.device] : []),
     '-r', '22050',
     '-f', 'S16_LE',
     '-c', '1',
-  ], {
+  ];
+  const aplay = spawn('aplay', aplayArgs, {
     stdio: ['pipe', 'inherit', 'inherit'],
   });
 

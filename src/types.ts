@@ -1,6 +1,7 @@
 export interface VocaConfig {
-  inputDevice: string;
-  outputDevice: string;
+  inputDevice?: string;
+  outputDevice?: string;
+  inputDeviceIndex?: number;
   profile: string;
   wakeWord: string;
   stopWord: string;

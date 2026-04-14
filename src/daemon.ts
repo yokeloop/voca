@@ -51,7 +51,7 @@ export class VocaDaemon extends EventEmitter {
       stub: useStub,
       pythonBin: useStub ? undefined : venvPython,
       modelDir: path.join(ASSISTANT_DIR, 'models'),
-      deviceIndex: useStub ? undefined : 0,
+      deviceIndex: useStub ? undefined : this.config.inputDeviceIndex,
     });
 
     this.state = 'IDLE';

@@ -17,10 +17,13 @@ export function soundFile(type: SoundType): string {
 
 export function playSound(
   type: SoundType,
-  opts: { device: string },
+  opts: { device?: string },
 ): Promise<void> {
   return new Promise((resolve, reject) => {
-    execFile('aplay', ['-D', opts.device, soundFile(type)], (error) => {
+    const args = opts.device !== undefined
+      ? ['-D', opts.device, soundFile(type)]
+      : [soundFile(type)];
+    execFile('aplay', args, (error) => {
       if (error) reject(error);
       else resolve();
     });
