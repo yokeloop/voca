@@ -1,9 +1,9 @@
 # Allow selecting alternative Piper TTS voices
 
 **Slug:** 2-piper-voice-selection
-**Тикет:** https://github.com/yokeloop/voca/issues/2
-**Сложность:** medium
-**Тип:** general
+**Ticket:** https://github.com/yokeloop/voca/issues/2
+**Complexity:** medium
+**Type:** general
 
 ## Task
 
@@ -11,7 +11,7 @@ Add a `voca voice` CLI command group (`list`, `available`, `use`, `install`) tha
 
 ## Context
 
-### Архитектура области
+### Area architecture
 
 Voice flows as a config value through the daemon:
 
@@ -32,7 +32,7 @@ Voice names follow `<lang_code>-<name>-<quality>` (e.g. `ru_RU-irina-medium`, `e
 
 Catalog source: `https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/voices.json`. Keys are full voice names; each entry carries `language.code`, `quality`, `files`.
 
-### Файлы для изменения
+### Files to change
 
 - `src/cli.ts:44–72` — mirror the `profile` subcommand block to register `voice` with four actions. Import the new voice module instead of inlining handlers.
 - `src/cli.ts:8` — import the new voice module.
@@ -44,14 +44,14 @@ Catalog source: `https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/voic
 - **new** `test/voice.test.ts` — cover HF URL construction, catalog parsing, language filter, and `installVoice` path resolution (mock network).
 - `test/config.test.ts:58` — leave unchanged; default voice stays the same.
 
-### Паттерны для повторения
+### Patterns to follow
 
 - **Subcommand group structure** (`cli.ts:44–72`): `program.command('voice').description(...)` as parent; `.command('list')`, `.command('available')`, `.command('use <name>')`, `.command('install <name>')` with `.action(async () => { ... })` handlers that `readConfig()` → mutate → `writeConfig()`. On invalid input, `console.error` then `process.exitCode = 1; return`. Match the "unknown X: Valid X: ..." phrasing from `profile use`.
 - **Download** (`bootstrap.ts:205, 227, 230`): `run('curl', ['-L', '-o', <path>, <url>])`. Reuse the exported `run()` helper — move it from bootstrap.ts into a shared module or re-export from `voice.ts`.
 - **File existence check**: `fileExists()` at `bootstrap.ts:51–58` — extract to a shared util or duplicate.
 - **Catalog fetch**: use Node 20's global `fetch` (no new dep). Cache the parsed JSON in-process for the CLI invocation's lifetime — single-shot commands need no persistent cache.
 
-### Тесты
+### Tests
 
 - `test/config.test.ts` covers config read/write and the `piperModel` default — do not regress.
 - No existing tests for `speaker.ts` or `bootstrap.ts`. The new voice logic is the only mandatory test target this task: catalog parsing, HF URL derivation, language filter, and the `.onnx.json` sample-rate extraction used by `speaker.ts`.
@@ -89,7 +89,7 @@ Catalog source: `https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/voic
 - Deleting `<voice>.onnx.json` and attempting to speak → `SpeakerError` names the voice; the daemon does not fall back to 22050.
 - Offline run of `voca voice available` → fails with a clear network error and non-zero exit; installed voices remain usable.
 
-## Материалы
+## Materials
 
 - [GitHub issue #2](https://github.com/yokeloop/voca/issues/2)
 - `src/cli.ts:44-72` — profile subcommand analog

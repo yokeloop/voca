@@ -1,4 +1,4 @@
-# Allow selecting alternative Piper TTS voices — план реализации
+# Allow selecting alternative Piper TTS voices — implementation plan
 
 **Task:** docs/ai/2-piper-voice-selection/2-piper-voice-selection-task.md
 **Complexity:** medium
@@ -9,39 +9,39 @@
 
 ### DD-1: Shared utility module location
 
-**Решение:** Create `src/util.ts` exporting `run()` and `fileExists()`; move them out of `src/bootstrap.ts` and import from both `bootstrap.ts` and the new `src/voice.ts`.
-**Обоснование:** Task file mandates that `voice.ts` stay decoupled from the daemon runtime and reuse `run()` (`bootstrap.ts:22-31`) and `fileExists()` (`bootstrap.ts:51-58`). Extracting avoids a dependency from `voice.ts` back into `bootstrap.ts`.
-**Альтернатива:** Re-export from `voice.ts` — inverts the natural dependency direction (bootstrap would import voice logic just for plumbing).
+**Decision:** Create `src/util.ts` exporting `run()` and `fileExists()`; move them out of `src/bootstrap.ts` and import from both `bootstrap.ts` and the new `src/voice.ts`.
+**Rationale:** Task file mandates that `voice.ts` stay decoupled from the daemon runtime and reuse `run()` (`bootstrap.ts:22-31`) and `fileExists()` (`bootstrap.ts:51-58`). Extracting avoids a dependency from `voice.ts` back into `bootstrap.ts`.
+**Alternative:** Re-export from `voice.ts` — inverts the natural dependency direction (bootstrap would import voice logic just for plumbing).
 
 ### DD-2: Catalog fetch and caching
 
-**Решение:** Use Node 20 global `fetch()` once per CLI invocation; cache the parsed JSON in a module-level `let catalogCache: CatalogMap | null` inside `voice.ts`. No persistent cache on disk.
-**Обоснование:** Task file requires `fetch` (no new deps) and each CLI command is a single-shot process, so in-process caching is enough to avoid double fetches when `useVoice()` calls both `fetchCatalog()` and `installVoice()`.
-**Альтернатива:** Cache to `~/.openclaw/assistant/voices.json` — adds staleness problems and extra IO for a rare command.
+**Decision:** Use Node 20 global `fetch()` once per CLI invocation; cache the parsed JSON in a module-level `let catalogCache: CatalogMap | null` inside `voice.ts`. No persistent cache on disk.
+**Rationale:** Task file requires `fetch` (no new deps) and each CLI command is a single-shot process, so in-process caching is enough to avoid double fetches when `useVoice()` calls both `fetchCatalog()` and `installVoice()`.
+**Alternative:** Cache to `~/.openclaw/assistant/voices.json` — adds staleness problems and extra IO for a rare command.
 
 ### DD-3: HF URL derivation
 
-**Решение:** Derive URL path segments from voice name alone (`<lang_code>-<name>-<quality>` → `<lang>/<lang_code>/<name>/<quality>/<name>.onnx[.json]`). Treat the catalog's `voices.json` as membership check only, not path source.
-**Обоснование:** Task file prescribes this derivation verbatim. Catalog `files` entries add complexity (per-file paths) for no gain — HF repo layout is stable under the `v1.0.0` ref.
-**Альтернатива:** Use catalog `files` key — correct even if repo layout changes, but larger parser and no current need.
+**Decision:** Derive URL path segments from voice name alone (`<lang_code>-<name>-<quality>` → `<lang>/<lang_code>/<name>/<quality>/<name>.onnx[.json]`). Treat the catalog's `voices.json` as membership check only, not path source.
+**Rationale:** Task file prescribes this derivation verbatim. Catalog `files` entries add complexity (per-file paths) for no gain — HF repo layout is stable under the `v1.0.0` ref.
+**Alternative:** Use catalog `files` key — correct even if repo layout changes, but larger parser and no current need.
 
 ### DD-4: Sample rate source in speaker
 
-**Решение:** In `speak()`, read the sibling `<piperModel>.json` via `fs.readFile` at the start of each call, parse `audio.sample_rate`, pass to `aplay -r`. Throw `SpeakerError` if missing or malformed — no silent fallback.
-**Обоснование:** Task file requires per-call derivation with no `config.json` field for rate. Reading once per utterance is cheap (JSON < 1 KB) and keeps voice switches instant without daemon plumbing.
-**Альтернатива:** Cache rate in `config.piperSampleRate` at `voice use` time — adds a new config field and drifts if the user edits the .onnx.json manually.
+**Decision:** In `speak()`, read the sibling `<piperModel>.json` via `fs.readFile` at the start of each call, parse `audio.sample_rate`, pass to `aplay -r`. Throw `SpeakerError` if missing or malformed — no silent fallback.
+**Rationale:** Task file requires per-call derivation with no `config.json` field for rate. Reading once per utterance is cheap (JSON < 1 KB) and keeps voice switches instant without daemon plumbing.
+**Alternative:** Cache rate in `config.piperSampleRate` at `voice use` time — adds a new config field and drifts if the user edits the .onnx.json manually.
 
 ### DD-5: Catalog fetch error handling
 
-**Решение:** On `fetch` failure (network, non-200, JSON parse error), throw a typed error from `fetchCatalog()`; CLI handlers in `cli.ts` catch it, print a short message, and `process.exitCode = 1`. Locally installed voices remain usable because `voca voice list` does not call `fetchCatalog()`.
-**Обоснование:** Matches the offline-safe requirement in Verification and keeps error surface local to commands that need network.
-**Альтернатива:** Fall back to an empty catalog — silently hides network issues and breaks `install`/`use`.
+**Decision:** On `fetch` failure (network, non-200, JSON parse error), throw a typed error from `fetchCatalog()`; CLI handlers in `cli.ts` catch it, print a short message, and `process.exitCode = 1`. Locally installed voices remain usable because `voca voice list` does not call `fetchCatalog()`.
+**Rationale:** Matches the offline-safe requirement in Verification and keeps error surface local to commands that need network.
+**Alternative:** Fall back to an empty catalog — silently hides network issues and breaks `install`/`use`.
 
 ### DD-6: `voice use` when voice already active
 
-**Решение:** No-op detection — if `<resolved new path>` equals current `config.piperModel`, print `Already using voice: <name>` and exit 0 without rewriting the config.
-**Обоснование:** Cheap UX, avoids a pointless restart hint. Matches the "quiet on no-op" vibe of the rest of the CLI.
-**Альтернатива:** Always write config and print restart hint — noisy false positive.
+**Decision:** No-op detection — if `<resolved new path>` equals current `config.piperModel`, print `Already using voice: <name>` and exit 0 without rewriting the config.
+**Rationale:** Cheap UX, avoids a pointless restart hint. Matches the "quiet on no-op" vibe of the rest of the CLI.
+**Alternative:** Always write config and print restart hint — noisy false positive.
 
 ## Tasks
 
