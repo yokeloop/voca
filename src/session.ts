@@ -1,9 +1,9 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import os from 'node:os';
 import type { VocaSession } from './types.js';
+import { sessionPath } from './paths.js';
 
-export const SESSION_PATH = path.join(os.homedir(), '.openclaw/assistant/session.json');
+export { sessionPath };
 
 let sessionCounter = 0;
 
@@ -20,9 +20,9 @@ export function newSession(profile: string): VocaSession {
   };
 }
 
-export async function readSession(sessionPath: string = SESSION_PATH): Promise<VocaSession> {
+export async function readSession(file: string = sessionPath()): Promise<VocaSession> {
   try {
-    const raw = await fs.readFile(sessionPath, 'utf-8');
+    const raw = await fs.readFile(file, 'utf-8');
     return JSON.parse(raw) as VocaSession;
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return newSession('personal');
@@ -30,20 +30,20 @@ export async function readSession(sessionPath: string = SESSION_PATH): Promise<V
   }
 }
 
-export async function writeSession(s: VocaSession, sessionPath: string = SESSION_PATH): Promise<void> {
-  await fs.mkdir(path.dirname(sessionPath), { recursive: true });
-  await fs.writeFile(sessionPath, JSON.stringify(s, null, 2) + '\n', 'utf-8');
+export async function writeSession(s: VocaSession, file: string = sessionPath()): Promise<void> {
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  await fs.writeFile(file, JSON.stringify(s, null, 2) + '\n', 'utf-8');
 }
 
-export async function incrementMessageCount(sessionPath: string = SESSION_PATH): Promise<VocaSession> {
-  const session = await readSession(sessionPath);
+export async function incrementMessageCount(file: string = sessionPath()): Promise<VocaSession> {
+  const session = await readSession(file);
   session.messageCount += 1;
-  await writeSession(session, sessionPath);
+  await writeSession(session, file);
   return session;
 }
 
-export async function resetSessionForProfile(profile: string, sessionPath: string = SESSION_PATH): Promise<VocaSession> {
+export async function resetSessionForProfile(profile: string, file: string = sessionPath()): Promise<VocaSession> {
   const session = newSession(profile);
-  await writeSession(session, sessionPath);
+  await writeSession(session, file);
   return session;
 }

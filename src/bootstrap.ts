@@ -2,20 +2,25 @@ import { createInterface } from 'node:readline/promises';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { readConfig, writeConfig, ensureConfigDir, CONFIG_PATH, getAvailableProfiles } from './config.js';
+import { readConfig, writeConfig, ensureConfigDir, configPath, getAvailableProfiles } from './config.js';
 import { run, runCapture, fileExists } from './util.js';
-import { installVoice } from './voice.js';
+import { installVoice, listAvailable, listInstalled } from './voice.js';
+import { binDir, modelsDir, soundsDir, storageRoot, venvDir, writePointerFile } from './paths.js';
 import type { VocaConfig } from './types.js';
 
-const ASSISTANT_DIR = path.join(os.homedir(), '.openclaw/assistant');
-const VENV_DIR = path.join(ASSISTANT_DIR, 'venv');
-const PIPER_DIR = path.join(ASSISTANT_DIR, 'bin');
-const MODELS_DIR = path.join(ASSISTANT_DIR, 'models');
-const SOUNDS_DIR = path.join(ASSISTANT_DIR, 'sounds');
+const DEFAULT_ROOT = path.join(os.homedir(), '.voca');
 
 const PIPER_URL =
   'https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_linux_aarch64.tar.gz';
-const DEFAULT_VOICE = 'ru_RU-irina-medium';
+// Universal fallback list used when the HF catalog is unreachable.
+// Keep voice names in sync with https://huggingface.co/rhasspy/piper-voices —
+// if an entry here disappears upstream, bootstrap will fail mid-install.
+const FALLBACK_VOICES = [
+  'en_US-lessac-medium',
+  'en_US-amy-medium',
+  'ru_RU-irina-medium',
+  'de_DE-thorsten-medium',
+];
 const WAKE_MODEL_URL =
   'https://github.com/dscripka/openWakeWord/releases/download/v0.5.1/hey_jarvis_v0.1.onnx';
 
@@ -27,26 +32,38 @@ async function confirm(rl: ReturnType<typeof createInterface>, question: string)
 function select(options: string[], prompt: string): Promise<string> {
   return new Promise((resolve) => {
     let cursor = 0;
+    const windowSize = computeWindowSize(options.length, process.stdout.rows);
+    let winTop = 0;
+    let lastRendered = 0;
 
     const render = () => {
-      // Move up to overwrite previous render (skip on first render)
-      if (rendered) {
-        process.stdout.write(`\x1B[${options.length}A`);
+      // Keep cursor inside the visible window.
+      if (cursor < winTop) winTop = cursor;
+      else if (cursor >= winTop + windowSize) winTop = cursor - windowSize + 1;
+      const winBottom = Math.min(winTop + windowSize, options.length);
+
+      // Move up to overwrite the previous render block.
+      if (lastRendered > 0) {
+        process.stdout.write(`\x1B[${lastRendered}A`);
       }
-      for (let i = 0; i < options.length; i++) {
+
+      const lines: string[] = [];
+      if (winTop > 0) lines.push(`    ↑ ${winTop} more`);
+      for (let i = winTop; i < winBottom; i++) {
+        lines.push(i === cursor ? `  > ${options[i]}` : `    ${options[i]}`);
+      }
+      const hiddenBelow = options.length - winBottom;
+      if (hiddenBelow > 0) lines.push(`    ↓ ${hiddenBelow} more`);
+
+      for (const line of lines) {
         process.stdout.write('\x1B[2K');
-        if (i === cursor) {
-          process.stdout.write(`  > ${options[i]}\n`);
-        } else {
-          process.stdout.write(`    ${options[i]}\n`);
-        }
+        process.stdout.write(`${line}\n`);
       }
+      lastRendered = lines.length;
     };
 
-    let rendered = false;
     process.stdout.write(`${prompt}\n`);
     render();
-    rendered = true;
 
     const wasRaw = process.stdin.isRaw;
     const wasPaused = process.stdin.isPaused();
@@ -121,7 +138,7 @@ async function selectDevice(
   if (opts.field === 'inputDevice') {
     console.log(
       'Input device: PyAudio uses the system default. For explicit override, ' +
-      'set "inputDeviceIndex" (integer) in ~/.openclaw/assistant/config.json.',
+      `set "inputDeviceIndex" (integer) in ${configPath()}.`,
     );
 
     const options: string[] = [DEFAULT_OPTION];
@@ -190,11 +207,15 @@ async function selectProfile(config: VocaConfig): Promise<void> {
   console.log(`Profile set to: ${selected}`);
 }
 
-async function installPiper(rl: ReturnType<typeof createInterface>): Promise<void> {
+async function installPiper(
+  rl: ReturnType<typeof createInterface>,
+  config: VocaConfig,
+): Promise<void> {
   console.log('\n=== Step 4: Piper TTS ===');
-  const piperBin = path.join(PIPER_DIR, 'piper');
+  const piperDir = binDir();
+  const piperExe = path.join(piperDir, 'piper');
 
-  if (await fileExists(piperBin)) {
+  if (await fileExists(piperExe)) {
     console.log('Piper already installed. Skipping.');
   } else {
     if (!(await confirm(rl, 'Piper not found. Download and install?'))) {
@@ -202,36 +223,155 @@ async function installPiper(rl: ReturnType<typeof createInterface>): Promise<voi
       return;
     }
 
-    await fs.mkdir(PIPER_DIR, { recursive: true });
-    const tarPath = path.join(ASSISTANT_DIR, 'piper_linux_aarch64.tar.gz');
+    await fs.mkdir(piperDir, { recursive: true });
+    const tarPath = path.join(storageRoot(), 'piper_linux_aarch64.tar.gz');
 
     console.log('Downloading piper...');
     await run('curl', ['-L', '-o', tarPath, PIPER_URL]);
 
     console.log('Extracting...');
-    await run('tar', ['-xzf', tarPath, '-C', PIPER_DIR, '--strip-components=1']);
+    await run('tar', ['-xzf', tarPath, '-C', piperDir, '--strip-components=1']);
 
     await fs.unlink(tarPath).catch(() => {});
     console.log('Piper installed.');
   }
 
-  // Voice model
-  const onnxPath = path.join(PIPER_DIR, `${DEFAULT_VOICE}.onnx`);
+  await selectVoice(config);
+}
 
-  if (await fileExists(onnxPath)) {
-    console.log('Piper voice model already downloaded. Skipping.');
+function setActiveVoice(config: VocaConfig, name: string): void {
+  const relative = `bin/${name}.onnx`;
+  if (config.piperModel !== relative) {
+    config.piperModel = relative;
+  }
+  console.log(`Active voice: ${name}`);
+}
+
+function currentVoiceName(config: VocaConfig): string {
+  return path.basename(config.piperModel).replace(/\.onnx$/, '');
+}
+
+export function languageOf(voiceName: string): string {
+  return voiceName.split('_')[0].toLowerCase();
+}
+
+export function computeWindowSize(optionsCount: number, rows: number | undefined): number {
+  const usable = Math.max(1, (rows ?? 20) - 4);
+  return Math.min(optionsCount, usable);
+}
+
+async function promptLanguage(
+  config: VocaConfig,
+  available: string[] | null,
+): Promise<string | null> {
+  const source = available ?? FALLBACK_VOICES.map(languageOf);
+  const seen = new Set<string>();
+  for (const lang of source) seen.add(lang);
+  const pool = Array.from(seen).sort();
+
+  const options: string[] = [];
+  const current = config.language;
+  const CURRENT_LABEL = current ? `${current} (current)` : null;
+  if (CURRENT_LABEL) options.push(CURRENT_LABEL);
+  for (const lang of pool) {
+    if (lang === current) continue;
+    options.push(lang);
+  }
+  const SKIP = 'Skip voice install';
+  options.push(SKIP);
+
+  const selected = await select(options, 'Select Piper language:');
+  if (selected === SKIP) return null;
+  if (CURRENT_LABEL && selected === CURRENT_LABEL) return current as string;
+  return selected;
+}
+
+async function selectVoice(config: VocaConfig): Promise<void> {
+  const current = currentVoiceName(config);
+  const installed = await listInstalled();
+  const isInstalled = current.length > 0 && installed.includes(current);
+
+  let fullCatalog: Array<{ name: string; langCode: string; quality: string }> | null = null;
+  try {
+    fullCatalog = await listAvailable({ all: true });
+  } catch (err) {
+    console.log(`Could not fetch voice catalog (${(err as Error).message}).`);
+    console.log('Falling back to a curated list of universal voices.');
+  }
+
+  const languages = fullCatalog ? fullCatalog.map((v) => languageOf(v.name)) : null;
+  const chosenLanguage = await promptLanguage(config, languages);
+  if (chosenLanguage === null) {
+    console.log('Skipped voice download.');
     return;
   }
-  if (!(await confirm(rl, `Download ${DEFAULT_VOICE} voice model?`))) {
+
+  const languageChanged = chosenLanguage !== config.language;
+  if (languageChanged) {
+    config.language = chosenLanguage;
+    console.log(`Language set to: ${chosenLanguage}`);
+  }
+
+  const voicesForLang = fullCatalog
+    ? fullCatalog.filter((v) => languageOf(v.name) === chosenLanguage)
+    : FALLBACK_VOICES.filter((n) => languageOf(n) === chosenLanguage).map((name) => ({
+        name,
+        langCode: name.split('-')[0],
+        quality: name.split('-').pop() ?? 'medium',
+      }));
+
+  if (voicesForLang.length === 0) {
+    console.log(`No voices available for language "${chosenLanguage}".`);
+    if (languageChanged) await writeConfig(config);
+    return;
+  }
+
+  const SKIP = 'Skip — install a voice later via `voca voice install <name>`';
+  const nameByOption = new Map<string, string>();
+  const options: string[] = [];
+
+  if (current.length > 0 && languageOf(current) === chosenLanguage) {
+    const label = `${current} (current)`;
+    options.push(label);
+    nameByOption.set(label, current);
+  }
+  for (const v of voicesForLang) {
+    if (v.name === current) continue;
+    const label = `${v.name} (${v.quality})`;
+    options.push(label);
+    nameByOption.set(label, v.name);
+  }
+  options.push(SKIP);
+
+  const selected = await select(options, `Select Piper voice (language: ${chosenLanguage}):`);
+  if (selected === SKIP) {
+    console.log('Skipped voice download.');
+    if (languageChanged) await writeConfig(config);
+    return;
+  }
+
+  const name = nameByOption.get(selected);
+  if (!name) {
     console.log('Skipped.');
+    if (languageChanged) await writeConfig(config);
     return;
   }
-  await installVoice(DEFAULT_VOICE);
+
+  if (name === current && isInstalled) {
+    console.log(`Keeping current voice: ${name}`);
+    if (languageChanged) await writeConfig(config);
+    return;
+  }
+
+  await installVoice(name);
+  setActiveVoice(config, name);
+  await writeConfig(config);
 }
 
 async function installPythonVenv(rl: ReturnType<typeof createInterface>): Promise<void> {
   console.log('\n=== Step 5: Python venv + openWakeWord ===');
-  const venvPython = path.join(VENV_DIR, 'bin/python3');
+  const venv = venvDir();
+  const venvPython = path.join(venv, 'bin/python3');
 
   if (await fileExists(venvPython)) {
     console.log('Python venv already exists. Skipping venv creation.');
@@ -242,7 +382,7 @@ async function installPythonVenv(rl: ReturnType<typeof createInterface>): Promis
     }
 
     console.log('Creating Python venv...');
-    await run('python3', ['-m', 'venv', VENV_DIR]);
+    await run('python3', ['-m', 'venv', venv]);
     console.log('Venv created.');
   }
 
@@ -267,7 +407,7 @@ async function installPythonVenv(rl: ReturnType<typeof createInterface>): Promis
   }
 
   // Install packages (skip if already present)
-  const venvPip = path.join(VENV_DIR, 'bin/pip');
+  const venvPip = path.join(venv, 'bin/pip');
   let alreadyInstalled = false;
   try {
     await runCapture(venvPip, ['show', 'openwakeword']);
@@ -287,7 +427,8 @@ async function installPythonVenv(rl: ReturnType<typeof createInterface>): Promis
 
 async function installModels(rl: ReturnType<typeof createInterface>): Promise<void> {
   console.log('\n=== Step 6: Wake word ONNX models ===');
-  const wakeModelPath = path.join(MODELS_DIR, 'hey_jarvis_v0.1.onnx');
+  const models = modelsDir();
+  const wakeModelPath = path.join(models, 'hey_jarvis_v0.1.onnx');
 
   if (await fileExists(wakeModelPath)) {
     console.log('Wake model already installed. Skipping.');
@@ -299,11 +440,11 @@ async function installModels(rl: ReturnType<typeof createInterface>): Promise<vo
     return;
   }
 
-  await fs.mkdir(MODELS_DIR, { recursive: true });
+  await fs.mkdir(models, { recursive: true });
 
   // Primary: copy from installed openwakeword package in venv
   const venvModelPath = path.join(
-    ASSISTANT_DIR, 'venv', 'lib', 'python3.13', 'site-packages',
+    venvDir(), 'lib', 'python3.13', 'site-packages',
     'openwakeword', 'resources', 'models', 'hey_jarvis_v0.1.onnx',
   );
 
@@ -321,7 +462,8 @@ async function installModels(rl: ReturnType<typeof createInterface>): Promise<vo
 
 async function copySounds(): Promise<void> {
   console.log('\n=== Step 7: Copy sound files ===');
-  await fs.mkdir(SOUNDS_DIR, { recursive: true });
+  const sounds = soundsDir();
+  await fs.mkdir(sounds, { recursive: true });
 
   // Resolve sounds dir relative to this source file
   const projectRoot = path.resolve(
@@ -335,7 +477,7 @@ async function copySounds(): Promise<void> {
 
   for (const file of files) {
     const src = path.join(srcSounds, file);
-    const dest = path.join(SOUNDS_DIR, file);
+    const dest = path.join(sounds, file);
     if (await fileExists(src)) {
       await fs.copyFile(src, dest);
       copied++;
@@ -344,7 +486,22 @@ async function copySounds(): Promise<void> {
     }
   }
 
-  console.log(`Copied ${copied} sound file(s) to ${SOUNDS_DIR}.`);
+  console.log(`Copied ${copied} sound file(s) to ${sounds}.`);
+}
+
+async function promptStorageRoot(rl: ReturnType<typeof createInterface>): Promise<string> {
+  for (;;) {
+    const raw = (await rl.question(`Enter VOCA storage path [${DEFAULT_ROOT}] `)).trim();
+    const expanded = raw.length === 0
+      ? DEFAULT_ROOT
+      : raw.startsWith('~/')
+        ? path.join(os.homedir(), raw.slice(2))
+        : raw === '~'
+          ? os.homedir()
+          : raw;
+    if (path.isAbsolute(expanded)) return expanded;
+    console.log('Path must be absolute — try again.');
+  }
 }
 
 export async function runBootstrap(): Promise<void> {
@@ -353,6 +510,12 @@ export async function runBootstrap(): Promise<void> {
   try {
     console.log('VOCA Bootstrap — Interactive Setup');
     console.log('==================================');
+
+    console.log('\n=== Step 0: Storage root ===');
+    const root = await promptStorageRoot(rl);
+    await fs.mkdir(root, { recursive: true });
+    await writePointerFile(root);
+    console.log(`Storage root: ${root}`);
 
     await ensureConfigDir();
     const config = await readConfig();
@@ -370,14 +533,14 @@ export async function runBootstrap(): Promise<void> {
     await writeConfig(config);
     console.log('\nConfig saved.');
 
-    await installPiper(rl);
+    await installPiper(rl, config);
     await installPythonVenv(rl);
     await installModels(rl);
     await copySounds();
 
     console.log('\n=== Bootstrap complete ===');
-    console.log(`Config:  ${CONFIG_PATH}`);
-    console.log(`Data:    ${ASSISTANT_DIR}`);
+    console.log(`Config:  ${configPath()}`);
+    console.log(`Data:    ${storageRoot()}`);
   } finally {
     rl.close();
   }

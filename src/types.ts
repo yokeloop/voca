@@ -7,7 +7,7 @@ export interface VocaConfig {
   stopWord: string;
   piperModel: string;
   piperBin: string;
-  language: string;
+  language?: string;
 }
 
 export interface VocaSession {

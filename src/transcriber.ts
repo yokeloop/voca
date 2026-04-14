@@ -14,7 +14,12 @@ export async function transcribe(
   filePath: string,
   opts: { language?: string } = {},
 ): Promise<string> {
-  const language = opts.language ?? 'ru';
+  const language = opts.language;
+  if (!language) {
+    throw new TranscribeError(
+      "language is not configured — run 'voca bootstrap' to select a language",
+    );
+  }
 
   let stdout: string;
   try {
