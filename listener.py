@@ -83,6 +83,7 @@ def run_real(model_dir: str, wake_model: str, stop_model: str, device_index: int
     running = True
     paused = False
     recording = False
+    speaking = False
 
     # Recording state
     rec_wav_file = None
@@ -93,6 +94,7 @@ def run_real(model_dir: str, wake_model: str, stop_model: str, device_index: int
 
     # Constants
     THRESHOLD = 0.5          # Wake/stop word detection threshold
+    SPEAKING_THRESHOLD = 0.85  # Raised wake threshold while TTS is playing
     RMS_THRESHOLD = 200      # RMS threshold for speech detection (int16 scale)
     SILENCE_AFTER_SPEECH = 2.0   # Seconds of silence after speech to stop recording
     MAX_SILENCE_NO_SPEECH = 30.0 # Seconds of silence with no speech before cancel
@@ -167,9 +169,21 @@ def run_real(model_dir: str, wake_model: str, stop_model: str, device_index: int
         if recording:
             stop_recording_save()
 
+    def handle_speaking_start(signum, frame):
+        """SIGRTMIN = daemon started TTS playback."""
+        nonlocal speaking
+        speaking = True
+
+    def handle_speaking_end(signum, frame):
+        """SIGRTMIN+1 = daemon finished TTS playback (or interrupted)."""
+        nonlocal speaking
+        speaking = False
+
     signal.signal(signal.SIGTERM, handle_sigterm)
     signal.signal(signal.SIGUSR1, handle_sigusr1)
     signal.signal(signal.SIGUSR2, handle_sigusr2)
+    signal.signal(signal.SIGRTMIN, handle_speaking_start)
+    signal.signal(signal.SIGRTMIN + 1, handle_speaking_end)
 
     try:
         while running:
@@ -231,13 +245,17 @@ def run_real(model_dir: str, wake_model: str, stop_model: str, device_index: int
                 # Normal wake word detection mode
                 scores = model.predict(audio)
 
+                # Raise wake threshold while TTS is playing to reduce self-trigger;
+                # skip stop detection entirely during SPEAKING.
+                wake_thr = SPEAKING_THRESHOLD if speaking else THRESHOLD
+
                 # Check wake model score
-                if scores.get(wake_key, 0) > THRESHOLD:
+                if scores.get(wake_key, 0) > wake_thr:
                     print(json.dumps({"event": "wake"}), flush=True)
                     model.reset()
 
-                # Check stop model score
-                if stop_key is not None and scores.get(stop_key, 0) > THRESHOLD:
+                # Check stop model score (disabled during SPEAKING)
+                if not speaking and stop_key is not None and scores.get(stop_key, 0) > THRESHOLD:
                     print(json.dumps({"event": "stop"}), flush=True)
                     model.reset()
 

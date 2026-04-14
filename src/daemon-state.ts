@@ -21,6 +21,7 @@ const transitionTable: Record<string, DaemonState> = {
   'PROCESSING+ERROR': 'IDLE',
   'SPEAKING+SPEAKING_DONE': 'IDLE',
   'SPEAKING+ERROR': 'IDLE',
+  'SPEAKING+WAKE_INTERRUPT': 'RECORDING',
 };
 
 export function transition(state: DaemonState, event: DaemonEvent): DaemonState {

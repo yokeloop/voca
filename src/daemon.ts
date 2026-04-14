@@ -14,7 +14,7 @@ import { spawnListener } from './listener.js';
 import { playSound } from './sounds.js';
 import { transcribe } from './transcriber.js';
 import { queryAgent } from './agent.js';
-import { speak } from './speaker.js';
+import { speak, type SpeechHandle } from './speaker.js';
 import { readSession, incrementMessageCount } from './session.js';
 import { readConfig } from './config.js';
 
@@ -26,6 +26,7 @@ export class VocaDaemon extends EventEmitter {
   private state: DaemonState = 'IDLE';
   private listener: ListenerHandle | null = null;
   private config: VocaConfig;
+  private activeSpeech: SpeechHandle | null = null;
 
   constructor(config: VocaConfig) {
     super();
@@ -50,7 +51,7 @@ export class VocaDaemon extends EventEmitter {
       stub: useStub,
       pythonBin: useStub ? undefined : venvPython,
       modelDir: path.join(ASSISTANT_DIR, 'models'),
-      deviceIndex: useStub ? undefined : 0,
+      deviceIndex: useStub ? undefined : this.config.inputDeviceIndex,
     });
 
     this.state = 'IDLE';
@@ -84,6 +85,8 @@ export class VocaDaemon extends EventEmitter {
   }
 
   async stop(): Promise<void> {
+    this.activeSpeech?.interrupt();
+    this.activeSpeech = null;
     if (this.listener) {
       this.listener.kill();
       this.listener = null;
@@ -118,28 +121,43 @@ export class VocaDaemon extends EventEmitter {
   }
 
   private async handleWake(): Promise<void> {
-    if (this.state !== 'IDLE') {
-      console.log(`[daemon] ignoring wake in state ${this.state}`);
+    if (this.state === 'IDLE') {
+      try {
+        this.state = transition(this.state, 'WAKE');
+        this.writeStateFile();
+        console.log(`[daemon] state: ${this.state}`);
+
+        await playSound('wake', { device: this.config.outputDevice });
+
+        // Send SIGUSR1 to listener.py to start recording
+        this.listener?.pause();
+
+        this.state = transition(this.state, 'START_RECORD');
+        this.writeStateFile();
+        console.log(`[daemon] state: ${this.state}`);
+      } catch (err) {
+        console.error('[daemon] error in handleWake:', err);
+        await this.recoverFromError();
+      }
       return;
     }
 
-    try {
-      this.state = transition(this.state, 'WAKE');
-      this.writeStateFile();
-      console.log(`[daemon] state: ${this.state}`);
-
-      await playSound('wake', { device: this.config.outputDevice });
-
-      // Send SIGUSR1 to listener.py to start recording
-      this.listener?.pause();
-
-      this.state = transition(this.state, 'START_RECORD');
-      this.writeStateFile();
-      console.log(`[daemon] state: ${this.state}`);
-    } catch (err) {
-      console.error('[daemon] error in handleWake:', err);
-      await this.recoverFromError();
+    if (this.state === 'SPEAKING') {
+      try {
+        this.activeSpeech?.interrupt();
+        this.state = transition(this.state, 'WAKE_INTERRUPT');
+        this.writeStateFile();
+        console.log(`[daemon] state: ${this.state} (interrupted TTS)`);
+        // Skip wake sound to keep latency under ~200ms.
+        this.listener?.pause();
+      } catch (err) {
+        console.error('[daemon] error in handleWake (interrupt):', err);
+        await this.recoverFromError();
+      }
+      return;
     }
+
+    console.log(`[daemon] ignoring wake in state ${this.state}`);
   }
 
   private handleStop(): void {
@@ -151,6 +169,10 @@ export class VocaDaemon extends EventEmitter {
       this.writeStateFile();
       console.log(`[daemon] state: ${this.state} (stop during LISTENING)`);
       this.listener?.resume();
+    } else {
+      // Stop events in SPEAKING/IDLE/PROCESSING are not actionable;
+      // listener.py already suppresses stop-word detection during SPEAKING.
+      console.log(`[daemon] ignoring stop in state ${this.state}`);
     }
   }
 
@@ -221,16 +243,27 @@ export class VocaDaemon extends EventEmitter {
         // non-fatal, continue speaking
       }
 
+      this.listener?.speakingStart();
       try {
-        await speak({
+        this.activeSpeech = speak({
           text: response.text,
           piperBin: this.config.piperBin,
           piperModel: this.config.piperModel,
           device: this.config.outputDevice,
         });
+        await this.activeSpeech.done;
       } catch (err) {
         console.error('[daemon] speaker error:', err);
+        this.activeSpeech = null;
+        this.listener?.speakingEnd();
         await this.recoverFromError();
+        return;
+      }
+      this.activeSpeech = null;
+      this.listener?.speakingEnd();
+
+      // If interrupt fired, daemon already transitioned to RECORDING via handleWake.
+      if (this.state !== 'SPEAKING') {
         return;
       }
 
