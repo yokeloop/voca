@@ -1,6 +1,7 @@
 export interface VocaConfig {
-  inputDevice: string;
-  outputDevice: string;
+  inputDevice?: string;
+  outputDevice?: string;
+  inputDeviceIndex?: number;
   profile: string;
   wakeWord: string;
   stopWord: string;
@@ -25,6 +26,7 @@ export type DaemonState =
 
 export type DaemonEvent =
   | 'WAKE'
+  | 'WAKE_INTERRUPT'
   | 'START_RECORD'
   | 'STOP'
   | 'RECORD_CANCEL'
@@ -36,6 +38,8 @@ export interface ListenerHandle {
   on(event: 'wake' | 'stop' | 'recorded' | 'cancelled' | 'exit', cb: (...args: any[]) => void): void;
   pause(): void;
   resume(): void;
+  speakingStart(): void;
+  speakingEnd(): void;
   kill(): void;
 }
 
