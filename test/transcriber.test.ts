@@ -31,32 +31,32 @@ describe('transcriber', () => {
 
   it('returns normal text as-is', async () => {
     mockExecFile('Привет мир\n');
-    const result = await transcribe('/tmp/test.wav');
+    const result = await transcribe('/tmp/test.wav', { language: 'ru' });
     expect(result).toBe('Привет мир');
   });
 
   it('trims trailing "stop " (lowercase)', async () => {
     mockExecFile('Открой дверь stop \n');
-    const result = await transcribe('/tmp/test.wav');
+    const result = await transcribe('/tmp/test.wav', { language: 'ru' });
     expect(result).toBe('Открой дверь');
   });
 
   it('trims trailing "STOP" (uppercase)', async () => {
     mockExecFile('Включи свет STOP');
-    const result = await transcribe('/tmp/test.wav');
+    const result = await transcribe('/tmp/test.wav', { language: 'ru' });
     expect(result).toBe('Включи свет');
   });
 
   it('returns empty string when text is only "stop"', async () => {
     mockExecFile('stop\n');
-    const result = await transcribe('/tmp/test.wav');
+    const result = await transcribe('/tmp/test.wav', { language: 'ru' });
     expect(result).toBe('');
   });
 
   it('throws TranscribeError on execFile error', async () => {
     mockExecFileError('whisper failed');
-    await expect(transcribe('/tmp/test.wav')).rejects.toThrow(TranscribeError);
-    await expect(transcribe('/tmp/test.wav')).rejects.toThrow('whisper failed');
+    await expect(transcribe('/tmp/test.wav', { language: 'ru' })).rejects.toThrow(TranscribeError);
+    await expect(transcribe('/tmp/test.wav', { language: 'ru' })).rejects.toThrow('whisper failed');
   });
 
   it('passes language option to whisper-stt-wrapper', async () => {
@@ -70,14 +70,10 @@ describe('transcriber', () => {
     );
   });
 
-  it('defaults language to en', async () => {
+  it('throws TranscribeError when language is missing', async () => {
     mockExecFile('text\n');
-    await transcribe('/tmp/test.wav');
-    expect(execFile).toHaveBeenCalledWith(
-      '/usr/local/bin/whisper-stt-wrapper',
-      ['/tmp/test.wav', '--language', 'en'],
-      { maxBuffer: 1024 * 1024 },
-      expect.any(Function),
-    );
+    await expect(transcribe('/tmp/test.wav')).rejects.toThrow(TranscribeError);
+    await expect(transcribe('/tmp/test.wav')).rejects.toThrow('language is not configured');
+    expect(execFile).not.toHaveBeenCalled();
   });
 });

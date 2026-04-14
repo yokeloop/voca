@@ -8,13 +8,13 @@ import { installVoice, listAvailable, listInstalled } from './voice.js';
 import { binDir, modelsDir, soundsDir, storageRoot, venvDir, writePointerFile } from './paths.js';
 import type { VocaConfig } from './types.js';
 
-function defaultRoot(): string {
-  return path.join(os.homedir(), '.voca');
-}
+const DEFAULT_ROOT = path.join(os.homedir(), '.voca');
 
 const PIPER_URL =
   'https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_linux_aarch64.tar.gz';
 // Universal fallback list used when the HF catalog is unreachable.
+// Keep voice names in sync with https://huggingface.co/rhasspy/piper-voices —
+// if an entry here disappears upstream, bootstrap will fail mid-install.
 const FALLBACK_VOICES = [
   'en_US-lessac-medium',
   'en_US-amy-medium',
@@ -32,7 +32,7 @@ async function confirm(rl: ReturnType<typeof createInterface>, question: string)
 function select(options: string[], prompt: string): Promise<string> {
   return new Promise((resolve) => {
     let cursor = 0;
-    const windowSize = Math.max(3, Math.min(options.length, (process.stdout.rows ?? 20) - 4));
+    const windowSize = computeWindowSize(options.length, process.stdout.rows);
     let winTop = 0;
     let lastRendered = 0;
 
@@ -236,14 +236,13 @@ async function installPiper(
     console.log('Piper installed.');
   }
 
-  await selectVoice(rl, config);
+  await selectVoice(config);
 }
 
-async function setActiveVoice(config: VocaConfig, name: string): Promise<void> {
+function setActiveVoice(config: VocaConfig, name: string): void {
   const relative = `bin/${name}.onnx`;
   if (config.piperModel !== relative) {
     config.piperModel = relative;
-    await writeConfig(config);
   }
   console.log(`Active voice: ${name}`);
 }
@@ -252,22 +251,28 @@ function currentVoiceName(config: VocaConfig): string {
   return path.basename(config.piperModel).replace(/\.onnx$/, '');
 }
 
-function languageOf(voiceName: string): string {
+export function languageOf(voiceName: string): string {
   return voiceName.split('_')[0].toLowerCase();
+}
+
+export function computeWindowSize(optionsCount: number, rows: number | undefined): number {
+  const usable = Math.max(1, (rows ?? 20) - 4);
+  return Math.min(optionsCount, usable);
 }
 
 async function promptLanguage(
   config: VocaConfig,
   available: string[] | null,
 ): Promise<string | null> {
-  const pool = Array.from(
-    new Set(available ?? FALLBACK_VOICES.map(languageOf)),
-  ).sort();
+  const source = available ?? FALLBACK_VOICES.map(languageOf);
+  const seen = new Set<string>();
+  for (const lang of source) seen.add(lang);
+  const pool = Array.from(seen).sort();
 
   const options: string[] = [];
   const current = config.language;
-  const KEEP = current ? `${current} (current)` : null;
-  if (KEEP) options.push(KEEP);
+  const CURRENT_LABEL = current ? `${current} (current)` : null;
+  if (CURRENT_LABEL) options.push(CURRENT_LABEL);
   for (const lang of pool) {
     if (lang === current) continue;
     options.push(lang);
@@ -277,13 +282,11 @@ async function promptLanguage(
 
   const selected = await select(options, 'Select Piper language:');
   if (selected === SKIP) return null;
-  return selected === KEEP ? (current as string) : selected;
+  if (CURRENT_LABEL && selected === CURRENT_LABEL) return current as string;
+  return selected;
 }
 
-async function selectVoice(
-  _rl: ReturnType<typeof createInterface>,
-  config: VocaConfig,
-): Promise<void> {
+async function selectVoice(config: VocaConfig): Promise<void> {
   const current = currentVoiceName(config);
   const installed = await listInstalled();
   const isInstalled = current.length > 0 && installed.includes(current);
@@ -303,9 +306,9 @@ async function selectVoice(
     return;
   }
 
-  if (chosenLanguage !== config.language) {
+  const languageChanged = chosenLanguage !== config.language;
+  if (languageChanged) {
     config.language = chosenLanguage;
-    await writeConfig(config);
     console.log(`Language set to: ${chosenLanguage}`);
   }
 
@@ -319,6 +322,7 @@ async function selectVoice(
 
   if (voicesForLang.length === 0) {
     console.log(`No voices available for language "${chosenLanguage}".`);
+    if (languageChanged) await writeConfig(config);
     return;
   }
 
@@ -342,22 +346,26 @@ async function selectVoice(
   const selected = await select(options, `Select Piper voice (language: ${chosenLanguage}):`);
   if (selected === SKIP) {
     console.log('Skipped voice download.');
+    if (languageChanged) await writeConfig(config);
     return;
   }
 
   const name = nameByOption.get(selected);
   if (!name) {
     console.log('Skipped.');
+    if (languageChanged) await writeConfig(config);
     return;
   }
 
   if (name === current && isInstalled) {
     console.log(`Keeping current voice: ${name}`);
+    if (languageChanged) await writeConfig(config);
     return;
   }
 
   await installVoice(name);
-  await setActiveVoice(config, name);
+  setActiveVoice(config, name);
+  await writeConfig(config);
 }
 
 async function installPythonVenv(rl: ReturnType<typeof createInterface>): Promise<void> {
@@ -482,11 +490,10 @@ async function copySounds(): Promise<void> {
 }
 
 async function promptStorageRoot(rl: ReturnType<typeof createInterface>): Promise<string> {
-  const fallback = defaultRoot();
   for (;;) {
-    const raw = (await rl.question(`Enter VOCA storage path [${fallback}] `)).trim();
+    const raw = (await rl.question(`Enter VOCA storage path [${DEFAULT_ROOT}] `)).trim();
     const expanded = raw.length === 0
-      ? fallback
+      ? DEFAULT_ROOT
       : raw.startsWith('~/')
         ? path.join(os.homedir(), raw.slice(2))
         : raw === '~'
