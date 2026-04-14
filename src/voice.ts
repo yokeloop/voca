@@ -132,12 +132,13 @@ export async function useVoice(name: string): Promise<void> {
   }
 
   const config = await readConfig();
-  if (config.piperModel === paths.onnxPath) {
+  const relative = `bin/${name}.onnx`;
+  if (config.piperModel === relative || config.piperModel === paths.onnxPath) {
     console.log(`Already using voice: ${name}`);
     return;
   }
 
-  config.piperModel = paths.onnxPath;
+  config.piperModel = relative;
   await writeConfig(config);
   console.log(`Switched to voice: ${name}. Restart the daemon (voca stop && voca start) to apply.`);
 }

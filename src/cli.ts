@@ -5,7 +5,7 @@ import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
-import { readConfig, writeConfig, getAvailableProfiles } from './config.js';
+import { readConfig, writeConfig, getAvailableProfiles, resolvePiperModel } from './config.js';
 import { readSession, resetSessionForProfile } from './session.js';
 import { VocaDaemon } from './daemon.js';
 import { pidFile, stateFile, storageRoot } from './paths.js';
@@ -86,7 +86,7 @@ voice
     }
     const config = await readConfig();
     for (const name of installed) {
-      const marker = config.piperModel === voicePath(name) ? '*' : ' ';
+      const marker = resolvePiperModel(config) === voicePath(name) ? '*' : ' ';
       console.log(`${marker} ${name}`);
     }
   });

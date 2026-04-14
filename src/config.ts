@@ -23,23 +23,22 @@ export async function readConfig(file: string = configPath()): Promise<VocaConfi
   try {
     const raw = await fs.readFile(file, 'utf-8');
     const parsed = JSON.parse(raw) as Partial<VocaConfig>;
-    const cfg = { ...defaultConfig, ...parsed };
-    cfg.piperModel = resolvePiperModel(cfg.piperModel);
-    cfg.piperBin = resolveBinPath(cfg.piperBin);
-    return cfg;
+    return { ...defaultConfig, ...parsed };
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { ...defaultConfig };
     throw err;
   }
 }
 
-function resolveBinPath(value: string): string {
+export function resolvePiperBin(cfg: VocaConfig): string {
+  const value = cfg.piperBin;
   if (path.isAbsolute(value)) return value;
   return path.join(binDir(), value.replace(/^bin\//, ''));
 }
 
-function resolvePiperModel(model: string): string {
-  if (path.isAbsolute(model) && model.endsWith('.onnx')) return model;
+export function resolvePiperModel(cfg: VocaConfig): string {
+  const model = cfg.piperModel;
+  if (path.isAbsolute(model)) return model.endsWith('.onnx') ? model : `${model}.onnx`;
   const name = model.replace(/^bin\//, '').replace(/\.onnx$/, '');
   return path.join(binDir(), `${name}.onnx`);
 }

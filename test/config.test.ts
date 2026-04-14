@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { defaultConfig, readConfig, writeConfig } from '../src/config.js';
+import { defaultConfig, readConfig, writeConfig, resolvePiperBin, resolvePiperModel } from '../src/config.js';
 
 describe('config', () => {
   let tmpDir: string;
@@ -45,7 +45,7 @@ describe('config', () => {
 
     expect(cfg.profile).toBe('public');
     expect(cfg.wakeWord).toBe(defaultConfig.wakeWord);
-    expect(cfg.piperModel).toContain('ru_RU-irina-medium.onnx');
+    expect(cfg.piperModel).toBe('bin/ru_RU-irina-medium.onnx');
   });
 
   it('writeConfig creates nested directories', async () => {
@@ -68,11 +68,24 @@ describe('config', () => {
     expect(defaultConfig.language).toBe('ru');
   });
 
-  it('readConfig resolves relative piperBin to absolute under the active root', async () => {
+  it('readConfig preserves relative piperBin; resolvePiperBin returns absolute', async () => {
     await fs.writeFile(configPath, JSON.stringify({ piperBin: 'bin/piper' }), 'utf-8');
     const cfg = await readConfig(configPath);
-    expect(path.isAbsolute(cfg.piperBin)).toBe(true);
-    expect(cfg.piperBin).toBe(path.join(tmpDir, 'bin', 'piper'));
+    expect(cfg.piperBin).toBe('bin/piper');
+    expect(resolvePiperBin(cfg)).toBe(path.join(tmpDir, 'bin', 'piper'));
+  });
+
+  it('writeConfig round-trip keeps piperBin/piperModel relative', async () => {
+    await writeConfig(defaultConfig, configPath);
+    const raw = await fs.readFile(configPath, 'utf-8');
+    const parsed = JSON.parse(raw);
+    expect(parsed.piperBin).toBe('bin/piper');
+    expect(parsed.piperModel).toBe('bin/ru_RU-irina-medium.onnx');
+  });
+
+  it('resolvePiperModel passes through absolute paths', async () => {
+    const abs = '/opt/voices/custom.onnx';
+    expect(resolvePiperModel({ ...defaultConfig, piperModel: abs })).toBe(abs);
   });
 
   it('readConfig returns undefined device fields when file is empty', async () => {

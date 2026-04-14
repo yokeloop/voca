@@ -63,6 +63,8 @@ vi.mock('../src/config.js', () => ({
     piperBin: '/usr/bin/piper',
     language: 'ru',
   })),
+  resolvePiperBin: vi.fn((cfg: { piperBin: string }) => cfg.piperBin),
+  resolvePiperModel: vi.fn((cfg: { piperModel: string }) => cfg.piperModel),
 }));
 
 // Prevent actual file I/O for state file / pid file

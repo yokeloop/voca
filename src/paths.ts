@@ -37,7 +37,12 @@ export async function writePointerFile(absolutePath: string): Promise<void> {
 
 export function storageRoot(): string {
   const envRoot = process.env.VOCA_HOME;
-  if (envRoot && envRoot.length > 0) return envRoot;
+  if (envRoot && envRoot.length > 0) {
+    if (!path.isAbsolute(envRoot)) {
+      throw new Error(`VOCA_HOME must be an absolute path, got: ${envRoot}`);
+    }
+    return envRoot;
+  }
   const pointer = readPointerFile();
   if (pointer) return pointer;
   throw new Error("VOCA storage root not configured — run 'voca bootstrap'");

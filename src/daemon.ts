@@ -15,7 +15,7 @@ import { transcribe } from './transcriber.js';
 import { queryAgent } from './agent.js';
 import { speak, type SpeechHandle } from './speaker.js';
 import { readSession, incrementMessageCount } from './session.js';
-import { readConfig } from './config.js';
+import { readConfig, resolvePiperBin, resolvePiperModel } from './config.js';
 import { modelsDir, pidFile, stateFile, venvDir } from './paths.js';
 
 export { pidFile, stateFile };
@@ -245,8 +245,8 @@ export class VocaDaemon extends EventEmitter {
       try {
         this.activeSpeech = await speak({
           text: response.text,
-          piperBin: this.config.piperBin,
-          piperModel: this.config.piperModel,
+          piperBin: resolvePiperBin(this.config),
+          piperModel: resolvePiperModel(this.config),
           device: this.config.outputDevice,
         });
         await this.activeSpeech.done;

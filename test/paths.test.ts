@@ -53,4 +53,9 @@ describe('paths', () => {
   it('writePointerFile rejects relative paths', async () => {
     await expect(writePointerFile('relative/path')).rejects.toThrow(/absolute/);
   });
+
+  it('throws when VOCA_HOME is a relative path', () => {
+    process.env.VOCA_HOME = 'relative/root';
+    expect(() => storageRoot()).toThrow(/VOCA_HOME must be an absolute path/);
+  });
 });
