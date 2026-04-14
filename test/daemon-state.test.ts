@@ -14,6 +14,7 @@ describe('transition', () => {
     ['PROCESSING', 'ERROR', 'IDLE'],
     ['SPEAKING', 'SPEAKING_DONE', 'IDLE'],
     ['SPEAKING', 'ERROR', 'IDLE'],
+    ['SPEAKING', 'WAKE_INTERRUPT', 'RECORDING'],
   ];
 
   it.each(validCases)(
@@ -30,6 +31,10 @@ describe('transition', () => {
     ['IDLE', 'PROCESSING_DONE'],
     ['IDLE', 'SPEAKING_DONE'],
     ['IDLE', 'ERROR'],
+    ['IDLE', 'WAKE_INTERRUPT'],
+    ['LISTENING', 'WAKE_INTERRUPT'],
+    ['RECORDING', 'WAKE_INTERRUPT'],
+    ['PROCESSING', 'WAKE_INTERRUPT'],
     ['LISTENING', 'WAKE'],
     ['LISTENING', 'RECORD_CANCEL'],
     ['LISTENING', 'PROCESSING_DONE'],
