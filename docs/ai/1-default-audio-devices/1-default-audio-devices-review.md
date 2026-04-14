@@ -2,23 +2,23 @@
 
 **Branch:** issue-1-default-audio-devices
 **Scope:** commits `3b0038f..HEAD`
-**Status:** ✅ 7/7 issues fixed, 78 tests pass, build clean.
+**Status:** 7/7 issues fixed, 78 tests pass, build clean.
 
 ## Summary
 
-Реализация покрывает R1–R8 и ограничения (no CLI flags, no sentinel, recorder.ts нетронут, без миграции конфигов, listener protocol неизменён). Review выявил 3 Important (bootstrap UX + 1 gap в тесте daemon) и 4 Minor; всё починено в 4 коммитах.
+The implementation covers R1–R8 and the constraints (no CLI flags, no sentinel, `recorder.ts` untouched, no config migration, listener protocol unchanged). The review surfaced 3 Important issues (bootstrap UX + 1 gap in a daemon test) and 4 Minor ones; all were fixed across 4 commits.
 
 ## Issues
 
 | # | Severity | Category | Location | Description | Status |
 |---|---|---|---|---|---|
-| 1 | Important | design | `src/bootstrap.ts:160-179` | Early return на пустом списке ALSA устройств блокировал выбор "Use system default". | ✅ fixed (`468575e`) |
-| 2 | Important | design | `src/bootstrap.ts` input branch | `config.inputDevice = 'plughw:X,Y'` писалось, но runtime читает только `inputDeviceIndex`. UX misleading. | ✅ fixed (`468575e`) — input branch теперь предлагает только DEFAULT + Keep current, печатает подсказку про ручной override `inputDeviceIndex`. |
-| 3 | Important | test | `test/daemon.test.ts` | Ассёрт `device: undefined` в prop-bag не ловил регрессию `-D undefined` в argv. | ✅ fixed (`c2fd98e`) — теперь проверяется наличие ключа `device` и строгое значение `undefined`. |
-| 4 | Minor | docs | `src/bootstrap.ts:153` | Warning про `plughw:X,Y` печатался перед early-skip. | ✅ fixed (`468575e`) — перенесён в output branch. |
-| 5 | Minor | style | `src/bootstrap.ts` | Безусловный `delete config.inputDeviceIndex` в default handler. | ✅ subsumed by fix #2. |
-| 6 | Minor | style | `src/speaker.ts:28-33` | Порядок `-D` отличался от `sounds.ts`. | ✅ fixed (`fc338f4`). |
-| 7 | Minor | test | `test/config.test.ts:20-23` | `toEqual(defaultConfig)` не фиксировал отсутствие device-ключей в JSON. | ✅ fixed (`b37627e`) — новый тест проверяет `'inputDevice' in serialized === false`. |
+| 1 | Important | design | `src/bootstrap.ts:160-179` | Early return on an empty ALSA device list blocked the "Use system default" selection. | fixed (`468575e`) |
+| 2 | Important | design | `src/bootstrap.ts` input branch | `config.inputDevice = 'plughw:X,Y'` was written, but the runtime reads only `inputDeviceIndex`. Misleading UX. | fixed (`468575e`) — the input branch now offers only DEFAULT + Keep current and prints a hint about manually overriding `inputDeviceIndex`. |
+| 3 | Important | test | `test/daemon.test.ts` | The `device: undefined` assertion in the prop-bag did not catch a `-D undefined` regression in argv. | fixed (`c2fd98e`) — now both the presence of the `device` key and its strict `undefined` value are checked. |
+| 4 | Minor | docs | `src/bootstrap.ts:153` | The `plughw:X,Y` warning was printed before the early skip. | fixed (`468575e`) — moved into the output branch. |
+| 5 | Minor | style | `src/bootstrap.ts` | Unconditional `delete config.inputDeviceIndex` in the default handler. | subsumed by fix #2. |
+| 6 | Minor | style | `src/speaker.ts:28-33` | `-D` ordering differed from `sounds.ts`. | fixed (`fc338f4`). |
+| 7 | Minor | test | `test/config.test.ts:20-23` | `toEqual(defaultConfig)` did not pin the absence of device keys in JSON. | fixed (`b37627e`) — a new test checks `'inputDevice' in serialized === false`. |
 
 ## Commits
 
@@ -32,4 +32,4 @@ fc338f4 refactor(1-default-audio-devices): match sounds argv order in speaker
 ## Validation
 
 - `npm run build` → clean.
-- `npm test` → 78/78 passed (было 77, +1 новый `defaultConfig JSON` тест).
+- `npm test` → 78/78 passed (was 77, +1 new `defaultConfig JSON` test).

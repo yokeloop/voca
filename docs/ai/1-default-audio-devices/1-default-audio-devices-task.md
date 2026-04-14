@@ -1,81 +1,81 @@
 # Use system default audio input/output devices on startup
 
 **Slug:** 1-default-audio-devices
-**Тикет:** https://github.com/yokeloop/voca/issues/1
-**Сложность:** medium
-**Тип:** general
+**Ticket:** https://github.com/yokeloop/voca/issues/1
+**Complexity:** medium
+**Type:** general
 
 ## Task
 
-Сделать `inputDevice` и `outputDevice` в `~/.openclaw/assistant/config.json` опциональными; если они не заданы — daemon берёт системный default для микрофона (PyAudio) и динамика (aplay без `-D`). Заодно починить баг в `src/daemon.ts:53`: listener.py получает жёстко зашитый `deviceIndex: 0` вместо значения из конфига.
+Make `inputDevice` and `outputDevice` in `~/.openclaw/assistant/config.json` optional; if they are not set, the daemon uses the system default for the microphone (PyAudio) and the speaker (`aplay` without `-D`). Also fix a bug in `src/daemon.ts:53`: `listener.py` receives a hardcoded `deviceIndex: 0` instead of the value from the config.
 
 ## Context
 
-### Архитектура области
+### Area architecture
 
-Поток микрофона: `daemon.ts:49-54` спавнит `listener.py` через `spawnListener()` (`src/listener.ts:14-74`). `listener.py:73-80` открывает PyAudio-стрим с `input_device_index=<int|None>`; при `None` PyAudio сам берёт системный default.
+Microphone flow: `daemon.ts:49-54` spawns `listener.py` via `spawnListener()` (`src/listener.ts:14-74`). `listener.py:73-80` opens a PyAudio stream with `input_device_index=<int|None>`; on `None` PyAudio uses the system default.
 
-Поток динамика: два потребителя ALSA `aplay -D <device>`:
+Speaker flow: two ALSA `aplay -D <device>` consumers:
 
-- `src/speaker.ts:28-35` — piper → aplay для TTS (используется в `daemon.ts:225-230`).
-- `src/sounds.ts:18-28` — `playSound('wake'|'stop'|'error')` (используется в `daemon.ts:131, 163, 259`).
+- `src/speaker.ts:28-35` — piper → aplay for TTS (used in `daemon.ts:225-230`).
+- `src/sounds.ts:18-28` — `playSound('wake'|'stop'|'error')` (used in `daemon.ts:131, 163, 259`).
 
-`voca start` читает config один раз через `readConfig()` (`src/config.ts:23-34`), передаёт в `VocaDaemon` (`src/cli.ts:93-94`, `src/daemon.ts:30-33`) и раскладывает по потребителям.
+`voca start` reads the config once via `readConfig()` (`src/config.ts:23-34`), passes it into `VocaDaemon` (`src/cli.ts:93-94`, `src/daemon.ts:30-33`) and routes it to consumers.
 
-### Файлы для изменения
+### Files to change
 
-- `src/types.ts:1-10` — сделать `inputDevice?: string`, `outputDevice?: string`; добавить `inputDeviceIndex?: number` (для PyAudio).
-- `src/config.ts:8-17` — убрать `'plughw:2,0'` из `defaultConfig`; поля `inputDevice`, `outputDevice`, `inputDeviceIndex` в дефолтах отсутствуют.
-- `src/daemon.ts:49-54` — заменить `deviceIndex: useStub ? undefined : 0` на `deviceIndex: useStub ? undefined : this.config.inputDeviceIndex` (`listener.ts:22-24` корректно пропускает undefined).
-- `src/speaker.ts:14-35` — сделать `device?: string` в `opts`; при `undefined` не передавать `-D` в `aplay`. Массив аргументов собирать через условный spread.
-- `src/sounds.ts:18-28` — сделать `device?: string`; при `undefined` не передавать `-D`.
-- `src/bootstrap.ts:146-179` — в `selectDevice()` первым пунктом поставить `Use system default (recommended)`. При выборе удалить поле из `config` через `delete config[opts.field]`. Перед списком вывести одной строкой предупреждение: ALSA-идентификатор `plughw:X,Y` может измениться после перезагрузки или переподключения USB — тогда явный выбор сломается.
-- `src/cli.ts` — в действии команды `start` ничего не менять; daemon уже читает опциональный конфиг.
+- `src/types.ts:1-10` — make `inputDevice?: string`, `outputDevice?: string`; add `inputDeviceIndex?: number` (for PyAudio).
+- `src/config.ts:8-17` — remove `'plughw:2,0'` from `defaultConfig`; `inputDevice`, `outputDevice`, `inputDeviceIndex` are absent from defaults.
+- `src/daemon.ts:49-54` — replace `deviceIndex: useStub ? undefined : 0` with `deviceIndex: useStub ? undefined : this.config.inputDeviceIndex` (`listener.ts:22-24` already skips undefined correctly).
+- `src/speaker.ts:14-35` — make `device?: string` in `opts`; when `undefined`, do not pass `-D` to `aplay`. Build the argv array via conditional spread.
+- `src/sounds.ts:18-28` — make `device?: string`; when `undefined`, do not pass `-D`.
+- `src/bootstrap.ts:146-179` — in `selectDevice()` put `Use system default (recommended)` as the first item. On selection, remove the field from `config` via `delete config[opts.field]`. Before the list, print a one-line warning: the ALSA identifier `plughw:X,Y` may change after reboot or USB re-plug — an explicit pick will then break.
+- `src/cli.ts` — no changes in the `start` command action; the daemon already reads the optional config.
 
-### Паттерны для повторения
+### Patterns to reuse
 
-- Условные CLI-аргументы: `src/listener.ts:22-24` — `if (!opts.stub && opts.deviceIndex !== undefined) args.push(...)`. Повторить паттерн в `speaker.ts`/`sounds.ts` для `-D`.
-- `VocaConfig` уже использует опциональные поля через spread с defaults (`src/config.ts:27`). Новые опциональные поля merge не ломают.
-- Интерактивный `select()` в `src/bootstrap.ts:60-124` принимает список строк — достаточно добавить пункт в начало массива `options` в `selectDevice()`.
+- Conditional CLI args: `src/listener.ts:22-24` — `if (!opts.stub && opts.deviceIndex !== undefined) args.push(...)`. Repeat the pattern in `speaker.ts` / `sounds.ts` for `-D`.
+- `VocaConfig` already uses optional fields via spread with defaults (`src/config.ts:27`). New optional fields do not break the merge.
+- The interactive `select()` in `src/bootstrap.ts:60-124` accepts a list of strings — it is enough to prepend an item to the `options` array in `selectDevice()`.
 
-### Тесты
+### Tests
 
-- `test/config.test.ts:20-62` — 5 тестов проверяют defaults и merge. Переписать под «в defaults этих полей нет»: `expect(read.inputDevice).toBe(defaultConfig.inputDevice)` на `:32` и `expect(defaultConfig.inputDevice).toBe('plughw:2,0')` / `outputDevice` на `:53-54`.
-- `test/daemon.test.ts:53-54, 94-95` — fixtures с `inputDevice: 'hw:0,0'` и `outputDevice: 'hw:0,0'` остаются валидными (теперь это кейс «explicit override»). Добавить тест: config без `inputDevice`/`outputDevice`/`inputDeviceIndex` → listener спавнится без `--device-index`, speaker/sounds спавнят `aplay` без `-D`.
-- Ручная проверка на Raspberry Pi: `voca start` с чистым конфигом → wake word срабатывает через системный микрофон по умолчанию; TTS и beep звучат через системный динамик.
+- `test/config.test.ts:20-62` — 5 tests check defaults and merge. Rewrite for "these fields are not in defaults": change `expect(read.inputDevice).toBe(defaultConfig.inputDevice)` at `:32` and `expect(defaultConfig.inputDevice).toBe('plughw:2,0')` / `outputDevice` at `:53-54`.
+- `test/daemon.test.ts:53-54, 94-95` — fixtures with `inputDevice: 'hw:0,0'` and `outputDevice: 'hw:0,0'` remain valid (this is now the "explicit override" case). Add a test: a config without `inputDevice` / `outputDevice` / `inputDeviceIndex` → listener is spawned without `--device-index`, speaker/sounds spawn `aplay` without `-D`.
+- Manual check on a Raspberry Pi: `voca start` with a clean config → the wake word triggers via the system default microphone; TTS and beeps play through the system default speaker.
 
 ## Requirements
 
-1. `VocaConfig.inputDevice` и `VocaConfig.outputDevice` — опциональные (`string | undefined`). Добавить опциональное поле `inputDeviceIndex?: number` для передачи в PyAudio.
-2. `defaultConfig` в `src/config.ts` больше не содержит `inputDevice`, `outputDevice`, `inputDeviceIndex`. Существующие конфиги с `"inputDevice": "plughw:2,0"` читаются как явный override — merge через `{ ...defaultConfig, ...parsed }` работает без изменений.
-3. Если `config.outputDevice` не задан — `src/speaker.ts` и `src/sounds.ts` спавнят `aplay` **без флага `-D`** (и без `-D default`). ALSA возьмёт `pcm.!default` из `~/.asoundrc` / PipeWire / PulseAudio.
-4. Если `config.inputDeviceIndex` не задан — `src/daemon.ts:49-54` передаёт `deviceIndex: undefined` в `spawnListener`; `listener.py` получает `input_device_index=None`, и PyAudio сам берёт системный default.
-5. `src/daemon.ts:53` не содержит хардкод `0`; индекс приходит только из `this.config.inputDeviceIndex`.
-6. `voca bootstrap`, шаги выбора микрофона и динамика: первый пункт списка — `Use system default (recommended)`, при выборе соответствующее поле удаляется из config. Перед списком печатается предупреждение об изменчивости `plughw:X,Y` после перезагрузки и переподключения USB.
-7. `voca start` на свежей установке (config без device-полей) поднимает daemon, реагирует на wake word и отвечает через TTS без ручного запуска `voca bootstrap`.
-8. Существующие юнит-тесты обновлены под новые дефолты; добавлен хотя бы один тест на сценарий «нет device-полей → spawn без `-D` и без `--device-index`».
+1. `VocaConfig.inputDevice` and `VocaConfig.outputDevice` are optional (`string | undefined`). Add an optional `inputDeviceIndex?: number` field to pass to PyAudio.
+2. `defaultConfig` in `src/config.ts` no longer contains `inputDevice`, `outputDevice`, `inputDeviceIndex`. Existing configs with `"inputDevice": "plughw:2,0"` are read as an explicit override — merge via `{ ...defaultConfig, ...parsed }` works unchanged.
+3. If `config.outputDevice` is not set, `src/speaker.ts` and `src/sounds.ts` spawn `aplay` **without the `-D` flag** (and without `-D default`). ALSA will pick `pcm.!default` from `~/.asoundrc` / PipeWire / PulseAudio.
+4. If `config.inputDeviceIndex` is not set, `src/daemon.ts:49-54` passes `deviceIndex: undefined` to `spawnListener`; `listener.py` receives `input_device_index=None`, and PyAudio uses the system default.
+5. `src/daemon.ts:53` does not contain a hardcoded `0`; the index comes only from `this.config.inputDeviceIndex`.
+6. `voca bootstrap`, microphone and speaker selection steps: the first list item is `Use system default (recommended)`; on selection, the corresponding field is removed from the config. Before the list, a warning is printed about `plughw:X,Y` volatility after reboot and USB re-plug.
+7. `voca start` on a fresh install (config without device fields) starts the daemon, reacts to the wake word, and responds via TTS without manually running `voca bootstrap`.
+8. Existing unit tests are updated for the new defaults; at least one new test is added for the "no device fields → spawn without `-D` and without `--device-index`" scenario.
 
 ## Constraints
 
-- Не трогать `src/recorder.ts` — dead code (recording живёт в `listener.py`); возиться с ним вне скоупа.
-- Не добавлять CLI-флаги вида `voca start --input-device ...` — override идёт только через `~/.openclaw/assistant/config.json`.
-- Не мигрировать и не переписывать существующие `config.json`: поля со значениями остаются как «explicit override». Никаких предупреждений и миграций при `voca start`.
-- Не вводить sentinel-строку `"default"` — опциональности достаточно.
-- Не менять формат `plughw:X,Y` и не пытаться резолвить строку ALSA в индекс PyAudio: это два независимых поля (`outputDevice` для aplay, `inputDeviceIndex` для PyAudio).
-- Не менять протокол listener.py ↔ listener.ts (JSON events, сигналы). Только аргументы запуска.
-- Не ломать stub-режим listener (`--stub` в `src/listener.ts:18-20`).
+- Do not touch `src/recorder.ts` — dead code (recording lives in `listener.py`); fiddling with it is out of scope.
+- Do not add CLI flags like `voca start --input-device ...` — override goes only through `~/.openclaw/assistant/config.json`.
+- Do not migrate or rewrite existing `config.json`: fields with values remain as "explicit override". No warnings or migrations on `voca start`.
+- Do not introduce a sentinel string `"default"` — optionality is enough.
+- Do not change the `plughw:X,Y` format and do not try to resolve an ALSA string into a PyAudio index: these are two independent fields (`outputDevice` for aplay, `inputDeviceIndex` for PyAudio).
+- Do not change the listener.py ↔ listener.ts protocol (JSON events, signals). Only launch arguments.
+- Do not break the listener stub mode (`--stub` in `src/listener.ts:18-20`).
 
 ## Verification
 
-- `npm run build` → без ошибок TypeScript.
-- `npm test` → существующие тесты зелёные; новый тест «config без device-полей» зелёный.
-- `rm ~/.openclaw/assistant/config.json && voca bootstrap` → в шагах 1 и 2 первым пунктом виден `Use system default (recommended)`, перед списком напечатано предупреждение о volatility `plughw:X,Y`. После выбора этого пункта в сохранённом `config.json` нет ключей `inputDevice`/`outputDevice`.
-- После `voca start` с конфигом без device-полей: `pgrep -af 'aplay'` во время TTS не содержит `-D`; `pgrep -af 'listener.py'` не содержит `--device-index`.
-- `voca start` с конфигом `{ "inputDevice": "plughw:2,0", "outputDevice": "plughw:2,0" }` (existing override): aplay спавнится с `-D plughw:2,0`; listener.py — без `--device-index` (`inputDeviceIndex` не задан).
-- Reboot scenario: выбран «Use system default», реальный USB-микрофон переехал с `card 2` на `card 3` → `voca start` работает без изменений (PyAudio подхватил новый default).
-- `voca start` при остановленном PulseAudio/PipeWire и пустом `~/.asoundrc` → `aplay` без `-D` берёт ALSA default PCM; daemon не падает (возможна тишина, но spawn без ошибок).
+- `npm run build` → no TypeScript errors.
+- `npm test` → existing tests green; new "config without device fields" test green.
+- `rm ~/.openclaw/assistant/config.json && voca bootstrap` → in steps 1 and 2 the first item is `Use system default (recommended)`, and the warning about `plughw:X,Y` volatility is printed before the list. After selecting this item, the saved `config.json` contains no `inputDevice` / `outputDevice` keys.
+- After `voca start` with a config without device fields: `pgrep -af 'aplay'` during TTS does not contain `-D`; `pgrep -af 'listener.py'` does not contain `--device-index`.
+- `voca start` with config `{ "inputDevice": "plughw:2,0", "outputDevice": "plughw:2,0" }` (existing override): aplay is spawned with `-D plughw:2,0`; listener.py — without `--device-index` (`inputDeviceIndex` not set).
+- Reboot scenario: "Use system default" was selected, the actual USB microphone moved from `card 2` to `card 3` → `voca start` works unchanged (PyAudio picked up the new default).
+- `voca start` with PulseAudio/PipeWire stopped and an empty `~/.asoundrc` → `aplay` without `-D` uses the ALSA default PCM; the daemon does not crash (silence is possible, but spawn succeeds).
 
-## Материалы
+## Materials
 
 - [GitHub Issue #1](https://github.com/yokeloop/voca/issues/1)
 - `~/.openclaw/assistant/config.json`
