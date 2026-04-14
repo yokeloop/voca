@@ -14,7 +14,13 @@ function defaultRoot(): string {
 
 const PIPER_URL =
   'https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_linux_aarch64.tar.gz';
-const DEFAULT_VOICE = 'ru_RU-irina-medium';
+// Universal fallback list used when the HF catalog is unreachable.
+const FALLBACK_VOICES = [
+  'en_US-lessac-medium',
+  'en_US-amy-medium',
+  'ru_RU-irina-medium',
+  'de_DE-thorsten-medium',
+];
 const WAKE_MODEL_URL =
   'https://github.com/dscripka/openWakeWord/releases/download/v0.5.1/hey_jarvis_v0.1.onnx';
 
@@ -221,18 +227,6 @@ async function installPiper(
   await selectVoice(rl, config);
 }
 
-async function installDefaultVoice(
-  rl: ReturnType<typeof createInterface>,
-  config: VocaConfig,
-): Promise<void> {
-  if (!(await confirm(rl, `Download ${DEFAULT_VOICE} voice model?`))) {
-    console.log('Skipped.');
-    return;
-  }
-  await installVoice(DEFAULT_VOICE);
-  await setActiveVoice(config, DEFAULT_VOICE);
-}
-
 async function setActiveVoice(config: VocaConfig, name: string): Promise<void> {
   const relative = `bin/${name}.onnx`;
   if (config.piperModel !== relative) {
@@ -242,42 +236,86 @@ async function setActiveVoice(config: VocaConfig, name: string): Promise<void> {
   console.log(`Active voice: ${name}`);
 }
 
+function currentVoiceName(config: VocaConfig): string {
+  const base = path.basename(config.piperModel).replace(/\.onnx$/, '');
+  return base.length > 0 ? base : '';
+}
+
+function orderWithCurrent<T>(items: T[], current: T | null, key: (t: T) => string): T[] {
+  if (!current) return items;
+  const currentKey = key(current);
+  const rest = items.filter((i) => key(i) !== currentKey);
+  const match = items.find((i) => key(i) === currentKey);
+  return match ? [match, ...rest] : [current, ...rest];
+}
+
 async function selectVoice(
-  rl: ReturnType<typeof createInterface>,
+  _rl: ReturnType<typeof createInterface>,
   config: VocaConfig,
 ): Promise<void> {
+  const current = currentVoiceName(config);
   const installed = await listInstalled();
-  const currentName = path.basename(config.piperModel).replace(/\.onnx$/, '');
-  if (installed.includes(currentName)) {
-    console.log(`Piper voice already installed: ${currentName}. Skipping.`);
-    return;
-  }
+  const isInstalled = current.length > 0 && installed.includes(current);
 
-  let voices: Array<{ name: string; langCode: string; quality: string }>;
+  let catalog: Array<{ name: string; langCode: string; quality: string }> | null = null;
   try {
-    voices = await listAvailable({ languageFilter: config.language });
+    catalog = await listAvailable({ languageFilter: config.language });
+    if (catalog.length === 0) {
+      console.log(`No voices available for language "${config.language}".`);
+      catalog = null;
+    }
   } catch (err) {
     console.log(`Could not fetch voice catalog (${(err as Error).message}).`);
-    await installDefaultVoice(rl, config);
-    return;
-  }
-
-  if (voices.length === 0) {
-    console.log(`No voices available for language "${config.language}".`);
-    await installDefaultVoice(rl, config);
-    return;
   }
 
   const SKIP = 'Skip — install a voice later via `voca voice install <name>`';
-  const options = [...voices.map((v) => `${v.name} (${v.quality})`), SKIP];
-  const selected = await select(options, `Select Piper voice (language: ${config.language}):`);
+  const KEEP_CURRENT = current.length > 0 ? `${current} (current)` : null;
+  const nameByOption = new Map<string, string>();
+  const options: string[] = [];
+
+  if (KEEP_CURRENT) {
+    options.push(KEEP_CURRENT);
+    nameByOption.set(KEEP_CURRENT, current);
+  }
+
+  if (catalog) {
+    const ordered = catalog.filter((v) => v.name !== current);
+    for (const v of ordered) {
+      const label = `${v.name} (${v.quality})`;
+      options.push(label);
+      nameByOption.set(label, v.name);
+    }
+  } else {
+    console.log('Falling back to a curated list of universal voices.');
+    for (const name of FALLBACK_VOICES.filter((n) => n !== current)) {
+      options.push(name);
+      nameByOption.set(name, name);
+    }
+  }
+
+  options.push(SKIP);
+
+  const prompt = catalog
+    ? `Select Piper voice (language: ${config.language}):`
+    : 'Select Piper voice:';
+  const selected = await select(options, prompt);
 
   if (selected === SKIP) {
     console.log('Skipped voice download.');
     return;
   }
 
-  const name = selected.split(' ')[0];
+  const name = nameByOption.get(selected);
+  if (!name) {
+    console.log('Skipped.');
+    return;
+  }
+
+  if (name === current && isInstalled) {
+    console.log(`Keeping current voice: ${name}`);
+    return;
+  }
+
   await installVoice(name);
   await setActiveVoice(config, name);
 }
