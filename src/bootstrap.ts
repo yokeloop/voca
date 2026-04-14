@@ -237,16 +237,39 @@ async function setActiveVoice(config: VocaConfig, name: string): Promise<void> {
 }
 
 function currentVoiceName(config: VocaConfig): string {
-  const base = path.basename(config.piperModel).replace(/\.onnx$/, '');
-  return base.length > 0 ? base : '';
+  return path.basename(config.piperModel).replace(/\.onnx$/, '');
 }
 
-function orderWithCurrent<T>(items: T[], current: T | null, key: (t: T) => string): T[] {
-  if (!current) return items;
-  const currentKey = key(current);
-  const rest = items.filter((i) => key(i) !== currentKey);
-  const match = items.find((i) => key(i) === currentKey);
-  return match ? [match, ...rest] : [current, ...rest];
+function languageOf(voiceName: string): string {
+  return voiceName.split('_')[0].toLowerCase();
+}
+
+function orderLanguages(all: string[], current: string): string[] {
+  const unique = Array.from(new Set(all));
+  unique.sort();
+  const rest = unique.filter((l) => l !== current);
+  return unique.includes(current) ? [current, ...rest] : rest;
+}
+
+async function promptLanguage(
+  config: VocaConfig,
+  available: string[] | null,
+): Promise<string | null> {
+  const options: string[] = [];
+  const KEEP = `${config.language} (current)`;
+  options.push(KEEP);
+
+  const pool = available ?? Array.from(new Set(FALLBACK_VOICES.map(languageOf)));
+  for (const lang of orderLanguages(pool, config.language)) {
+    if (lang === config.language) continue;
+    options.push(lang);
+  }
+  const SKIP = 'Skip voice install';
+  options.push(SKIP);
+
+  const selected = await select(options, 'Select Piper language:');
+  if (selected === SKIP) return null;
+  return selected === KEEP ? config.language : selected;
 }
 
 async function selectVoice(
@@ -257,49 +280,58 @@ async function selectVoice(
   const installed = await listInstalled();
   const isInstalled = current.length > 0 && installed.includes(current);
 
-  let catalog: Array<{ name: string; langCode: string; quality: string }> | null = null;
+  let fullCatalog: Array<{ name: string; langCode: string; quality: string }> | null = null;
   try {
-    catalog = await listAvailable({ languageFilter: config.language });
-    if (catalog.length === 0) {
-      console.log(`No voices available for language "${config.language}".`);
-      catalog = null;
-    }
+    fullCatalog = await listAvailable({ all: true });
   } catch (err) {
     console.log(`Could not fetch voice catalog (${(err as Error).message}).`);
+    console.log('Falling back to a curated list of universal voices.');
+  }
+
+  const languages = fullCatalog ? fullCatalog.map((v) => languageOf(v.name)) : null;
+  const chosenLanguage = await promptLanguage(config, languages);
+  if (chosenLanguage === null) {
+    console.log('Skipped voice download.');
+    return;
+  }
+
+  if (chosenLanguage !== config.language) {
+    config.language = chosenLanguage;
+    await writeConfig(config);
+    console.log(`Language set to: ${chosenLanguage}`);
+  }
+
+  const voicesForLang = fullCatalog
+    ? fullCatalog.filter((v) => languageOf(v.name) === chosenLanguage)
+    : FALLBACK_VOICES.filter((n) => languageOf(n) === chosenLanguage).map((name) => ({
+        name,
+        langCode: name.split('-')[0],
+        quality: name.split('-').pop() ?? 'medium',
+      }));
+
+  if (voicesForLang.length === 0) {
+    console.log(`No voices available for language "${chosenLanguage}".`);
+    return;
   }
 
   const SKIP = 'Skip — install a voice later via `voca voice install <name>`';
-  const KEEP_CURRENT = current.length > 0 ? `${current} (current)` : null;
   const nameByOption = new Map<string, string>();
   const options: string[] = [];
 
-  if (KEEP_CURRENT) {
-    options.push(KEEP_CURRENT);
-    nameByOption.set(KEEP_CURRENT, current);
+  if (current.length > 0 && languageOf(current) === chosenLanguage) {
+    const label = `${current} (current)`;
+    options.push(label);
+    nameByOption.set(label, current);
   }
-
-  if (catalog) {
-    const ordered = catalog.filter((v) => v.name !== current);
-    for (const v of ordered) {
-      const label = `${v.name} (${v.quality})`;
-      options.push(label);
-      nameByOption.set(label, v.name);
-    }
-  } else {
-    console.log('Falling back to a curated list of universal voices.');
-    for (const name of FALLBACK_VOICES.filter((n) => n !== current)) {
-      options.push(name);
-      nameByOption.set(name, name);
-    }
+  for (const v of voicesForLang) {
+    if (v.name === current) continue;
+    const label = `${v.name} (${v.quality})`;
+    options.push(label);
+    nameByOption.set(label, v.name);
   }
-
   options.push(SKIP);
 
-  const prompt = catalog
-    ? `Select Piper voice (language: ${config.language}):`
-    : 'Select Piper voice:';
-  const selected = await select(options, prompt);
-
+  const selected = await select(options, `Select Piper voice (language: ${chosenLanguage}):`);
   if (selected === SKIP) {
     console.log('Skipped voice download.');
     return;
