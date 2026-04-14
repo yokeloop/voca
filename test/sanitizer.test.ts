@@ -33,6 +33,11 @@ describe('sanitizeForTts', () => {
     expect(sanitizeForTts('Привет 👋 мир')).toBe('Привет мир');
   });
 
+  it('strips emoji with skin-tone modifiers', () => {
+    expect(sanitizeForTts('hello \u{1F44B}\u{1F3FD} world')).toBe('hello world');
+    expect(sanitizeForTts('\u{1F64C}\u{1F3FB}\u{1F44D}\u{1F3FF}')).toBe('');
+  });
+
   it('collapses runs of whitespace and trims', () => {
     expect(sanitizeForTts('a  b\t\tc\n\nd')).toBe('a b c d');
     expect(sanitizeForTts('   hello   ')).toBe('hello');
