@@ -4,7 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { readConfig, writeConfig, ensureConfigDir, configPath, getAvailableProfiles } from './config.js';
 import { run, runCapture, fileExists } from './util.js';
-import { installVoice } from './voice.js';
+import { installVoice, listAvailable, listInstalled } from './voice.js';
 import { binDir, modelsDir, soundsDir, storageRoot, venvDir, writePointerFile } from './paths.js';
 import type { VocaConfig } from './types.js';
 
@@ -189,12 +189,15 @@ async function selectProfile(config: VocaConfig): Promise<void> {
   console.log(`Profile set to: ${selected}`);
 }
 
-async function installPiper(rl: ReturnType<typeof createInterface>): Promise<void> {
+async function installPiper(
+  rl: ReturnType<typeof createInterface>,
+  config: VocaConfig,
+): Promise<void> {
   console.log('\n=== Step 4: Piper TTS ===');
   const piperDir = binDir();
-  const piperBin = path.join(piperDir, 'piper');
+  const piperExe = path.join(piperDir, 'piper');
 
-  if (await fileExists(piperBin)) {
+  if (await fileExists(piperExe)) {
     console.log('Piper already installed. Skipping.');
   } else {
     if (!(await confirm(rl, 'Piper not found. Download and install?'))) {
@@ -215,18 +218,68 @@ async function installPiper(rl: ReturnType<typeof createInterface>): Promise<voi
     console.log('Piper installed.');
   }
 
-  // Voice model
-  const onnxPath = path.join(piperDir, `${DEFAULT_VOICE}.onnx`);
+  await selectVoice(rl, config);
+}
 
-  if (await fileExists(onnxPath)) {
-    console.log('Piper voice model already downloaded. Skipping.');
-    return;
-  }
+async function installDefaultVoice(
+  rl: ReturnType<typeof createInterface>,
+  config: VocaConfig,
+): Promise<void> {
   if (!(await confirm(rl, `Download ${DEFAULT_VOICE} voice model?`))) {
     console.log('Skipped.');
     return;
   }
   await installVoice(DEFAULT_VOICE);
+  await setActiveVoice(config, DEFAULT_VOICE);
+}
+
+async function setActiveVoice(config: VocaConfig, name: string): Promise<void> {
+  const relative = `bin/${name}.onnx`;
+  if (config.piperModel !== relative) {
+    config.piperModel = relative;
+    await writeConfig(config);
+  }
+  console.log(`Active voice: ${name}`);
+}
+
+async function selectVoice(
+  rl: ReturnType<typeof createInterface>,
+  config: VocaConfig,
+): Promise<void> {
+  const installed = await listInstalled();
+  const currentName = path.basename(config.piperModel).replace(/\.onnx$/, '');
+  if (installed.includes(currentName)) {
+    console.log(`Piper voice already installed: ${currentName}. Skipping.`);
+    return;
+  }
+
+  let voices: Array<{ name: string; langCode: string; quality: string }>;
+  try {
+    voices = await listAvailable({ languageFilter: config.language });
+  } catch (err) {
+    console.log(`Could not fetch voice catalog (${(err as Error).message}).`);
+    await installDefaultVoice(rl, config);
+    return;
+  }
+
+  if (voices.length === 0) {
+    console.log(`No voices available for language "${config.language}".`);
+    await installDefaultVoice(rl, config);
+    return;
+  }
+
+  const SKIP = 'Skip — install a voice later via `voca voice install <name>`';
+  const options = [...voices.map((v) => `${v.name} (${v.quality})`), SKIP];
+  const selected = await select(options, `Select Piper voice (language: ${config.language}):`);
+
+  if (selected === SKIP) {
+    console.log('Skipped voice download.');
+    return;
+  }
+
+  const name = selected.split(' ')[0];
+  await installVoice(name);
+  await setActiveVoice(config, name);
 }
 
 async function installPythonVenv(rl: ReturnType<typeof createInterface>): Promise<void> {
@@ -395,7 +448,7 @@ export async function runBootstrap(): Promise<void> {
     await writeConfig(config);
     console.log('\nConfig saved.');
 
-    await installPiper(rl);
+    await installPiper(rl, config);
     await installPythonVenv(rl);
     await installModels(rl);
     await copySounds();
