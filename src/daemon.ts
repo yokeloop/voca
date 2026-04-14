@@ -245,7 +245,7 @@ export class VocaDaemon extends EventEmitter {
 
       this.listener?.speakingStart();
       try {
-        this.activeSpeech = speak({
+        this.activeSpeech = await speak({
           text: response.text,
           piperBin: this.config.piperBin,
           piperModel: this.config.piperModel,

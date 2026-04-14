@@ -8,6 +8,7 @@ import fs from 'node:fs/promises';
 import { readConfig, writeConfig, getAvailableProfiles } from './config.js';
 import { readSession, resetSessionForProfile } from './session.js';
 import { VocaDaemon, PID_FILE, STATE_FILE, ASSISTANT_DIR } from './daemon.js';
+import { installVoice, listAvailable, listInstalled, useVoice, voicePath } from './voice.js';
 
 const require = createRequire(import.meta.url);
 const pkg = require('../package.json');
@@ -69,6 +70,68 @@ profile
     const s = await resetSessionForProfile(id);
     console.log(`Switched to profile: ${id}`);
     console.log(`New session: ${s.sessionId}`);
+  });
+
+const voice = program.command('voice').description('Piper voice management');
+
+voice
+  .command('list')
+  .description('List installed Piper voices')
+  .action(async () => {
+    const installed = await listInstalled();
+    if (installed.length === 0) {
+      console.log('No voices installed. Run: voca voice install <name>');
+      return;
+    }
+    const config = await readConfig();
+    for (const name of installed) {
+      const marker = config.piperModel === voicePath(name) ? '*' : ' ';
+      console.log(`${marker} ${name}`);
+    }
+  });
+
+voice
+  .command('available')
+  .description('List voices available in the Piper catalog')
+  .option('--all', 'Show all languages (bypass language filter)')
+  .action(async (opts: { all?: boolean }) => {
+    try {
+      const config = await readConfig();
+      const voices = await listAvailable({
+        languageFilter: opts.all ? undefined : config.language,
+        all: opts.all,
+      });
+      for (const v of voices) {
+        console.log(`${v.name}\t${v.langCode}\t${v.quality}`);
+      }
+    } catch (err) {
+      console.error((err as Error).message);
+      process.exitCode = 1;
+    }
+  });
+
+voice
+  .command('install <name>')
+  .description('Download and install a Piper voice')
+  .action(async (name: string) => {
+    try {
+      await installVoice(name);
+    } catch (err) {
+      console.error((err as Error).message);
+      process.exitCode = 1;
+    }
+  });
+
+voice
+  .command('use <name>')
+  .description('Switch the active Piper voice')
+  .action(async (name: string) => {
+    try {
+      await useVoice(name);
+    } catch (err) {
+      console.error((err as Error).message);
+      process.exitCode = 1;
+    }
   });
 
 program

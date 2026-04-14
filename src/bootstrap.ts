@@ -1,9 +1,10 @@
 import { createInterface } from 'node:readline/promises';
-import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { readConfig, writeConfig, ensureConfigDir, CONFIG_PATH, getAvailableProfiles } from './config.js';
+import { run, runCapture, fileExists } from './util.js';
+import { installVoice } from './voice.js';
 import type { VocaConfig } from './types.js';
 
 const ASSISTANT_DIR = path.join(os.homedir(), '.openclaw/assistant');
@@ -14,47 +15,13 @@ const SOUNDS_DIR = path.join(ASSISTANT_DIR, 'sounds');
 
 const PIPER_URL =
   'https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_linux_aarch64.tar.gz';
-const PIPER_VOICE_BASE =
-  'https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/ru/ru_RU/irina/medium';
+const DEFAULT_VOICE = 'ru_RU-irina-medium';
 const WAKE_MODEL_URL =
   'https://github.com/dscripka/openWakeWord/releases/download/v0.5.1/hey_jarvis_v0.1.onnx';
-
-function run(cmd: string, args: string[]): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, { stdio: 'inherit' });
-    child.on('error', reject);
-    child.on('close', (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(`${cmd} exited with code ${code}`));
-    });
-  });
-}
-
-function runCapture(cmd: string, args: string[]): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, { stdio: ['pipe', 'pipe', 'pipe'] });
-    let stdout = '';
-    child.stdout.on('data', (d: Buffer) => { stdout += d.toString(); });
-    child.on('error', reject);
-    child.on('close', (code) => {
-      if (code === 0) resolve(stdout);
-      else reject(new Error(`${cmd} exited with code ${code}`));
-    });
-  });
-}
 
 async function confirm(rl: ReturnType<typeof createInterface>, question: string): Promise<boolean> {
   const answer = await rl.question(`${question} [y/N] `);
   return answer.trim().toLowerCase() === 'y';
-}
-
-async function fileExists(p: string): Promise<boolean> {
-  try {
-    await fs.access(p);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 function select(options: string[], prompt: string): Promise<string> {
@@ -249,25 +216,17 @@ async function installPiper(rl: ReturnType<typeof createInterface>): Promise<voi
   }
 
   // Voice model
-  const onnxPath = path.join(PIPER_DIR, 'ru_RU-irina-medium.onnx');
-  const jsonPath = path.join(PIPER_DIR, 'ru_RU-irina-medium.onnx.json');
+  const onnxPath = path.join(PIPER_DIR, `${DEFAULT_VOICE}.onnx`);
 
   if (await fileExists(onnxPath)) {
     console.log('Piper voice model already downloaded. Skipping.');
-  } else {
-    if (!(await confirm(rl, 'Download ru_RU-irina-medium voice model?'))) {
-      console.log('Skipped.');
-      return;
-    }
-
-    console.log('Downloading voice model (.onnx)...');
-    await run('curl', ['-L', '-o', onnxPath, `${PIPER_VOICE_BASE}/ru_RU-irina-medium.onnx`]);
-
-    console.log('Downloading voice model config (.onnx.json)...');
-    await run('curl', ['-L', '-o', jsonPath, `${PIPER_VOICE_BASE}/ru_RU-irina-medium.onnx.json`]);
-
-    console.log('Voice model downloaded.');
+    return;
   }
+  if (!(await confirm(rl, `Download ${DEFAULT_VOICE} voice model?`))) {
+    console.log('Skipped.');
+    return;
+  }
+  await installVoice(DEFAULT_VOICE);
 }
 
 async function installPythonVenv(rl: ReturnType<typeof createInterface>): Promise<void> {

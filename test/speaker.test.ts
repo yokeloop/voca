@@ -14,10 +14,18 @@ function makeChild() {
   return child;
 }
 
-const { spawnMock } = vi.hoisted(() => ({ spawnMock: vi.fn() }));
+const { spawnMock, readFileMock } = vi.hoisted(() => ({
+  spawnMock: vi.fn(),
+  readFileMock: vi.fn(async () => JSON.stringify({ audio: { sample_rate: 22050 } })),
+}));
 
 vi.mock('node:child_process', () => ({
   spawn: spawnMock,
+}));
+
+vi.mock('node:fs/promises', () => ({
+  default: { readFile: readFileMock },
+  readFile: readFileMock,
 }));
 
 import { speak } from '../src/speaker.js';
@@ -32,7 +40,7 @@ describe('speak', () => {
     const aplay = makeChild();
     spawnMock.mockImplementationOnce(() => piper).mockImplementationOnce(() => aplay);
 
-    const promise = speak({
+    const handlePromise = speak({
       text: 'hello',
       piperBin: '/usr/bin/piper',
       piperModel: 'model',
@@ -44,7 +52,8 @@ describe('speak', () => {
       aplay.emit('close', 0);
     }, 0);
 
-    await promise;
+    const handle = await handlePromise;
+    await handle.done;
     return { piper, aplay };
   }
 
