@@ -7,19 +7,27 @@ import { defaultConfig, readConfig, writeConfig } from '../src/config.js';
 describe('config', () => {
   let tmpDir: string;
   let configPath: string;
+  let prevEnv: string | undefined;
 
   beforeEach(async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'voca-config-test-'));
     configPath = path.join(tmpDir, 'config.json');
+    prevEnv = process.env.VOCA_HOME;
+    process.env.VOCA_HOME = tmpDir;
   });
 
   afterEach(async () => {
+    if (prevEnv === undefined) delete process.env.VOCA_HOME;
+    else process.env.VOCA_HOME = prevEnv;
     await fs.rm(tmpDir, { recursive: true, force: true });
   });
 
   it('readConfig returns defaults when file does not exist', async () => {
     const cfg = await readConfig(configPath);
-    expect(cfg).toEqual(defaultConfig);
+    expect(cfg.profile).toBe(defaultConfig.profile);
+    expect(cfg.wakeWord).toBe(defaultConfig.wakeWord);
+    expect(cfg.stopWord).toBe(defaultConfig.stopWord);
+    expect(cfg.language).toBe(defaultConfig.language);
   });
 
   it('writeConfig creates file and readConfig reads it back', async () => {
@@ -37,7 +45,7 @@ describe('config', () => {
 
     expect(cfg.profile).toBe('public');
     expect(cfg.wakeWord).toBe(defaultConfig.wakeWord);
-    expect(cfg.piperModel).toBe(defaultConfig.piperModel);
+    expect(cfg.piperModel).toContain('ru_RU-irina-medium.onnx');
   });
 
   it('writeConfig creates nested directories', async () => {
@@ -45,7 +53,8 @@ describe('config', () => {
     await writeConfig(defaultConfig, nestedPath);
 
     const cfg = await readConfig(nestedPath);
-    expect(cfg).toEqual(defaultConfig);
+    expect(cfg.profile).toBe(defaultConfig.profile);
+    expect(cfg.wakeWord).toBe(defaultConfig.wakeWord);
   });
 
   it('defaultConfig has expected fields', () => {
@@ -54,9 +63,16 @@ describe('config', () => {
     expect(defaultConfig.profile).toBe('personal');
     expect(defaultConfig.wakeWord).toBe('hey_jarvis');
     expect(defaultConfig.stopWord).toBe('stop');
-    expect(defaultConfig.piperModel).toContain('ru_RU-irina-medium.onnx');
-    expect(defaultConfig.piperBin).toContain('.openclaw/assistant/bin/piper');
+    expect(defaultConfig.piperModel).toBe('bin/ru_RU-irina-medium.onnx');
+    expect(defaultConfig.piperBin).toBe('bin/piper');
     expect(defaultConfig.language).toBe('ru');
+  });
+
+  it('readConfig resolves relative piperBin to absolute under the active root', async () => {
+    await fs.writeFile(configPath, JSON.stringify({ piperBin: 'bin/piper' }), 'utf-8');
+    const cfg = await readConfig(configPath);
+    expect(path.isAbsolute(cfg.piperBin)).toBe(true);
+    expect(cfg.piperBin).toBe(path.join(tmpDir, 'bin', 'piper'));
   });
 
   it('readConfig returns undefined device fields when file is empty', async () => {
