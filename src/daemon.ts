@@ -1,7 +1,6 @@
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import os from 'node:os';
 
 import type {
   VocaConfig,
@@ -17,10 +16,9 @@ import { queryAgent } from './agent.js';
 import { speak, type SpeechHandle } from './speaker.js';
 import { readSession, incrementMessageCount } from './session.js';
 import { readConfig } from './config.js';
+import { modelsDir, pidFile, stateFile, venvDir } from './paths.js';
 
-export const ASSISTANT_DIR = path.join(os.homedir(), '.openclaw', 'assistant');
-export const PID_FILE = path.join(ASSISTANT_DIR, 'daemon.pid');
-export const STATE_FILE = path.join(ASSISTANT_DIR, 'daemon-state.json');
+export { pidFile, stateFile };
 
 export class VocaDaemon extends EventEmitter {
   private state: DaemonState = 'IDLE';
@@ -38,7 +36,7 @@ export class VocaDaemon extends EventEmitter {
   }
 
   async start(): Promise<void> {
-    const venvPython = path.join(ASSISTANT_DIR, 'venv', 'bin', 'python3');
+    const venvPython = path.join(venvDir(), 'bin', 'python3');
     let useStub = true;
     try {
       await fs.access(venvPython);
@@ -50,7 +48,7 @@ export class VocaDaemon extends EventEmitter {
     this.listener = spawnListener({
       stub: useStub,
       pythonBin: useStub ? undefined : venvPython,
-      modelDir: path.join(ASSISTANT_DIR, 'models'),
+      modelDir: modelsDir(),
       deviceIndex: useStub ? undefined : this.config.inputDeviceIndex,
     });
 
@@ -98,8 +96,8 @@ export class VocaDaemon extends EventEmitter {
   }
 
   async cleanup(): Promise<void> {
-    try { await fs.unlink(PID_FILE); } catch { /* best-effort */ }
-    try { await fs.unlink(STATE_FILE); } catch { /* best-effort */ }
+    try { await fs.unlink(pidFile()); } catch { /* best-effort */ }
+    try { await fs.unlink(stateFile()); } catch { /* best-effort */ }
   }
 
   private writeStateFile(): void {
@@ -113,7 +111,7 @@ export class VocaDaemon extends EventEmitter {
           profile: config.profile,
           updatedAt: new Date().toISOString(),
         };
-        await fs.writeFile(STATE_FILE, JSON.stringify(data, null, 2) + '\n');
+        await fs.writeFile(stateFile(), JSON.stringify(data, null, 2) + '\n');
       } catch {
         // fire-and-forget
       }

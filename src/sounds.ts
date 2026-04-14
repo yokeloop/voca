@@ -1,18 +1,11 @@
 import { execFile } from 'node:child_process';
 import path from 'node:path';
-import os from 'node:os';
-
-export const SOUNDS_DIR = path.join(
-  os.homedir(),
-  '.openclaw',
-  'assistant',
-  'sounds',
-);
+import { soundsDir } from './paths.js';
 
 export type SoundType = 'wake' | 'stop' | 'error';
 
 export function soundFile(type: SoundType): string {
-  return path.join(SOUNDS_DIR, `${type}.wav`);
+  return path.join(soundsDir(), `${type}.wav`);
 }
 
 export function playSound(

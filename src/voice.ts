@@ -1,12 +1,11 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import os from 'node:os';
 import { readConfig, writeConfig } from './config.js';
 import { run, fileExists } from './util.js';
+import { binDir } from './paths.js';
 
 const CATALOG_URL =
   'https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/voices.json';
-const PIPER_DIR = path.join(os.homedir(), '.openclaw/assistant/bin');
 
 export interface CatalogEntry {
   language: { code: string };
@@ -40,7 +39,7 @@ export interface VoicePaths {
 }
 
 export function voicePath(name: string): string {
-  return path.join(PIPER_DIR, `${name}.onnx`);
+  return path.join(binDir(), `${name}.onnx`);
 }
 
 export function deriveVoicePaths(name: string): VoicePaths {
@@ -54,15 +53,15 @@ export function deriveVoicePaths(name: string): VoicePaths {
   return {
     onnxUrl: `${base}/${name}.onnx`,
     jsonUrl: `${base}/${name}.onnx.json`,
-    onnxPath: path.join(PIPER_DIR, `${name}.onnx`),
-    jsonPath: path.join(PIPER_DIR, `${name}.onnx.json`),
+    onnxPath: path.join(binDir(), `${name}.onnx`),
+    jsonPath: path.join(binDir(), `${name}.onnx.json`),
   };
 }
 
 export async function listInstalled(): Promise<string[]> {
   let entries: string[];
   try {
-    entries = await fs.readdir(PIPER_DIR);
+    entries = await fs.readdir(binDir());
   } catch {
     return [];
   }
@@ -70,7 +69,7 @@ export async function listInstalled(): Promise<string[]> {
   for (const entry of entries) {
     if (!entry.endsWith('.onnx')) continue;
     const name = entry.replace(/\.onnx$/, '');
-    if (await fileExists(path.join(PIPER_DIR, `${name}.onnx.json`))) {
+    if (await fileExists(path.join(binDir(), `${name}.onnx.json`))) {
       installed.push(name);
     }
   }
@@ -110,7 +109,7 @@ export async function installVoice(name: string): Promise<void> {
     return;
   }
 
-  await fs.mkdir(PIPER_DIR, { recursive: true });
+  await fs.mkdir(binDir(), { recursive: true });
 
   try {
     console.log(`Downloading ${name}.onnx...`);
