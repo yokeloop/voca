@@ -256,24 +256,20 @@ function languageOf(voiceName: string): string {
   return voiceName.split('_')[0].toLowerCase();
 }
 
-function orderLanguages(all: string[], current: string): string[] {
-  const unique = Array.from(new Set(all));
-  unique.sort();
-  const rest = unique.filter((l) => l !== current);
-  return unique.includes(current) ? [current, ...rest] : rest;
-}
-
 async function promptLanguage(
   config: VocaConfig,
   available: string[] | null,
 ): Promise<string | null> {
-  const options: string[] = [];
-  const KEEP = `${config.language} (current)`;
-  options.push(KEEP);
+  const pool = Array.from(
+    new Set(available ?? FALLBACK_VOICES.map(languageOf)),
+  ).sort();
 
-  const pool = available ?? Array.from(new Set(FALLBACK_VOICES.map(languageOf)));
-  for (const lang of orderLanguages(pool, config.language)) {
-    if (lang === config.language) continue;
+  const options: string[] = [];
+  const current = config.language;
+  const KEEP = current ? `${current} (current)` : null;
+  if (KEEP) options.push(KEEP);
+  for (const lang of pool) {
+    if (lang === current) continue;
     options.push(lang);
   }
   const SKIP = 'Skip voice install';
@@ -281,7 +277,7 @@ async function promptLanguage(
 
   const selected = await select(options, 'Select Piper language:');
   if (selected === SKIP) return null;
-  return selected === KEEP ? config.language : selected;
+  return selected === KEEP ? (current as string) : selected;
 }
 
 async function selectVoice(

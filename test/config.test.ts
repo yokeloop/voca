@@ -27,7 +27,7 @@ describe('config', () => {
     expect(cfg.profile).toBe(defaultConfig.profile);
     expect(cfg.wakeWord).toBe(defaultConfig.wakeWord);
     expect(cfg.stopWord).toBe(defaultConfig.stopWord);
-    expect(cfg.language).toBe(defaultConfig.language);
+    expect(cfg.language).toBeUndefined();
   });
 
   it('writeConfig creates file and readConfig reads it back', async () => {
@@ -65,7 +65,7 @@ describe('config', () => {
     expect(defaultConfig.stopWord).toBe('stop');
     expect(defaultConfig.piperModel).toBe('bin/ru_RU-irina-medium.onnx');
     expect(defaultConfig.piperBin).toBe('bin/piper');
-    expect(defaultConfig.language).toBe('ru');
+    expect(defaultConfig.language).toBeUndefined();
   });
 
   it('readConfig preserves relative piperBin; resolvePiperBin returns absolute', async () => {

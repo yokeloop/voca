@@ -12,7 +12,6 @@ export const defaultConfig: VocaConfig = {
   stopWord: 'stop',
   piperModel: 'bin/ru_RU-irina-medium.onnx',
   piperBin: 'bin/piper',
-  language: 'ru',
 };
 
 export async function ensureConfigDir(file: string = configPath()): Promise<void> {
