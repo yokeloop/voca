@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { sanitizeForTts } from './sanitizer.js';
 
 export class SpeakerError extends Error {
   constructor(message: string) {
@@ -88,7 +89,7 @@ export function speak(opts: {
     resolveDone();
   });
 
-  piper.stdin.write(opts.text + '\n');
+  piper.stdin.write(sanitizeForTts(opts.text) + '\n');
   piper.stdin.end();
 
   const interrupt = (): void => {
