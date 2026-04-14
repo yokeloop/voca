@@ -11,6 +11,12 @@ function pointerPath(): string {
   return path.join(pointerDir(), 'root');
 }
 
+/**
+ * Reads the pointer file at `~/.config/voca/root` and returns the stored
+ * absolute path, or `null` if the file is missing. Sync read is intentional
+ * so that {@link storageRoot} can stay synchronous — it is called from
+ * many CLI code paths that would otherwise have to become async.
+ */
 export function readPointerFile(): string | null {
   const file = pointerPath();
   let raw: string;
@@ -27,6 +33,10 @@ export function readPointerFile(): string | null {
   return trimmed;
 }
 
+/**
+ * Persists the given absolute path to `~/.config/voca/root`, creating the
+ * directory if needed. Rejects relative paths.
+ */
 export async function writePointerFile(absolutePath: string): Promise<void> {
   if (!path.isAbsolute(absolutePath)) {
     throw new Error(`writePointerFile requires an absolute path, got: ${absolutePath}`);
@@ -35,6 +45,12 @@ export async function writePointerFile(absolutePath: string): Promise<void> {
   await fsp.writeFile(pointerPath(), absolutePath + '\n', 'utf-8');
 }
 
+/**
+ * Resolves the active VOCA storage root. Discovery order:
+ *   1. `VOCA_HOME` environment variable (must be absolute)
+ *   2. Pointer file at `~/.config/voca/root`
+ *   3. Throws with instructions to run `voca bootstrap`
+ */
 export function storageRoot(): string {
   const envRoot = process.env.VOCA_HOME;
   if (envRoot && envRoot.length > 0) {

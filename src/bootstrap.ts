@@ -8,7 +8,9 @@ import { installVoice } from './voice.js';
 import { binDir, modelsDir, soundsDir, storageRoot, venvDir, writePointerFile } from './paths.js';
 import type { VocaConfig } from './types.js';
 
-const DEFAULT_ROOT = path.join(os.homedir(), '.voca');
+function defaultRoot(): string {
+  return path.join(os.homedir(), '.voca');
+}
 
 const PIPER_URL =
   'https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_linux_aarch64.tar.gz';
@@ -349,10 +351,11 @@ async function copySounds(): Promise<void> {
 }
 
 async function promptStorageRoot(rl: ReturnType<typeof createInterface>): Promise<string> {
+  const fallback = defaultRoot();
   for (;;) {
-    const raw = (await rl.question(`Enter VOCA storage path [${DEFAULT_ROOT}] `)).trim();
+    const raw = (await rl.question(`Enter VOCA storage path [${fallback}] `)).trim();
     const expanded = raw.length === 0
-      ? DEFAULT_ROOT
+      ? fallback
       : raw.startsWith('~/')
         ? path.join(os.homedir(), raw.slice(2))
         : raw === '~'
@@ -372,8 +375,8 @@ export async function runBootstrap(): Promise<void> {
 
     console.log('\n=== Step 0: Storage root ===');
     const root = await promptStorageRoot(rl);
-    await writePointerFile(root);
     await fs.mkdir(root, { recursive: true });
+    await writePointerFile(root);
     console.log(`Storage root: ${root}`);
 
     await ensureConfigDir();
