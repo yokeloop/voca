@@ -10,8 +10,12 @@ import type { ListenerHandle, VocaConfig } from '../src/types.js';
 const mockListenerHandle = Object.assign(new EventEmitter(), {
   pause: vi.fn(),
   resume: vi.fn(),
+  speakingStart: vi.fn(),
+  speakingEnd: vi.fn(),
   kill: vi.fn(),
 }) as EventEmitter & ListenerHandle;
+
+const mockInterrupt = vi.fn();
 
 vi.mock('../src/listener.js', () => ({
   spawnListener: vi.fn(() => mockListenerHandle),
@@ -35,7 +39,7 @@ vi.mock('../src/agent.js', () => ({
 }));
 
 vi.mock('../src/speaker.js', () => ({
-  speak: vi.fn(async () => {}),
+  speak: vi.fn(() => ({ done: Promise.resolve(), interrupt: mockInterrupt })),
 }));
 
 vi.mock('../src/session.js', () => ({
@@ -118,6 +122,11 @@ describe('VocaDaemon', () => {
     vi.clearAllMocks();
     // Reset the listener EventEmitter listeners from previous tests
     mockListenerHandle.removeAllListeners();
+    // Reset speak mock to default (resolved done)
+    (speak as any).mockImplementation(() => ({
+      done: Promise.resolve(),
+      interrupt: mockInterrupt,
+    }));
     daemon = new VocaDaemon(mockConfig);
   });
 
@@ -214,6 +223,63 @@ describe('VocaDaemon', () => {
       mockListenerHandle.emit('wake');
       await flush();
       expect(daemon.getState()).toBe('RECORDING');
+    });
+  });
+
+  describe('interrupt TTS during SPEAKING', () => {
+    it('kills speak and transitions to RECORDING on wake during SPEAKING', async () => {
+      // Make speak pend so daemon stays in SPEAKING
+      let resolveDone!: () => void;
+      (speak as any).mockImplementation(() => ({
+        done: new Promise<void>((r) => { resolveDone = r; }),
+        interrupt: mockInterrupt,
+      }));
+
+      await daemon.start();
+      mockListenerHandle.emit('wake');
+      await flush();
+      mockListenerHandle.emit('recorded', '/tmp/voca-rec-test.wav');
+      await flush();
+
+      // Now in SPEAKING, speak() pending
+      expect(daemon.getState()).toBe('SPEAKING');
+      expect(mockListenerHandle.speakingStart).toHaveBeenCalled();
+
+      (playSound as any).mockClear();
+      const pauseCallsBefore = (mockListenerHandle.pause as any).mock.calls.length;
+
+      // Second wake during SPEAKING
+      mockListenerHandle.emit('wake');
+      await flush();
+
+      expect(mockInterrupt).toHaveBeenCalled();
+      expect(daemon.getState()).toBe('RECORDING');
+      // No wake beep on interrupt
+      expect(playSound).not.toHaveBeenCalledWith('wake', expect.anything());
+      // SIGUSR1 re-sent to start recording
+      expect((mockListenerHandle.pause as any).mock.calls.length).toBeGreaterThan(pauseCallsBefore);
+
+      // Let the pending done resolve so onRecorderDone can finish cleanly
+      resolveDone();
+      await flush();
+      expect(mockListenerHandle.speakingEnd).toHaveBeenCalled();
+    });
+
+    it('calls speakingEnd even when speak rejects', async () => {
+      (speak as any).mockImplementation(() => ({
+        done: Promise.reject(new Error('piper died')),
+        interrupt: vi.fn(),
+      }));
+
+      await daemon.start();
+      mockListenerHandle.emit('wake');
+      await flush();
+      mockListenerHandle.emit('recorded', '/tmp/voca-rec-test.wav');
+      await flush();
+
+      expect(mockListenerHandle.speakingStart).toHaveBeenCalled();
+      expect(mockListenerHandle.speakingEnd).toHaveBeenCalled();
+      expect(daemon.getState()).toBe('IDLE');
     });
   });
 
