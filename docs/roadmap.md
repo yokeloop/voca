@@ -1,8 +1,12 @@
 # VOCA v3 — Roadmap
 
-> Docs-only: это последовательность будущей реализации, не отчёт о работающих функциях. VOCA-2 не запускает эксперименты, не создаёт будущие тикеты и не задаёт сроки. Контракты — в [архитектуре](architecture.md), решения — в [ADR-0002](adr/0002-conversation-lifecycle-and-roadmap.md), определения — в [CONTEXT](../CONTEXT.md).
+> VOCA-13 adds a working session/control foundation before the voice roadmap. It does not execute voice experiments or prove their gates. Contracts — in [architecture](architecture.md), the implemented boundary — in [code architecture](code-architecture.md), decisions — in [ADR-0002](adr/0002-conversation-lifecycle-and-roadmap.md) and [ADR-0003](adr/0003-code-and-test-foundation.md), definitions — in [CONTEXT](../CONTEXT.md).
 
 Порядок: **голосовой разговор → контекст/инструкции → Pi-делегация → остальные возможности**. Каждый этап оставляет проверяемый пользовательский результат; ранняя разведка — входная работа первого голосового этапа, не отдельный инфраструктурный проект без пользовательского выхода.
+
+## Foundation — VOCA-13
+
+**Outcome:** a diagnostic browser panel creates one durable SQLite session over HTTP, obtains an empty snapshot through control WS, and resumes the same session after reconnect or backend restart. Its own [tests](testing.md) and [diagnostics policy](diagnostics.md) are the proof. This is not a voice stage: it adds no microphone, providers, LangSmith, models, GPU or hardware gate result.
 
 ## Gates
 

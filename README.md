@@ -4,7 +4,11 @@
 
 > From Latin *voca* — “call, summon, invoke.”
 
-**Docs-only:** this repository specifies the v3 rewrite; it does not yet contain an implemented voice runtime. Host performance, browser interruption and deployment prerequisites remain verification gates, not proven capabilities.
+**Session foundation implemented:** VOCA-13 provides a local diagnostic session panel, durable SQLite session IDs and snapshot-only control recovery. Voice, models, microphone/media, provider integrations and their host/browser gates remain future work, not proven capabilities.
+
+## Run the diagnostic session panel
+
+See [code architecture](docs/code-architecture.md), [testing](docs/testing.md), and [diagnostics](docs/diagnostics.md) for the implemented boundary and checks. The locked bootstrap and launch commands are documented with the application package.
 
 ## Architecture
 
@@ -38,10 +42,14 @@ See the [roadmap](docs/roadmap.md) for boundaries and acceptance. Approximately 
 
 ## Docs
 
-- [Architecture](docs/architecture.md) — owners, providers, conversation/control/task contracts, sources and verification protocols
+- [Code architecture](docs/code-architecture.md) — implemented session foundation, owners and dependency direction
+- [Testing](docs/testing.md) — risk matrix and reproducible checks
+- [Diagnostics](docs/diagnostics.md) — safe local JSONL policy and future map
+- [Architecture](docs/architecture.md) — normative future voice/provider/control/task contracts
 - [Roadmap](docs/roadmap.md) — vertical stages and gates
 - [Glossary](CONTEXT.md) — shared terms
 - [Index and historical grill](docs/index.md) — provenance and current navigation
 - [ADR-0001](docs/adr/0001-rewrite-v3.md) — historical rewrite decision, 2026-09-02
-- [ADR-0002](docs/adr/0002-conversation-lifecycle-and-roadmap.md) — VOCA-2 lifecycle and roadmap decisions
+- [ADR-0002](docs/adr/0002-conversation-lifecycle-and-roadmap.md) — accepted documentary lifecycle and roadmap decision
+- [ADR-0003](docs/adr/0003-code-and-test-foundation.md) — agreed session/code/test foundation, pending runtime review
 - [MiniCPM research](docs/research/minicpm5-2b.md) — source evidence and future comparison, not a model selection

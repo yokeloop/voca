@@ -8,9 +8,9 @@ tags:
 
 # VOCA v3 — Domain Glossary
 
-Термины будущей реализации, не утверждение о готовом runtime. Контракты и сообщения определены в [архитектуре](docs/architecture.md), порядок реализации — в [roadmap](docs/roadmap.md).
+Термины будущего голосового runtime и реализуемой VOCA-13 session-основы. Точный текущий subset описан в [code architecture](docs/code-architecture.md); будущие контракты — в [architecture](docs/architecture.md), порядок — в [roadmap](docs/roadmap.md).
 
-- **Session** — сохраняемая в SQLite история разговора, turns, инструкций, tool calls и tasks с уникальным `session_id`; живёт дольше соединения или включённого микрофона.
+- **Session** — в VOCA-13 durable SQLite запись с уникальным `session_id` и cursor; будущая реализация расширит её историей разговора, turns, инструкциями, tool calls и tasks. Session живёт дольше соединения или включённого микрофона.
 - **Connection** — работоспособность WebRTC и control WS: `connected` или `disconnected`; потеря любого канала инвалидирует активный ответ.
 - **Conversation** — режим приёма речи внутри session: `off` или `listening`. Кнопка переключает режим без удержания; `listening` сохраняется и пока агент отвечает. Reconnect восстанавливает данные, не включает микрофон.
 - **Conversation runtime** — единственный владелец активного turn, context и очереди событий внутри одного Python/FastAPI backend.
