@@ -144,6 +144,68 @@ Stop, disconnect и provider failure используют тот же boundary. 
 
 `assistant.text` передаёт актуальный накопленный пользовательский текст этого turn (не append delta); `final=false` — промежуточный снимок. Snapshot messages используют тот же turn/generation/text и terminal/playback status. `playback.finished` допустим только после end-of-audio marker и фактического опустошения browser playback, не временной паузы между chunks. ACK-и становятся durable playback facts и отражаются в turn state/snapshot. Local permission/connection error показывается даже без доставки серверу и не притворяется server cursor.
 
+## Delegation
+
+Внешний инструмент — `delegate(agent, task)`. В первом реализуемом наборе `agent` допускает **только `pi`**; enum строится из подключённых адаптеров, а не из списка желаемых продуктов. Пользователь до поручения выбирает конкретный экземпляр Pi и рабочий каталог. Модель задаёт только задачу; текст задания не меняет instance, cwd, конфигурацию или полномочия.
+
+Полномочия: **«Чтение, исследование и использование тулов/mcp подключенных к конкретно этому Pi инстансу»**.
+
+Первое поручение открывает **отдельную новую сессию** выбранного Pi в выбранном каталоге, не управляет его существующей беседой. Адаптер сохраняет выбранный executable/version, config root (`PI_CODING_AGENT_DIR`), пользовательское окружение запуска по ссылке, project resources и уже установленные этим экземпляром ограничения. Наследуются его tools/MCP/extensions/settings; секреты не копируются в task payload или trace. Нельзя запускать пустой Pi с потерянным окружением, подставлять конфигурацию VOCA/другого экземпляра, добавлять общий запрет tools/MCP либо разрешать произвольные изменения. VOCA не добавляет approvals и не обходит существующие ограничения.
+
+### Pi RPC contract and sources
+
+Проверено документально **2026-09-10**, установленный официальный пакет `@earendil-works/pi-coding-agent` **0.85.1**: полностью прочитаны README, `docs/rpc.md` (включая Types, Error Handling и Extension UI Protocol), `docs/settings.md`, `docs/environment-variables.md`, `docs/packages.md`; просмотрен связанный `examples/rpc-extension-ui.ts`. Официальные ссылки: [RPC](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/rpc.md), [settings](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/settings.md), [environment](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/environment-variables.md), [packages](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/packages.md). Ссылки main изменяемы; утверждения привязаны к прочитанному пакету 0.85.1. При реализации сверить документацию версии **выбранного** экземпляра заново. Никакой пользовательский Pi для проверки не запускался.
+
+- Запуск выбранного Pi в `--mode rpc`, stdin/stdout — JSONL с разделителем **LF**; Unicode separators внутри JSON не разделяют records, CR перед LF допустим. stderr — отдельный канал диагностики после redaction.
+- Новая сессия, без `--continue`, `--resume`, `--fork` и выбора чужого session file. `get_state` возвращает `sessionId`/`sessionFile`; адаптер сохраняет их вместе с идентификатором запуска/процесса до prompt. PID сам по себе не устойчивый ID после restart.
+- RPC не показывает project trust prompt; `ask`/`never` без сохранённого доверия игнорируют project resources. Поэтому совпадение конфигурации/доверия с выбранным экземпляром — preflight gate. Если это не обеспечено, видимая ошибка до запуска поручения; нельзя «исправить» это автоматическим `--approve` или `--no-tools`.
+- Отправка: `{"id":"k1:prompt","type":"prompt","message":"Исследуй структуру проекта"}`. Адаптер отображает request ID → `task_id=k1`. `response(success=true)` означает **принятие**, не окончание. `success=false` до принятия — known failed; после принятия ошибки приходят events/messages.
+- Agent events обычно не содержат request ID. Отдельный процесс/сессия с одним outstanding поручением даёт однозначное process/session → task соответствие. `message_update` содержит раздельные text/thinking/toolcall deltas; `message_end.message` — авторитетный результат сборки. `tool_execution_start/update/end` коррелируются через `toolCallId`, `partialResult` — накопленный snapshot, не append delta. Доступные MCP события видны как события tools/extension, а не гарантированная внутренняя трасса MCP-сервера.
+- `agent_end` завершает низкоуровневый run, после него возможны retry, compaction и queued continuations. Окончание поручения определяется **`agent_settled`**, после которого анализируются окончательные messages/error/stopReason. `agent_settled` сам по себе не означает success: `error`/`aborted` → failed, валидный финальный результат → succeeded; неоднозначное завершение без результата — видимая ошибка протокола, не пустой success. Промежуточный tool error может быть обработан агентом и не равен провалу всей задачи.
+- `extension_error`, auto-retry status и tool errors сохраняются/показываются. Штатный `extension_ui_request` передаётся пользователю и ответ возвращается по его ID, если этого требует существующая конфигурация. Это отображение уже существующего взаимодействия Pi, не новый слой approvals; никакого автоматического «да». TUI-only extension без RPC-эквивалента — явный blocker совместимости выбранного instance.
+- RPC `abort` отменяет операцию Pi и ждёт idle; voice barge-in/stop/disconnect **не посылают abort** и не завершают процесс. Отдельная отмена поручения не входит в первый voice-контракт.
+
+Hermes и OpenClaw — будущие отдельные адаптеры, а не взаимозаменяемый готовый protocol: Hermes runs/events SSE/stop/approval и OpenClaw WS agent/runId/agent.wait требуют собственных mappings и проверок.
+
+## Session Store
+
+SQLite — единственный источник истины VOCA; JSONL — экспорт, не синхронная вторая база. Не SQL-миграция, а обязательные связи:
+
+| Запись | Связи / уникальности |
+|---|---|
+| sessions | Уникальный `session_id`, текущий server event cursor |
+| turns | Уникальный `turn_id`, FK session, instruction snapshot, generation и terminal state; result turn с FK task |
+| instruction snapshots | Уникальный snapshot ID/version, порядок SOUL → user → agent, валидное содержимое; turn ссылается на неизменяемую версию |
+| messages | FK session/turn, role/text, generated/interrupted/error и playback facts отдельно; task result уникален по task ID |
+| tool calls | FK session/turn, уникальность `(session_id, tool_call_id)`, нормализованные arguments, dispatch outcome/task ID |
+| tasks | Уникальный task ID, FK originating session/tool call, уникальность originating tool call; выбранный instance/cwd, process/session identity, state, result/error |
+| result delivery / events | Уникальная запись результата и постановки в conversation queue по task ID; event ID уникален в session; context insertion и result turn claim отмечаются durable |
+
+До внешнего dispatch одна транзакция сохраняет tool call, `task_id`, `queued` и немедленный tool result с этим ID. Перед возможной отправкой prompt сохраняется launch intent/`running`: crash в неопределённом окне не разрешает повторный prompt. Повтор того же tool call возвращает прежний task ID. Только очередь, о которой известно, что launch intent ещё не было, допускает первый запуск.
+
+Терминальный task result и запись о его постановке в conversation queue сохраняются **атомарно**. Consumer добавляет результат в историю/context ровно один раз по task ID и отмечает это в той же транзакции; повтор terminal event — no-op, конфликтующий terminal result — видимая protocol error, не вторая запись. Runtime восстанавливает pending deliveries из SQLite после restart. Result turn claim сохраняется до начала речи; при потере процесса claimed turn не проигрывается автоматически повторно. Нельзя потерять durable result из-за выключенного микрофона или browser disconnect.
+
+## Task lifecycle
+
+| Переход | Trigger / владелец | Durable результат и UI |
+|---|---|---|
+| → `queued` | Валидный delegate, runtime transaction | Task ID возвращён loop немедленно, `task.update(queued)` |
+| `queued` → `running` | Adapter фиксирует launch intent, запускает отдельный Pi и prompt | Process/session mapping, `task.update(running)`; микрофон не блокируется |
+| `running` → `succeeded` | `agent_settled` + валидный окончательный результат | Result + delivery атомарно, `task.update(succeeded, result)` |
+| `queued/running` → `failed` | Известный отказ запуска/принятия или подтверждённая terminal ошибка | Error + terminal delivery атомарно, `task.update(failed)` |
+| `running` → `unknown` | Потеря процесса/канала, restart с неопределённым outcome | UI сообщает неизвестный исход, task ID сохраняется; **нет автоматического повтора** |
+| `unknown` → `succeeded/failed` | Надёжное восстановление исхода той же сессии, не новый dispatch | Обычная дедуплицированная terminal transaction; иначе остаётся unknown |
+
+Task card обновляется сразу после durable result, если браузер подключён, иначе при snapshot. Результат один раз входит в context **исходной сессии**. Runtime ставит отдельный result turn в свою очередь, не вклинивая речь в пользовательский turn. Пользовательский speech onset имеет приоритет. Если разговор выключен/браузер отключён, озвучивание pending result ждёт следующего включения этой сессии, не другой активной сессии. Если result turn уже начал выполняться и был прерван barge-in/stop/disconnect, автоматического переозвучивания нет: результат остаётся в истории/card и доступен по запросу. Exactly-once относится к записи и постановке, **не** к физическому прослушиванию при потере связи.
+
+### Task walkthroughs
+
+1. **Поручение → продолжение разговора → late result.** `delegate(pi, research)` → SQLite k1 queued → немедленный tool result k1 → Pi running. Следующий голосовой turn идёт независимо. Settled/result → atomic result+delivery → task card → context insertion → после пользовательского turn отдельная краткая пользовательская реплика result turn → TTS. Сырой RPC/tool result в TTS не идёт.
+2. **Barge-in во время поручения.** Voice g1 инвалидирован, audio flushed, g2 capturing; k1 остаётся running в своём процессе. Result приходит независимо, ждёт свободного conversation slot. Barge-in result turn прекращает звук и не ставит его назад в очередь.
+3. **Результат без браузера → reconnect.** Conversation off, k1 завершается, result+pending delivery сохранены. Resume даёт snapshot/card/history без микрофона и старого аудио. Новая кнопка разрешает ещё не начатый result turn в паузе, с приоритетом речи пользователя.
+4. **Restart backend при неизвестном исходе.** Незавершённый launch intent/running → unknown, показываем k1 и выбранную Pi session. Не запускаем новый процесс с тем же поручением. Только подтверждение исхода прежней сессии может закрыть unknown; иначе нужно решение пользователя, а не автоматический retry.
+5. **Дубликаты.** Второй `tool_call_id` с тем же исходным ID возвращает k1; повтор `agent_settled`/terminal result не создаёт новую delivery/message/result turn. После restart pending delivery продолжает потребление, а не новый Pi dispatch; уже claimed/interrupted playback не возобновляется.
+
 ## Deployment
 
 Приложение предполагает прямой запуск на хосте; systemd возможен при будущей реализации. Это не обещание «всё без контейнеров»: официальный способ установки self-hosted LangSmith проверяется отдельно. Целевой бюджет: i5-10600KF, RTX 4070 **12 GB VRAM**, около **32 GB RAM** на ОС, runtime, одновременно резидентные STT/LLM/TTS и LangSmith вместе. Достаточность бюджета не установлена.
