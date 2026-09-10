@@ -8,7 +8,9 @@ tags:
 
 # VOCA v3 — Architecture
 
-> Спецификация будущей реализации, не описание работающей установки. VOCA-2 — только документация; runtime, inference и измерения не выполнялись.
+> Спецификация будущей реализации, не описание работающей установки. [VOCA-2](https://github.com/yokeloop/voca/issues/2) — только документация; runtime, inference и измерения не выполнялись.
+
+Навигация: [roadmap](roadmap.md), [glossary](../CONTEXT.md), [ADR-0002](adr/0002-conversation-lifecycle-and-roadmap.md), [MiniCPM research](research/minicpm5-2b.md), [исторический grill](index.md).
 
 ## System Overview
 
