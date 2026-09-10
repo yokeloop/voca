@@ -206,6 +206,56 @@ Task card обновляется сразу после durable result, если 
 4. **Restart backend при неизвестном исходе.** Незавершённый launch intent/running → unknown, показываем k1 и выбранную Pi session. Не запускаем новый процесс с тем же поручением. Только подтверждение исхода прежней сессии может закрыть unknown; иначе нужно решение пользователя, а не автоматический retry.
 5. **Дубликаты.** Второй `tool_call_id` с тем же исходным ID возвращает k1; повтор `agent_settled`/terminal result не создаёт новую delivery/message/result turn. После restart pending delivery продолжает потребление, а не новый Pi dispatch; уже claimed/interrupted playback не возобновляется.
 
+## Observability and self-hosted LangSmith
+
+LangSmith обязателен **с первого голосового вертикального этапа**, self-hosted **на той же машине**, не opt-in и не SaaS. Приложение и LiteLLM явно получают локальный endpoint; отсутствие/невалидность endpoint — видимая configuration error, а не использование SDK SaaS default. Trace exporter не создаётся с неявным cloud URL. Это не равнозначно отсутствию license egress самого продукта.
+
+### Official requirements and installation blockers
+
+Проверка источников: **2026-09-10**, документальная, без установки, токенов и покупки лицензии. В таблице каждое утверждение ограничено указанным источником; изменяемые страницы не являются зафиксированной версией будущей установки.
+
+| Предмет | Официальный источник (проверен 2026-09-10) | Подтверждено / предел подтверждения |
+|---|---|---|
+| License / entitlement | [Self-hosted LangSmith](https://docs.langchain.com/langsmith/self-hosted), [pricing](https://www.langchain.com/pricing) как ссылка из руководства | Self-host — add-on Enterprise; trial/license key через sales. Наличие entitlement у пользователя **не подтверждено**, публичные docs не дают лицензию |
+| Доступные artifacts | [Официальный Helm repository](https://github.com/langchain-ai/helm), [chart](https://github.com/langchain-ai/helm/blob/03818bf6b3caf842869ad1ccda1dd6dc0e6e2620/charts/langsmith/Chart.yaml) | Chart/config доступны публично; на прочитанном commit chart `0.17.0-rc.25`, app `0.17.20rc1` — snapshot источника, **не выбор production версии**. Pull образов и доступ по лицензии на хосте не проверялись; будущая установка фиксирует stable release и image digests |
+| Single-host способ | [Kubernetes guide](https://docs.langchain.com/langsmith/kubernetes), [старый Docker URL](https://docs.langchain.com/langsmith/docker) | Подтверждён Helm/Kubernetes; Minikube/Kind тестируются **для development**, поэтому локальный single-host dev путь документирован. Docker URL сейчас отдаёт общий self-host guide с переходом к Kubernetes, не отдельную поддерживаемую Compose-инструкцию. Production single-host и native/systemd LangSmith **не подтверждены** |
+| Сервисы | [Состав установки](https://docs.langchain.com/langsmith/self-hosted) | Frontend, backend API, platform backend, queue, Playground, ACE; PostgreSQL (operational data), ClickHouse (traces/feedback), Redis (queue/cache). Blob storage опционален, рекомендован для production. VOCA SQLite их не заменяет |
+| Версии инфраструктуры | [Dependency versions](https://docs.langchain.com/langsmith/self-host-dependency-versions) | PostgreSQL ≥14, Redis ≥6.2 (либо Valkey ≥8), ClickHouse не ниже версии выбранного chart; Helm ≥3, поддерживаемый upstream Kubernetes. Это требования продукта, не установленный набор VOCA |
+| CPU/RAM | [Kubernetes prerequisites](https://docs.langchain.com/langsmith/kubernetes#kubernetes-cluster-requirements) | Рекомендуются ≥16 vCPU, 64 GB memory available. Default ClickHouse требует node с ≥4 vCPU / 16 GB **allocatable**. Это опубликованная рекомендация и default request, не доказанный минимум для одного пользователя |
+| Storage | [Kubernetes prerequisites](https://docs.langchain.com/langsmith/kubernetes#kubernetes-cluster-requirements), [chart values](https://github.com/langchain-ai/helm/blob/03818bf6b3caf842869ad1ccda1dd6dc0e6e2620/charts/langsmith/values.yaml) | Для in-cluster DB требуются PV/dynamic provisioner; рекомендованы SSD, 7000 IOPS / 1000 MiB/s, расширение томов и backups. Универсальная достаточная ёмкость для VOCA не опубликована: зависит от payload/retention/rate; свободное место и throughput хоста не измерены |
+| Network/license | [Egress](https://docs.langchain.com/langsmith/self-host-egress) | Для ≥0.9.0 без offline license обязателен HTTPS к `beacon.langchain.com`: проверка лицензии и usage billing. Offline/air-gapped license согласуется с sales, не получается выключением флага. Operational telemetry с 0.11 и usage telemetry включены по умолчанию, отдельно отключаемы; это не отключает billing |
+| Локальный API | [Self-host usage](https://docs.langchain.com/langsmith/self-host-usage) | UI `http(s)://<host>`, API `http(s)://<host>/api/v1`; `LANGSMITH_ENDPOINT` либо SDK `api_url` задаются явно. Конкретные URL/auth VOCA ещё не настроены и в документ не копируются |
+
+Целевой i5 (6 cores/12 threads) и около 32 GB RAM не соответствуют опубликованной рекомендации 16 vCPU/64 GB **даже до** ОС/inference. Hyperthreads не выдаются за свободные vCPU Kubernetes. RTX 4070 12 GB отдельно разделяется между STT/LLM/TTS. Нельзя объявлять этот host достаточным по уменьшенным на глаз requests или наличию GPU.
+
+**Блокеры начала зависимой реализации этапа 1:** (1) подтвердить Enterprise self-host/trial entitlement и доступ к образам выбранного release; (2) согласовать документированный single-host dev профиль Minikube/Kind либо получить подтверждение другого поддерживаемого профиля, затем доказать совместное размещение в 32 GB RAM с inference; (3) выделить persistent storage/retention budget и подтвердить его ресурсно; (4) выбрать разрешённый license egress или получить offline entitlement. До этого этап не объявляется готовым. Документация VOCA-2 завершима с этими блокерами; LangSmith не заменяется продуктом/облаком. Ничего из перечисленного не установлено этим тикетом.
+
+При будущем развёртывании отключаются необязательные operational/usage exports; VOCA traces остаются локальными. Не включать Engine, отправляющий содержимое во внешнюю LangSmith Intelligence, или cloud inference в Playground/других дополнительных функциях. Сетевые/license требования не скрывать под словом «локально».
+
+### Trace map
+
+Один voice turn — root run с `session_id`, `turn_id`, `generation_id`, trace/run IDs; task сохраняет исходные IDs и `task_id`, отдельный долгоживущий task run связан с originating trace, result turn ссылается на task run и исходную session. После завершения голосового trace связь с late result не теряется.
+
+| Участок | Содержимое / наблюдаемая граница |
+|---|---|
+| Browser/transport/VAD | Capture start/end, speech onset/end, AEC request/settings, timestamps и clock domain, transport delay; browser audio boundary и ACK |
+| STT | Input segment metadata и доступный локальный audio reference, language, redacted transcript, provider/model/version, timings/errors |
+| Context | Порядок и snapshot version инструкций, redacted assembled messages/history и отметки interrupted/playback |
+| LLM/LiteLLM | Redacted input/output, assistant content **отдельно** от reasoning, нормализованные tool calls, finish reason и first speakable text timing |
+| Dispatch/Pi | Validated call, task ID, selected instance identity без credentials, prompt acceptance, доступные RPC/tool/MCP progress/errors/result, settled и durable delivery |
+| TTS/playback | Пользовательский TTS input, output metadata (encoding/rate/chunks), first audio/first audible, queue depth, end marker, playback started/finished/cleared |
+| Runtime | Queue enqueue/dequeue/claim, invalidation/cancel request/ack, отброшенные late events, disconnect/reconnect/snapshot, component errors |
+
+LiteLLM callback покрывает LLM, **не всю трассу**. Приложение инструментирует остальные участки и связывает их IDs. Внутренности Pi/MCP, отсутствующие в их публичных events, отмечаются unavailable, а не придумываются. Для межпроцессных времён сохраняются clock domain/offset и погрешность; first audible фиксируется клиентом, не серверным timestamp выдачи PCM.
+
+### Content, redaction and failure policy
+
+Полезные inputs/outputs сохраняются для исследования, но это чувствительные тексты/результаты даже после redaction. Credentials удаляются **до** записи в экспортную очередь/trace: Authorization/Cookie headers, API keys, tokens, секреты в tool payloads/errors и свободном тексте. Не дампить окружение, auth configs, полные header maps. Идентификаторы/версии вместо содержимого конфигураций авторизации. Неизвестный неочищаемый payload не экспортируется; видимый redaction failure обозначает пропуск, а не молчаливую утечку.
+
+Будущий redaction gate: синтетический маркер `VOCA_SYNTHETIC_SECRET` в заголовках, nested arguments/results и error strings; в локальной trace/очереди/повторной доставке маркера нет, полезный безопасный текст и IDs остаются. Реальные секреты для проверки не используются.
+
+Недоступный LangSmith вызывает видимый `error(tracing/unavailable)` и запись в **ограниченную локальную очередь** повторной доставки (ограничения числа/байтов/возраста фиксируются до испытаний, с проверкой переполнения). Network export асинхронен и не блокирует микрофон. При переполнении/исчерпании retries фиксируются dropped count, затронутые event/run IDs и видимое tracing degraded; восстановление не скрывает потерянные spans. Повторная отправка использует прежние run/event IDs. Никакого SaaS fallback. Приложение может функционально продолжать разговор, но **неполная трасса не проходит gate наблюдаемости**.
+
 ## Deployment
 
 Приложение предполагает прямой запуск на хосте; systemd возможен при будущей реализации. Это не обещание «всё без контейнеров»: официальный способ установки self-hosted LangSmith проверяется отдельно. Целевой бюджет: i5-10600KF, RTX 4070 **12 GB VRAM**, около **32 GB RAM** на ОС, runtime, одновременно резидентные STT/LLM/TTS и LangSmith вместе. Достаточность бюджета не установлена.
