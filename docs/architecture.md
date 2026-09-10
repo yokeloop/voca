@@ -256,6 +256,68 @@ LiteLLM callback покрывает LLM, **не всю трассу**. Прил�
 
 Недоступный LangSmith вызывает видимый `error(tracing/unavailable)` и запись в **ограниченную локальную очередь** повторной доставки (ограничения числа/байтов/возраста фиксируются до испытаний, с проверкой переполнения). Network export асинхронен и не блокирует микрофон. При переполнении/исчерпании retries фиксируются dropped count, затронутые event/run IDs и видимое tracing degraded; восстановление не скрывает потерянные spans. Повторная отправка использует прежние run/event IDs. Никакого SaaS fallback. Приложение может функционально продолжать разговор, но **неполная трасса не проходит gate наблюдаемости**.
 
+## Hypotheses and verification protocols
+
+Ниже — **будущие** испытания, не результаты VOCA-2. Каждый запуск записывает дату, host/driver/browser, версии/commits server и adapters, checkpoint/hash/quantization, prompt/snapshot/corpus revision, generation settings, timeout и очередь, cold/warm условия. Артефакт — таблица по каждой пробе + redacted trace IDs и необходимые audio/JSON samples; агрегат без исходных проб недостаточен. До испытаний фиксируются входы и критерии, после провала они не ослабляются.
+
+### H1 — Browser barge-in
+
+**Факт/источник:** проверено 2026-09-10: FastRTC [`f9395ea2`, v0.0.34](https://github.com/gradio-app/fastrtc/blob/f9395ea2/pyproject.toml); [`ReplyOnPause.__init__`](https://github.com/gradio-app/fastrtc/blob/f9395ea2/backend/fastrtc/reply_on_pause.py#L114-L130) не имеет отдельного interrupt callback; [`receive`](https://github.com/gradio-app/fastrtc/blob/f9395ea2/backend/fastrtc/reply_on_pause.py#L277-L297) закрывает generator/очищает очередь после `pause_detected`. Default `audio_chunk_duration=0.6` — окно обработки, не измеренная latency VOCA. [Issue #341](https://github.com/gradio-app/fastrtc/issues/341) описывает **Twilio**, версию 0.0.26, а не доказанный browser flush.
+
+**Не измерено:** speech-onset cancellation, WebRTC/browser buffers и echo в реальном VOCA. **Установка/вход:** минимальный browser UI, текущий локальный стек и tracing; длинный streaming ответ прервать короткой и длинной русской фразой в начале/середине/конце playback, повторить перебивание трижды подряд; проверить наушники и динамики/AEC, stop/reconnect и поздние callbacks. После этапа 3 повторить с работающим Pi поручением.
+
+**Метрики/артефакт:** speech onset → generation invalidation → cancel request/ack → последний слышимый старый сэмпл, отметки backend/browser queue и clear ACK, сохранённый новый transcript; timeline + loopback/аудиозапись и trace. **Успех:** старый звук реально прекращается без возобновления после clear, новая фраза не теряется, новый capture не ждёт старый inference, echo не порождает ложные turns; Pi task продолжает работать. **Решение:** успех допускает голосовой этап; провал блокирует его до устранения transport/cancellation разрыва. Закрытие Python generator без client boundary недостаточно; устойчивое перебивание не откладывается до polish.
+
+### H2 — Russian voice and shared memory
+
+**Факт/источник:** локальный Whisper server — выбранный стартовый STT, но checkpoint/server version ещё не зафиксированы и качество не доказано. [audio.cpp README `3174e6b2`](https://github.com/0xShug0/audio.cpp/blob/3174e6b2/README.md#supported-models) перечисляет языки/streaming по моделям, в частности русский у ряда TTS; это сведения upstream, не прослушивание VOCA. LangSmith budget — [официальные требования выше](#official-requirements-and-installation-blockers).
+
+**Не измерено:** русский STT/TTS и ресурсы при одновременной резидентности. **Установка/вход:** одинаковый заранее сохранённый корпус не менее 20 русских реплик (имена «Паша», «Белград», числа/даты «двадцать три», «10 сентября», короткие/длинные паузы, вопросы, промежуточное «Исследую проект»), каждый трижды cold и warm. STT/LLM/TTS остаются одновременно резидентными; LangSmith и ОС работают рядом. TTS отдельно получает эти классы текста; в LLM-ответах есть reasoning/tool payload, который не должен попасть в звук.
+
+**Метрики/артефакт:** transcript/reference, WER и ошибки имён/чисел/смысла; слепое прослушивание на разборчивость и правильность русских слов, пропуски/артефакты; first TTS audio/first audible, peak VRAM/RAM, CPU, OOM и очередь по пробам. **Успех:** на приёмочном корпусе сохранены смысл, имена и числа, все фразы разборчивы, нет служебного текста в TTS, OOM или бесконечного роста очередей. **Решение:** успех допускает этап 1; иначе остановить голосовой gate, локализовать STT/checkpoint/TTS/resource проблему и повторить тот же корпус. Нельзя объявить английский demo подтверждением русского или lazy load освобождением VRAM.
+
+### H3 — Latency
+
+**Факт/источник:** около **500 мс** — цель проекта из [исторического grill](index.md), не опубликованная гарантия FastRTC и не измерение. **Не измерено:** end-of-speech → first audible на этом хосте.
+
+**Установка/вход:** корпус H2, те же версии и совместная нагрузка; отдельно cold start и warm, short/long context, ответ с промежуточной speakable репликой и tool call. **Метрики:** VAD/end-of-turn delay, STT duration, LLM first **speakable text** (не первый reasoning token), TTS first chunk, transport/browser playback. Артефакт содержит p50/p95 end-of-speech → first audible и каждого сегмента, число проб и clock uncertainty; параллельные интервалы не суммируются как последовательные.
+
+**Критерий:** warm p50 около 500 мс или меньше — достижение центральной цели; p95 и cold публикуются отдельно, без сокрытия хвостов и без заявления о гарантии каждого ответа. **Решение:** успех подтверждает цель только для записанных условий; превышение означает «цель не достигнута», trace локализует bottleneck. Это не обязательная смена всего стека и **не отменяет функционально принятый этап 1**, если H1/H2/наблюдаемость проходят. До измерений цель остаётся непроверенной.
+
+### H4 — Unified audio.cpp (optional)
+
+**Факт/источник:** [server README `3174e6b2`](https://github.com/0xShug0/audio.cpp/blob/3174e6b2/app/server/README.md) описывает `/v1/audio/transcriptions`, `/v1/audio/speech`; PCM chunked/SSE для **streaming-capable** моделей в streaming mode. Transcription SSE загруженного файла не равно live input. [Lazy loading](https://github.com/0xShug0/audio.cpp/blob/3174e6b2/README.md#server) сохраняет загруженную модель до выхода, если residency отдельно не ограничена; сам lazy load не освобождает VRAM.
+
+**Не измерено:** unified STT/TTS на русском, cancellation и shared residency. **Установка/вход:** после базовой цепочки заменить только STT adapter в отдельной конфигурации опыта, повторить H1/H2/H3 с зафиксированными ASR/TTS моделями audio.cpp, чередовать запросы и отмены, наблюдать VRAM до/после lazy load. **Метрики/артефакт:** transcript/voice quality, streaming EOF/errors/cancel timeline, cold/warm first audio, peak memory и OOM, сравнение с Whisper baseline.
+
+**Успех:** не хуже baseline по приёмочному русскому корпусу, проходит flush/error/resource checks. **Решение:** успех лишь допускает отдельное решение о unified adapter; провал оставляет Whisper server. Эксперимент не prerequisite этапов 1–3.
+
+### H5 — LFM/MiniCPM and tool calling
+
+**Факт/источник:** проверено 2026-09-10: llama.cpp `c32d1dabe819002ca8aa3a885aca4057f5968e3d`, [`common/chat.cpp:1135–1144`](https://github.com/ggml-org/llama.cpp/blob/c32d1dabe819002ca8aa3a885aca4057f5968e3d/common/chat.cpp#L1135-L1144) выбирает LFM parser, [1186–1191](https://github.com/ggml-org/llama.cpp/blob/c32d1dabe819002ca8aa3a885aca4057f5968e3d/common/chat.cpp#L1186-L1191) — MiniCPM5 XML parser. Реализации [LFM Python-style](https://github.com/ggml-org/llama.cpp/blob/c32d1dabe819002ca8aa3a885aca4057f5968e3d/common/parsers/lfm2.cpp) и [MiniCPM XML](https://github.com/ggml-org/llama.cpp/blob/c32d1dabe819002ca8aa3a885aca4057f5968e3d/common/parsers/minicpm5.cpp) подтверждают serving-layer parsing. Это не проверка end-to-end deltas через LiteLLM. [Research с официальным GGUF](research/minicpm5-2b.md) отделяет model card от VOCA measurements.
+
+**Не измерено:** tool correctness, русский, reasoning isolation, latency/VRAM обеих моделей. **Установка/вход:** один корпус H2, одинаковые SOUL/user/agent snapshots и schema `delegate`, один llama.cpp/LiteLLM, сопоставимая quantization и одинаковые limits; отдельно документировать неизбежные различия templates/thinking. Сценарии: обычный вопрос без delegate; явное исследование → `delegate(pi, task)`; промежуточная реплика + call; неизвестный агент; malformed/truncated arguments; duplicate ID; reasoning рядом с text. Провести каждый трижды, сохранить как server deltas, так и normalized выход adapter (redacted). Реальное Pi поручение — только в приёмке этапа 3.
+
+**Метрики/артефакт:** валидность `id/function.name/function.arguments`, правильное действие/отказ, аргументы и количество dispatch, speakable текст без reasoning, first audible p50/p95, peak VRAM/RAM. **Успех:** все обязательные сценарии дают верное действие/отказ, invalid/duplicate не вызывают второй dispatch, reasoning/service text не озвучивается, H2 resource/voice проходит. **Решение:** gate LFM проходит → допускается Pi-этап; провал блокирует Pi до исправления server/template/provider integration или качества модели, **не порождает парсер в loop**. MiniCPM при успехе допускается к выбору по сравнительным артефактам, не автоматически становится baseline; при провале остаётся кандидатом. Рекламный benchmark ничего не переключает.
+
+### H6 — Deferred semantic activation, turn detection and fine-tuning
+
+**Источник/статус:** гипотезы grill 2026-09-02 и [ADR-0001](adr/0001-rewrite-v3.md), не внешний benchmark, checkpoint/реализации пока нет. Число **200–400 мс** для VAD → лёгкий STT → semantic gate — прежняя оценка, **не измерено**; необходимость fine-tuning не установлена.
+
+| Кандидат | Будущий сценарий и артефакт | Критерий допуска / решение |
+|---|---|---|
+| Always-on semantic activation | После принятой Pi-делегации: размеченный набор прямых обращений, фонового разговора, TV/эхо и тишины, один и тот же набор для baseline; confusion matrix false/missed activation, onset → decision p50/p95 и сохранность начала фразы | До опыта фиксируются допустимые false/missed rates и latency budget пользователем. Успех допускает opt-in эксперимент; провал оставляет кнопку + VAD. 200–400 мс не считается достигнутым без измерений |
+| Semantic turn detection | Русские паузы внутри фразы, перечисления/числа, заминки и законченные фразы из размеченного корпуса; сравнение с VAD: premature cut, пропущенный конец и delay p50/p95, запись/trace | Не терять слова/смысл, не ухудшить ошибки относительно VAD, показать улучшение end-of-turn delay на том же корпусе. Успех допускает отдельное включение; провал оставляет VAD |
+| Fine-tuning | Сначала зафиксировать воспроизводимые провалы исходной LFM с prompts на H2/H5; отдельный held-out корпус, baseline vs tuned checkpoint, ошибки tools/русского/instruction following, H3 и память | Только улучшение целевых ошибок без регрессии обязательных H2/H5 и resource gates допускает tuned model. Нет доказанных baseline failures — fine-tuning не нужен; провал опыта оставляет текущую модель |
+
+H6 относится к этапу 4; не блокирует этапы 1–3. Для любого кандидата сначала определяется версия, набор входов и критерии; до этого эксперимент не допускается к продукту.
+
+### H7 — Tracing and LangSmith gate
+
+**Факт/источник:** [официальные требования и неизвестные предпосылки](#official-requirements-and-installation-blockers); сам факт документации не доказывает установку. **Будущая проверка:** после entitlement/profile/resource preflight выполнить один полный voice turn и failure/barge-in, затем на этапе 3 late Pi result при отключённом браузере. Сопоставить trace map с runtime events, выключить endpoint и исчерпать ограниченную очередь, восстановить его; добавить только синтетический secret marker.
+
+**Артефакт/метрики:** локальные run IDs, карта span coverage, export attempts/dropped counts, queue bounds, redaction поиск, одновременная RAM/CPU/storage нагрузка H2. **Успех:** весь доступный путь коррелируется, секретного маркера нет, outage/overflow видны, микрофон не блокируется export, нет внешних trace/inference endpoints. **Решение:** успех допускает наблюдаемость соответствующего этапа; отсутствующая предпосылка, неполная trace или hidden loss блокирует его приёмку. Не переключать продукт и не откладывать tracing на opt-in.
+
 ## Deployment
 
 Приложение предполагает прямой запуск на хосте; systemd возможен при будущей реализации. Это не обещание «всё без контейнеров»: официальный способ установки self-hosted LangSmith проверяется отдельно. Целевой бюджет: i5-10600KF, RTX 4070 **12 GB VRAM**, около **32 GB RAM** на ОС, runtime, одновременно резидентные STT/LLM/TTS и LangSmith вместе. Достаточность бюджета не установлена.
