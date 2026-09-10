@@ -6,148 +6,70 @@ tags:
   - spec
 ---
 
-# Voice Agent v3 — Architecture Spec
+# VOCA v3 — Architecture
 
-> **Status:** Working document (post-grill 2026-09-02)
-> **Goal:** тонкий кастомизируемый голосовой ассистент с делегацией задач на агентов, близкий к реалтайм общению
+> Спецификация будущей реализации, не описание работающей установки. VOCA-2 — только документация; runtime, inference и измерения не выполнялись.
 
-## 1. System Overview
+## System Overview
 
-```
-[Browser UI]
-    ↕ WebRTC (FastRTC) + WebSocket (control events)
-[Python Backend (FastAPI)]
-    ├── FastRTC Stream (audio in/out, VAD, turn detection)
-    ├── LLM Loop (custom)
-    │     ├── STT client → Whisper server / audio.cpp (OpenAI-compatible API)
-    │     ├── LLM client → LiteLLM proxy → LFM-2.5 (llama.cpp / cloud)
-    │     └── TTS client → audio.cpp server (TTSProvider)
-    ├── Delegation Gateway
-    │     └── delegate(agent, task) → Hermes / Pi / OpenClaw (async streaming)
-    ├── Session Store (SQLite + JSONL export)
-    └── Config (SOUL.md / user.md / agent.md, hot-reload)
-```
+**Решено:** один Python/FastAPI backend, один пользователь и одна активная голосовая беседа; локальные inference endpoints без автоматического cloud fallback. **Подтверждено источником** означает только наличие описанного API/поведения в указанной версии, не работоспособность VOCA. **Не измерено на целевом хосте:** качество русского, cancellation/browser flush, latency, совместная память и размещение LangSmith.
 
-## 2. Components
-
-### 2.1 Audio Transport — FastRTC
-
-- WebRTC connection браузер ↔ backend
-- `getUserMedia({ audio: { echoCancellation: true }})` — браузерный AEC
-- Built-in Silero VAD + turn taking (`ReplyOnPause`, настраиваемые thresholds)
-- `can_interrupt=True` — barge-in detection
-- **Ручная работа:** TTS cancel при barge-in (остановить стрим, очистить буфер) — коллбек на interrupt
-- **Control events:** отдельный WebSocket alongside FastRTC (tool статусы, state changes, metadata)
-- **Activation Phase 1:** push-to-talk кнопка в UI
-- Известный latency оверхед vs raw WebSocket — принять, WebRTC даёт AEC
-
-### 2.2 STT
-
-- Интерфейс: OpenAI-compatible `/v1/audio/transcriptions` endpoint
-- Бэкенд (hypothesis, решить на реализации):
-  - audio.cpp ASR (если качество/скорость достаточны)
-  - whisper.cpp server (`/inference` + обёртка) или faster-whisper-server
-- Смена STT = смена URL в конфиге
-
-### 2.3 LLM — LiteLLM proxy
-
-- LiteLLM между пайплайном и моделью
-- LFM-2.5 (Q4_K_M на llama.cpp GPU) — основная, быстрый инферс
-- LangSmith tracing всех запросов
-- Отдельные LLM тесты (eval)
-- Доступ к модели другим агентам через тот же endpoint
-- Смена модели = конфиг (без изменения пайплайна)
-
-### 2.4 LLM Loop (custom, Python)
-
-Ядро пайплайна. Пайплайн сам управляет:
-
-```
-loop:
-  1. Собрать context (system prompt = SOUL + user + agent, history, tool results)
-  2. Отправить в LLM (через LiteLLM)
-  3. Парсинг ответа:
-     - text → отправить в TTS (говорить)
-     - tool calls → dispatch (действовать)
-     - text + tool calls → text = промежуточная реплика, tool = действие
-  4. Tool result → обратно в context → goto 2
-  5. Финальный text (без tool calls) → TTS → конец turn
+```text
+Browser: microphone + AEC request + playback + minimal UI
+  | WebRTC audio                         | WebSocket control/status
+  v                                      v
+One Python/FastAPI backend
+  Audio transport (FastRTC, VAD) <--> Conversation runtime
+                                      | sole active turn/context/event queue owner
+                                      | custom LLM loop
+                                      +--> STT adapter --> local Whisper server
+                                      +--> LLM adapter --> local LiteLLM --> llama.cpp / LFM2.5
+                                      +--> TTSProvider --> local audio.cpp
+                                      |                     |
+  WebRTC audio <-- backend audio queue <---------------------+
+                                      +--> delegation adapter --> selected Pi instance
+                                      +--> SQLite store
+                                      +--> redacted trace queue --> local self-hosted LangSmith
+Local LiteLLM ------------------------------------------------> same local LangSmith
 ```
 
-- Правила "когда говорить промежуточно, когда молчать" — в agent.md
-- LFM-2.5 tool call формат парсится в loop
-- Context compression (если нужно) — Phase 3+
+Inference servers, LiteLLM и LangSmith — обслуживающие процессы, не дополнительные бизнес-бэкенды. SQLite хранит состояние VOCA; базы LangSmith обслуживают tracing, не runtime. Отдельный брокер, workflow engine и общий агентский gateway не вводятся.
 
-### 2.5 TTS — audio.cpp server
+## Components
 
-- TTSProvider абстракция в пайплайне
-- audio.cpp server под капотом (supertonic, vibevoice, voxcpm2, qwen3_tts, fish_audio и др. — экспериментировать)
-- Смена TTS = новый адаптер, пайплайн не трогается
+### Audio transport and activation
 
-### 2.6 Delegation Gateway
+FastRTC — стартовый WebRTC transport. Browser запрашивает `getUserMedia({audio:{echoCancellation:true}})`; это запрос AEC, не гарантия отсутствия эха. VAD разделяет реплики. Кнопка включает/выключает разговор, удерживать её не нужно. Минимальный UI входит в первый этап: переключатель, transcript/assistant text, состояние соединения и разговора, видимая ошибка. Control/status идут по отдельному WebSocket, не внутри текста LLM и не через аудио.
 
-- Единый tool: `delegate(agent, task)`
-  - `agent`: "hermes" | "pi" | "openclaw" — LLM выбирает параметром (правила в agent.md)
-  - `task`: описание задачи
-- Gateway маршрутизирует по параметру `agent`
-- **Протокол:** async streaming
-  - Вызов → task ID сразу
-  - Gateway пушит статусы: started → working → step completed → done/failed
-  - WebSocket/SSE, промежуточные шаги стримятся
-  - Результат re-enters conversation как новый turn
-- LLM loop решает: сказать "работаю над этим" (голосом) и ждать, или молчать
-- Паттерн: `delegate_task(background=true)` из Hermes
+Transport передаёт runtime аудиофрагменты с format/sample rate, начало/конец речи и ошибки соединения. Runtime определяет turn и поколение ответа, владеет очередями и отменой; transport исполняет его команды. Реальный browser flush FastRTC ещё должен пройти раннюю проверку.
 
-### 2.7 Session Store — SQLite
+### Provider contracts
 
-- Паттерн: Hermes `state.db` (SQLite + FTS5)
-- Схема: sessions, messages (user/assistant/tool), tool_calls, context snapshots
-- При reconnect — загрузка контекста из БД
-- JSONL экспорт (human-readable backup)
-- Поиск по истории (FTS5, опционально)
+Все вызовы коррелируются с `session_id`, `turn_id`, `generation_id`. Адаптер объявляет capabilities: языки, форматы/частоты, streaming, cancellation и особенности модели; неподдерживаемая возможность — явная ошибка до dispatch. URL-совместимость не означает совместимость языка, модели или streaming. Никакой автоматической облачной подмены при ошибке.
 
-### 2.8 Инструкции — SOUL.md / user.md / agent.md
+| Граница / владелец адаптации | Вход | Выход в runtime | Завершение, отмена и ошибка |
+|---|---|---|---|
+| STT adapter → Whisper server, OpenAI-compatible transcription API | Завершённый аудиосегмент, format/sample rate, language hint `ru` | Итоговый transcript и язык (распознанный либо явно заданный), metadata запроса | Один final либо timeout/error, пустой результат не выдумывается. Cancel закрывает запрос; поздний final старого поколения отбрасывается |
+| LLM adapter → LiteLLM → локальный llama.cpp / LFM2.5 | Instruction snapshot, история, сообщения, schemas доступных tools | Раздельные потоки assistant content, reasoning, нормализованные `tool_calls`; finish reason | EOF с валидным finish либо timeout/error; cancel upstream и отсечение всех поздних deltas |
+| TTSProvider → audio.cpp | Только пользовательский текст фрагментами, язык и выбранный voice/model | Последовательные audio chunks с encoding, sample rate, channels и признаком конца | Конец текста/аудио, cancel стрима, timeout/error; runtime очищает очередь, отсекает поздние chunks |
+| Audio transport → Browser playback | Audio chunks активного поколения, согласованный playback boundary | Первый playback и подтверждение завершения/очистки | Сбой транспорта инвалидирует ответ; backend EOF не означает, что пользователь всё услышал |
 
-- Файлы лежат в config directory
-- Пути в конфиге
-- **Hot-reload** при изменении (правка → сразу тест, без перезапуска)
-- Вставляются в system prompt
+Стартовый STT — Whisper server с OpenAI-compatible transcription API (не обещание, что голый whisper.cpp `/inference` уже совместим). Стартовый LLM — LFM2.5 в llama.cpp через LiteLLM. Стартовый TTS — audio.cpp через `TTSProvider`; пригодный русский checkpoint ещё не выбран по измерениям. Unified STT/TTS audio.cpp — отдельный эксперимент, не prerequisite. MiniCPM5-2B — кандидат сравнения, не выбранная замена.
 
-### 2.9 UI — новый с нуля
+Каждый адаптер до интеграции фиксирует конечные request/idle timeout и поведение при cancel, включая случай, когда сервер физически продолжает inference. Runtime никогда не ждёт освобождения старого inference для захвата следующей речи. Cancel запроса не выдаётся за подтверждённое освобождение GPU.
 
-- **После** готового пайплайна и бэкенда
-- Phase 1: минимальный (кнопка активации, transcript, статус)
-- Дальше: avatar, panels, controls — дизайн с нуля, НЕ перенос v2
+### Custom LLM loop
 
-## 3. Phases
+Runtime собирает context → вызывает LLM → принимает типизированные deltas → произносит только speakable assistant content → проверяет complete tool calls → dispatch → добавляет tool result в context → продолжает при необходимости. Для `delegate` немедленный tool result — durable task ID, не ожидание внешнего агента.
 
-| Phase | Скоуп | Выход |
-|-------|-------|-------|
-| 1 — MVP pipeline | FastRTC + push-to-talk, STT→LLM→TTS, LiteLLM, SQLite, SOUL/user/agent | Голосовой разговор работает |
-| 2 — Agent capabilities | LLM loop + tool calling, delegation gateway, async статусы | Агент делегирует и докладывает |
-| 3 — Realtime polish | Barge-in TTS cancel, semantic turn detection, AEC tuning | Естественное общение |
-| 4 — UI | Новый UI с нуля | Полный продукт |
-| 5 — R&D | Always-on activation, fine-tuning LFM-2.5, STT/TTS эксперименты | Без кнопки, tuned модель |
+Контракт tool call: `{"id":"call-1","function":{"name":"delegate","arguments":"{\"agent\":\"pi\",\"task\":\"Исследуй структуру проекта\"}"}}`. `function.arguments` — полная JSON-строка, разбираемая в объект по schema. Loop проверяет уникальный ID, известное имя, типы/обязательные поля и доступного агента **до** dispatch. Неполный, невалидный или неизвестный вызов не исполняется: фиксируется tool validation error. Повтор ID возвращает прежний результат dispatch.
 
-## 4. Hypotheses (gate на реализации)
+Pythonic LFM и XML MiniCPM разбирает serving layer llama.cpp; loop не получает новый модельный парсер. Нормализация должна быть доказана для выбранных версий server/template/model. Reasoning, tool arguments/results, RPC events и служебные маркеры никогда не направляются в TTS. Assistant content рядом с tool call допускается только как отдельная пользовательская промежуточная реплика, например «Исследую проект»; это не озвучивание сырого stream. Правила speakable content задаёт `agent.md`, а типизированная граница TTS удерживает изоляцию независимо от промпта.
 
-1. audio.cpp покрывает STT + VAD + TTS одним сервером (vs отдельный whisper)
-2. FastRTC latency ≤ ~500ms voice-to-voice
-3. Barge-in TTS cancel реализуем поверх FastRTC interrupt callback
-4. Always-on semantic activation: VAD → лёгкий STT → LLM gate (~200-400ms)
-5. LFM-2.5 + prompts достаточно для Phase 1-2
+## Deployment
 
-## 5. Deployment
+Приложение предполагает прямой запуск на хосте; systemd возможен при будущей реализации. Это не обещание «всё без контейнеров»: официальный способ установки self-hosted LangSmith проверяется отдельно. Целевой бюджет: i5-10600KF, RTX 4070 **12 GB VRAM**, около **32 GB RAM** на ОС, runtime, одновременно резидентные STT/LLM/TTS и LangSmith вместе. Достаточность бюджета не установлена.
 
-- Прямой запуск на хосте (не Docker — минимум слоёв для latency)
-- systemd services: backend, audio.cpp, LiteLLM
-- Monorepo: `src/` (backend), `web/` (UI), `docs/`, `config/`
-- PC: i5-10600KF, RTX 4070, 32GB (canonical host из v2)
+## Out of scope
 
-## 6. Out of scope (v3 MVP)
-
-- Proactivity layer (deferred)
-- Multi-user
-- Kiosk
-- Telephony
-- Cloud fallback (только явный конфиг, как в v2 принципах)
+VOCA-2 не создаёт runtime, UI, migrations, configs, services или тестовую инфраструктуру; не запускает эксперименты и не устанавливает модели/LangSmith. Ранние этапы v3 исключают multi-user, telephony, kiosk и proactivity. Cloud inference/fallback не входит в выбранную цепочку. Режим always-on, дополнительные агенты и замена моделей не prerequisite базового разговора.
