@@ -82,6 +82,7 @@ class Diagnostics:
         outcome: str,
         *,
         operation_id: str | None = None,
+        level: str | None = None,
         duration_ms: int | None = None,
         reason: str | None = None,
         session_id: str | None = None,
@@ -90,7 +91,7 @@ class Diagnostics:
     ) -> None:
         payload: dict[str, object] = {
             "timestamp": self.format_timestamp(),
-            "level": self.level_for(outcome),
+            "level": level or self.level_for(outcome),
             "event": event,
             "operation_id": operation_id or str(uuid.uuid4()),
             "component": component,
@@ -106,9 +107,9 @@ class Diagnostics:
             payload["command_id"] = command_id
         if server_event_id is not None:
             payload["server_event_id"] = server_event_id
-        level = getattr(logging, str(payload["level"]))
+        level_number = LEVELS.get(str(payload["level"]), logging.INFO)
         self.logger.log(
-            level, "event", extra={"payload": payload, "component": component}
+            level_number, "event", extra={"payload": payload, "component": component}
         )
 
     @contextmanager
@@ -142,6 +143,19 @@ class Diagnostics:
                 operation_id=operation_id,
                 duration_ms=duration,
                 reason="operation_cancelled",
+                session_id=session_id,
+                command_id=command_id,
+            )
+            raise
+        except TimeoutError:
+            duration = int((time.monotonic() - started) * 1000)
+            self.log_event(
+                component,
+                event,
+                "timeout",
+                operation_id=operation_id,
+                duration_ms=duration,
+                reason="operation_timeout",
                 session_id=session_id,
                 command_id=command_id,
             )

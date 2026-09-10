@@ -178,6 +178,14 @@ def test_control_errors(tmp_path: Path, case: str, code: str) -> None:
         ):
             socket.receive_json()
         assert malformed.value.code == 4400
+    diagnostics = [
+        json.loads(line)
+        for line in (settings.log_dir / "voca.jsonl").read_text().splitlines()
+    ]
+    assert any(
+        entry["event"] == "control.command_rejected" and entry["level"] == "WARNING"
+        for entry in diagnostics
+    )
 
 
 def test_bootstrap_errors(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -195,6 +203,12 @@ def test_bootstrap_errors(tmp_path: Path, capsys: pytest.CaptureFixture[str]) ->
             "/api/sessions", content=marker, headers={"content-type": "text/plain"}
         )
         assert unsupported.status_code == 415
+        malformed_utf8 = client.post(
+            "/api/sessions",
+            content=b"\xff",
+            headers={"content-type": "application/json"},
+        )
+        assert malformed_utf8.status_code == 400
     logs = "".join(path.read_text() for path in settings.log_dir.glob("voca.jsonl*"))
     assert marker not in logs
     assert marker not in capsys.readouterr().err

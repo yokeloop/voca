@@ -81,7 +81,7 @@ def create_control_router() -> APIRouter:
         try:
             payload = await request.json()
             EmptyBody.model_validate(payload)
-        except (json.JSONDecodeError, ValidationError):
+        except (UnicodeDecodeError, json.JSONDecodeError, ValidationError):
             return error_response("control", "invalid_request", "Invalid request", 400)
         try:
             with (
@@ -307,6 +307,15 @@ async def send_session_error(
     command_id: str | None = None,
     session: Session | None = None,
 ) -> None:
+    diagnostics.log_event(
+        "control",
+        "control.command_rejected",
+        "failed",
+        level="WARNING",
+        reason=code,
+        session_id=session_id,
+        command_id=command_id,
+    )
     if session is None:
         current_session: Session = await run_in_threadpool(
             service.error_event, session_id

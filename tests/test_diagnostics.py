@@ -50,6 +50,23 @@ def test_json_fields_filtering_and_rotation(tmp_path: Path) -> None:
     assert all(path.stat().st_size <= 262144 + 2048 for path in files)
 
 
+def test_timeout_is_logged_as_timeout(tmp_path: Path) -> None:
+    log_dir = tmp_path / "logs"
+    diagnostics = configure_logging(log_dir, "INFO", {})
+    with (
+        pytest.raises(TimeoutError),
+        diagnostics.operation("control", "control.snapshot_send"),
+    ):
+        raise TimeoutError
+    diagnostics.close()
+    timeout_entries = [
+        entry for entry in entries(log_dir) if entry["outcome"] == "timeout"
+    ]
+    assert len(timeout_entries) == 1
+    assert timeout_entries[0]["event"] == "control.snapshot_send"
+    assert timeout_entries[0]["reason"] == "operation_timeout"
+
+
 def test_failure_warning_is_safe_and_once(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

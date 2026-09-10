@@ -43,3 +43,18 @@ def test_unusable_database(tmp_path: Path) -> None:
         ),
     ):
         pass
+    incompatible_shape = tmp_path / "incompatible-shape.sqlite3"
+    with sqlite3.connect(incompatible_shape) as database:
+        database.execute(
+            "CREATE TABLE sessions(session_id TEXT PRIMARY KEY, created_at TEXT, event_cursor TEXT)"
+        )
+        database.execute("PRAGMA user_version=1")
+    with (
+        pytest.raises(StorageUnavailable),
+        TestClient(
+            create_app(
+                Settings(db_path=incompatible_shape, log_dir=tmp_path / "shape-logs")
+            )
+        ),
+    ):
+        pass

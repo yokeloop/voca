@@ -68,14 +68,25 @@ class SQLiteSessionStore:
                     except sqlite3.Error:
                         self.connection.rollback()
                         raise
-                elif version != 1:
+                elif version != 1 or not self.has_expected_schema():
                     raise StorageUnavailable
-                self.connection.execute(
-                    "SELECT session_id, created_at, event_cursor FROM sessions LIMIT 1"
-                )
             except sqlite3.Error as error:
                 raise self.storage_error(error) from error
         self.diagnostics.log_event("storage", "storage.schema", "succeeded")
+
+    def has_expected_schema(self) -> bool:
+        row = self.connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'sessions'"
+        ).fetchone()
+        if row is None or not isinstance(row[0], str):
+            return False
+        return self.normalize_schema(row[0]) == self.normalize_schema(
+            "CREATE TABLE sessions(session_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, event_cursor INTEGER NOT NULL CHECK(event_cursor >= 0))"
+        )
+
+    @staticmethod
+    def normalize_schema(schema: str) -> str:
+        return "".join(schema.upper().split())
 
     def create(self, session: Session, operation_id: str | None = None) -> Session:
         with (

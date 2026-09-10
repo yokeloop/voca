@@ -10,7 +10,7 @@ The application writes UTF-8 `.local/logs/voca.jsonl` using one `RotatingFileHan
 
 ## Safe event schema
 
-Each event uses only allowlisted fields: UTC `timestamp`, `level`, static `event`, generated UUID `operation_id`, static `component`, `outcome`, and terminal `duration_ms` from a monotonic clock. Existing validated `session_id`, UUID command ID and `eN` server event ID may be added. Event names include `app.startup`, `storage.open`, `storage.schema`, `http.session_create`, `session.create`, `storage.session_insert`, `control.connect`, `control.receive`, `session.resume`, `storage.cursor_advance`, `control.snapshot_send`, `control.error_send`, `control.disconnect`, `app.shutdown`, and `storage.close`.
+Each event uses only allowlisted fields: UTC `timestamp`, `level`, static `event`, generated UUID `operation_id`, static `component`, `outcome`, and terminal `duration_ms` from a monotonic clock. Existing validated `session_id`, UUID command ID and `eN` server event ID may be added. Event names include `app.startup`, `storage.open`, `storage.schema`, `http.session_create`, `session.create`, `storage.session_insert`, `control.connect`, `control.receive`, `session.resume`, `storage.cursor_advance`, `control.snapshot_send`, `control.command_rejected`, `control.error_send`, `control.disconnect`, `app.shutdown`, and `storage.close`.
 
 HTTP/WS nested stages receive the same explicit operation ID. Session correlation starts only once the actual ID is valid. Invalid and startup paths do not invent a session. Start and terminal outcomes are logged for called operations; terminal entries carry a non-negative duration and safe enum reason where relevant.
 
