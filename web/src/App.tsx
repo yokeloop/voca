@@ -34,17 +34,16 @@ export function App() {
     if (restored.error !== null) {
       setError(restored.error);
     }
-    if (restored.session === null) {
-      return;
+    if (restored.session !== null) {
+      cursorRef.current = restored.session.lastEventId;
+      setSession(restored.session);
+      setSessionInput(restored.session.sessionId);
+      setCursorInput(restored.session.lastEventId ?? "");
+      connectRef.current(
+        restored.session.sessionId,
+        restored.session.lastEventId,
+      );
     }
-    cursorRef.current = restored.session.lastEventId;
-    setSession(restored.session);
-    setSessionInput(restored.session.sessionId);
-    setCursorInput(restored.session.lastEventId ?? "");
-    connectRef.current(
-      restored.session.sessionId,
-      restored.session.lastEventId,
-    );
     return () => socketRef.current?.close();
   }, []);
 
@@ -285,6 +284,6 @@ function isStoredSession(
   );
 }
 
-function cursorValue(value: string): number {
-  return Number.parseInt(value.slice(1), 10);
+function cursorValue(value: string): bigint {
+  return BigInt(value.slice(1));
 }

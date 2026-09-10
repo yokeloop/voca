@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import sys
@@ -116,10 +117,11 @@ class Diagnostics:
         component: str,
         event: str,
         *,
+        operation_id: str | None = None,
         session_id: str | None = None,
         command_id: str | None = None,
     ) -> Iterator[str]:
-        operation_id = str(uuid.uuid4())
+        operation_id = operation_id or str(uuid.uuid4())
         started = time.monotonic()
         self.log_event(
             component,
@@ -131,6 +133,19 @@ class Diagnostics:
         )
         try:
             yield operation_id
+        except asyncio.CancelledError:
+            duration = int((time.monotonic() - started) * 1000)
+            self.log_event(
+                component,
+                event,
+                "cancelled",
+                operation_id=operation_id,
+                duration_ms=duration,
+                reason="operation_cancelled",
+                session_id=session_id,
+                command_id=command_id,
+            )
+            raise
         except BaseException:
             duration = int((time.monotonic() - started) * 1000)
             self.log_event(

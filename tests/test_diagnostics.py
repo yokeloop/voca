@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import json
-import logging
+import sqlite3
 from pathlib import Path
 
-from voca.diagnostics import SafeRotatingFileHandler, configure_logging
+import pytest
+from fastapi.testclient import TestClient
+
+from voca.app import create_app
+from voca.config import Settings
+from voca.diagnostics import configure_logging
 
 
 def entries(log_dir: Path) -> list[dict[str, object]]:
@@ -45,13 +50,35 @@ def test_json_fields_filtering_and_rotation(tmp_path: Path) -> None:
     assert all(path.stat().st_size <= 262144 + 2048 for path in files)
 
 
-def test_failure_warning_is_safe_and_once(tmp_path: Path, capsys: object) -> None:
-    diagnostics = configure_logging(tmp_path / "logs", "INFO", {})
-    assert isinstance(diagnostics.handler, SafeRotatingFileHandler)
-    record = logging.makeLogRecord({"msg": "VOCA_SYNTHETIC_SECRET"})
-    diagnostics.handler.handleError(record)
-    diagnostics.handler.handleError(record)
-    diagnostics.close()
+def test_failure_warning_is_safe_and_once(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    unavailable_log_dir = tmp_path / "unavailable-log-dir"
+    unavailable_log_dir.write_text("not a directory")
+    settings = Settings(db_path=tmp_path / "voca.sqlite3", log_dir=unavailable_log_dir)
+    marker = "VOCA_SYNTHETIC_SECRET"
+    with TestClient(create_app(settings)) as client:
+        created = client.post("/api/sessions", json={})
+        assert created.status_code == 201
+        session_id = created.json()["session_id"]
+        with client.websocket_connect(f"/api/sessions/{session_id}/control") as socket:
+            socket.send_json(
+                {
+                    "type": "session.resume",
+                    "session_id": session_id,
+                    "event_id": "f1d37af1-2ed6-4bb2-a7a2-5d0777d1db4c",
+                    "last_event_id": None,
+                }
+            )
+            assert socket.receive_json()["type"] == "session.snapshot"
+        invalid = client.post(
+            "/api/sessions",
+            content=f'{{"marker":"{marker}"}}',
+            headers={"content-type": "application/json"},
+        )
+        assert invalid.status_code == 400
+    with sqlite3.connect(settings.db_path) as database:
+        assert database.execute("SELECT COUNT(*) FROM sessions").fetchone() == (1,)
     captured = capsys.readouterr()
     assert captured.err == "diagnostics/write_failed\n"
-    assert "VOCA_SYNTHETIC_SECRET" not in captured.err
+    assert marker not in captured.err

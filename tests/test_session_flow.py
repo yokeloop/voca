@@ -79,6 +79,23 @@ def test_session_flow(tmp_path: Path) -> None:
     assert any(
         "duration_ms" in entry and entry["duration_ms"] >= 0 for entry in entries
     )
+    resume_events = [
+        entry
+        for entry in entries
+        if entry.get("session_id") == session_id
+        and entry["event"]
+        in {
+            "control.receive",
+            "session.resume",
+            "storage.cursor_advance",
+            "control.snapshot_send",
+        }
+    ]
+    operation_ids = {entry["operation_id"] for entry in resume_events}
+    assert any(
+        sum(entry["operation_id"] == operation_id for entry in resume_events) == 8
+        for operation_id in operation_ids
+    )
 
 
 @pytest.mark.parametrize(
@@ -90,6 +107,7 @@ def test_session_flow(tmp_path: Path) -> None:
         ("stop", "unsupported_command"),
         ("mismatch", "session_mismatch"),
         ("future", "invalid_cursor"),
+        ("unicode_cursor", "invalid_command"),
     ],
 )
 def test_control_errors(tmp_path: Path, case: str, code: str) -> None:
@@ -121,6 +139,13 @@ def test_control_errors(tmp_path: Path, case: str, code: str) -> None:
                     "event_id": command_id,
                     "last_event_id": "e999",
                 }
+            if case == "unicode_cursor":
+                command = {
+                    "type": "session.resume",
+                    "session_id": session_id,
+                    "event_id": command_id,
+                    "last_event_id": "e١",
+                }
             rendered = json.dumps(command)
         with client.websocket_connect(f"/api/sessions/{session_id}/control") as socket:
             socket.send_text(rendered)
@@ -133,6 +158,13 @@ def test_control_errors(tmp_path: Path, case: str, code: str) -> None:
         with client.websocket_connect(f"/api/sessions/{session_id}/control") as socket:
             socket.send_bytes(b"invalid")
             assert socket.receive_json()["code"] == "invalid_command"
+        with (
+            pytest.raises(WebSocketDisconnect) as oversized,
+            client.websocket_connect(f"/api/sessions/{session_id}/control") as socket,
+        ):
+            socket.send_bytes(b"x" * 8193)
+            socket.receive_json()
+        assert oversized.value.code == 1009
     with TestClient(create_app(settings)) as client:
         with (
             pytest.raises(WebSocketDisconnect) as unknown,

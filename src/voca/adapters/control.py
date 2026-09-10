@@ -22,6 +22,7 @@ from voca.core.session import (
 from voca.diagnostics import Diagnostics
 
 MAX_CURSOR = 9223372036854775807
+MAX_FRAME_BYTES = 8192
 
 
 class EmptyBody(BaseModel):
@@ -55,7 +56,7 @@ class ResumeCommand(Command):
     def canonical_cursor(cls, value: str | None) -> str | None:
         if value is None:
             return value
-        if not value.startswith("e") or not value[1:].isdigit():
+        if not is_canonical_cursor(value):
             raise ValueError("invalid cursor")
         cursor = int(value[1:])
         if cursor < 1 or cursor > MAX_CURSOR:
@@ -83,17 +84,19 @@ def create_control_router() -> APIRouter:
         except (json.JSONDecodeError, ValidationError):
             return error_response("control", "invalid_request", "Invalid request", 400)
         try:
-            with diagnostics.operation("control", "http.session_create"):
-                session = await run_in_threadpool(service.create_session)
+            with (
+                diagnostics.operation("control", "http.session_create") as operation_id,
+                diagnostics.operation(
+                    "session", "session.create", operation_id=operation_id
+                ),
+            ):
+                session = await run_in_threadpool(service.create_session, operation_id)
         except StorageBusy:
             return error_response("storage", "storage_busy", "Storage is busy", 503)
         except (StorageUnavailable, StoreClosed):
             return error_response(
                 "storage", "storage_unavailable", "Storage is unavailable", 503
             )
-        diagnostics.log_event(
-            "session", "session.create", "succeeded", session_id=session.session_id
-        )
         return JSONResponse(
             {"session_id": session.session_id, "last_event_id": None},
             status_code=201,
@@ -124,7 +127,11 @@ def create_control_router() -> APIRouter:
                 message = await socket.receive()
                 if message["type"] == "websocket.disconnect":
                     raise WebSocketDisconnect(message.get("code", 1000))
-                if message.get("bytes") is not None:
+                binary = message.get("bytes")
+                if isinstance(binary, bytes) and len(binary) > MAX_FRAME_BYTES:
+                    await socket.close(code=1009, reason="frame_too_large")
+                    return
+                if binary is not None:
                     await send_session_error(
                         socket,
                         service,
@@ -135,6 +142,9 @@ def create_control_router() -> APIRouter:
                     )
                     continue
                 raw = message.get("text")
+                if isinstance(raw, str) and len(raw.encode("utf-8")) > MAX_FRAME_BYTES:
+                    await socket.close(code=1009, reason="frame_too_large")
+                    return
                 if not isinstance(raw, str):
                     await send_session_error(
                         socket,
@@ -198,13 +208,6 @@ async def handle_command(
             "Session does not match",
         )
         return
-    diagnostics.log_event(
-        "control",
-        "control.receive",
-        "succeeded",
-        session_id=session_id,
-        command_id=base.event_id,
-    )
     if base.type != "session.resume":
         await send_session_error(
             socket,
@@ -228,9 +231,27 @@ async def handle_command(
             base.event_id,
         )
         return
-    result = await run_in_threadpool(
-        service.resume_session, session_id, command.last_event_id
-    )
+    with (
+        diagnostics.operation(
+            "control",
+            "control.receive",
+            session_id=session_id,
+            command_id=command.event_id,
+        ) as operation_id,
+        diagnostics.operation(
+            "session",
+            "session.resume",
+            operation_id=operation_id,
+            session_id=session_id,
+            command_id=command.event_id,
+        ),
+    ):
+        result = await run_in_threadpool(
+            service.resume_session,
+            session_id,
+            command.last_event_id,
+            operation_id,
+        )
     if not result.cursor_valid:
         await send_session_error(
             socket,
@@ -243,11 +264,17 @@ async def handle_command(
             result.session,
         )
         return
-    await send_snapshot(socket, diagnostics, result.session, command.event_id)
+    await send_snapshot(
+        socket, diagnostics, result.session, command.event_id, operation_id
+    )
 
 
 async def send_snapshot(
-    socket: WebSocket, diagnostics: Diagnostics, session: Session, command_id: str
+    socket: WebSocket,
+    diagnostics: Diagnostics,
+    session: Session,
+    command_id: str,
+    operation_id: str | None = None,
 ) -> None:
     payload: dict[str, Any] = {
         "type": "session.snapshot",
@@ -260,15 +287,14 @@ async def send_snapshot(
         "tasks": [],
         "deliveries": [],
     }
-    await send_with_deadline(socket.send_json, payload)
-    diagnostics.log_event(
+    with diagnostics.operation(
         "control",
         "control.snapshot_send",
-        "succeeded",
+        operation_id=operation_id,
         session_id=session.session_id,
         command_id=command_id,
-        server_event_id=f"e{session.event_cursor}",
-    )
+    ):
+        await send_with_deadline(socket.send_json, payload)
 
 
 async def send_session_error(
@@ -319,6 +345,16 @@ def error_response(
     return JSONResponse(
         {"error": {"component": component, "code": code, "message": message}},
         status_code=status_code,
+    )
+
+
+def is_canonical_cursor(value: str) -> bool:
+    return (
+        len(value) > 1
+        and value.startswith("e")
+        and value[1:].isascii()
+        and value[1:].isdecimal()
+        and value[1] != "0"
     )
 
 

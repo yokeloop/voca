@@ -28,6 +28,7 @@ class SQLiteSessionStore:
     def open(cls, path: Path, diagnostics: Diagnostics) -> SQLiteSessionStore:
         if str(path) == ":memory:" or str(path).startswith("file:"):
             raise StorageUnavailable
+        connection: sqlite3.Connection | None = None
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             connection = sqlite3.connect(path, check_same_thread=False)
@@ -36,8 +37,18 @@ class SQLiteSessionStore:
             connection.execute("PRAGMA synchronous=FULL")
             store = cls(connection, diagnostics)
             store.initialize_schema()
+        except StorageUnavailable:
+            if connection is not None:
+                connection.close()
+            raise
         except sqlite3.Error as error:
+            if connection is not None:
+                connection.close()
             raise cls.storage_error(error) from error
+        except BaseException:
+            if connection is not None:
+                connection.close()
+            raise
         diagnostics.log_event("storage", "storage.open", "succeeded")
         return store
 
@@ -66,8 +77,16 @@ class SQLiteSessionStore:
                 raise self.storage_error(error) from error
         self.diagnostics.log_event("storage", "storage.schema", "succeeded")
 
-    def create(self, session: Session) -> Session:
-        with self.lock:
+    def create(self, session: Session, operation_id: str | None = None) -> Session:
+        with (
+            self.diagnostics.operation(
+                "storage",
+                "storage.session_insert",
+                operation_id=operation_id,
+                session_id=session.session_id,
+            ),
+            self.lock,
+        ):
             self.ensure_open()
             try:
                 self.connection.execute("BEGIN IMMEDIATE")
@@ -83,12 +102,6 @@ class SQLiteSessionStore:
             except sqlite3.Error as error:
                 self.connection.rollback()
                 raise self.storage_error(error) from error
-        self.diagnostics.log_event(
-            "storage",
-            "storage.session_insert",
-            "succeeded",
-            session_id=session.session_id,
-        )
         return session
 
     def get(self, session_id: str) -> Session:
@@ -105,8 +118,18 @@ class SQLiteSessionStore:
             raise SessionNotFound
         return self.session_from_row(row)
 
-    def advance_cursor(self, session_id: str) -> Session:
-        with self.lock:
+    def advance_cursor(
+        self, session_id: str, operation_id: str | None = None
+    ) -> Session:
+        with (
+            self.diagnostics.operation(
+                "storage",
+                "storage.cursor_advance",
+                operation_id=operation_id,
+                session_id=session_id,
+            ),
+            self.lock,
+        ):
             self.ensure_open()
             try:
                 self.connection.execute("BEGIN IMMEDIATE")
@@ -123,15 +146,7 @@ class SQLiteSessionStore:
             except sqlite3.Error as error:
                 self.connection.rollback()
                 raise self.storage_error(error) from error
-        session = self.session_from_row(cursor)
-        self.diagnostics.log_event(
-            "storage",
-            "storage.cursor_advance",
-            "succeeded",
-            session_id=session_id,
-            server_event_id=f"e{session.event_cursor}",
-        )
-        return session
+        return self.session_from_row(cursor)
 
     def close(self) -> None:
         with self.lock:
