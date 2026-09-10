@@ -8,7 +8,23 @@
 
 ## Run the diagnostic session panel
 
-See [code architecture](docs/code-architecture.md), [testing](docs/testing.md), and [diagnostics](docs/diagnostics.md) for the implemented boundary and checks. The locked bootstrap and launch commands are documented with the application package.
+See [code architecture](docs/code-architecture.md), [testing](docs/testing.md), and [diagnostics](docs/diagnostics.md) for the implemented boundary and checks.
+
+Bootstrap from the repository root with uv 0.12.4, Python 3.13.15, Node 22.23.2 and pnpm 10.34.5:
+
+```sh
+uv sync --locked --group dev
+pnpm --dir web install --frozen-lockfile
+```
+
+Install missing `uv` and Node/pnpm with their user-local upstream installers; do not use system `pip`. Bootstrap may need registry/cache access. The following checks and application commands work without a hidden dependency install:
+
+```sh
+uv run --offline --no-sync uvicorn voca.app:create_app --factory --host 127.0.0.1 --port 8000 --workers 1 --no-access-log --ws websockets --ws-max-size 8192
+pnpm --dir web dev --host 127.0.0.1 --port 5173 --strictPort
+```
+
+Open `http://127.0.0.1:5173`. For a restart walkthrough, stop only that backend with SIGINT and relaunch the same command from the same working directory and `VOCA_DB_PATH`.
 
 ## Architecture
 
