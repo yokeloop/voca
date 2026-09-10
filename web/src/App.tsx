@@ -8,11 +8,16 @@ import {
 } from "./control";
 
 const storageKey = "voca.session";
+const storedSessionId =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const storedCursor = /^e[1-9]\d*$/;
 
 type SessionState = { sessionId: string; lastEventId: string | null };
+type LoadedSession = { session: SessionState | null; error: string | null };
 
 export function App() {
   const socketRef = useRef<WebSocket | null>(null);
+  const cursorRef = useRef<string | null>(null);
   const connectRef = useRef<
     (sessionId: string, lastEventId: string | null) => void
   >(() => undefined);
@@ -26,13 +31,20 @@ export function App() {
 
   useEffect(() => {
     const restored = loadSession();
-    if (restored === null) {
+    if (restored.error !== null) {
+      setError(restored.error);
+    }
+    if (restored.session === null) {
       return;
     }
-    setSession(restored);
-    setSessionInput(restored.sessionId);
-    setCursorInput(restored.lastEventId ?? "");
-    connectRef.current(restored.sessionId, restored.lastEventId);
+    cursorRef.current = restored.session.lastEventId;
+    setSession(restored.session);
+    setSessionInput(restored.session.sessionId);
+    setCursorInput(restored.session.lastEventId ?? "");
+    connectRef.current(
+      restored.session.sessionId,
+      restored.session.lastEventId,
+    );
     return () => socketRef.current?.close();
   }, []);
 
@@ -57,7 +69,7 @@ export function App() {
     if (event.session_id !== expectedSessionId) {
       return;
     }
-    const previous = session?.lastEventId;
+    const previous = cursorRef.current;
     if (
       previous !== null &&
       previous !== undefined &&
@@ -66,6 +78,7 @@ export function App() {
       return;
     }
     const next = { sessionId: expectedSessionId, lastEventId: event.event_id };
+    cursorRef.current = event.event_id;
     setSession(next);
     setSessionInput(expectedSessionId);
     setCursorInput(event.event_id);
@@ -116,6 +129,7 @@ export function App() {
         sessionId: created.sessionId,
         lastEventId: created.lastEventId,
       };
+      cursorRef.current = null;
       setSession(next);
       setSessionInput(next.sessionId);
       setCursorInput("");
@@ -138,6 +152,7 @@ export function App() {
       setError("Enter a session ID before restoring.");
       return;
     }
+    cursorRef.current = next.lastEventId;
     setSession(next);
     setSnapshot(null);
     setError(null);
@@ -225,20 +240,32 @@ export function App() {
   );
 }
 
-function loadSession(): SessionState | null {
+function loadSession(): LoadedSession {
   try {
     const raw = localStorage.getItem(storageKey);
     if (raw === null) {
-      return null;
+      return { session: null, error: null };
     }
     const parsed: unknown = JSON.parse(raw);
     if (!isRecord(parsed) || !isStoredSession(parsed)) {
       localStorage.removeItem(storageKey);
-      return null;
+      return {
+        session: null,
+        error: "Stored session was invalid and was cleared.",
+      };
     }
-    return { sessionId: parsed.session_id, lastEventId: parsed.last_event_id };
+    return {
+      session: {
+        sessionId: parsed.session_id,
+        lastEventId: parsed.last_event_id,
+      },
+      error: null,
+    };
   } catch {
-    return null;
+    return {
+      session: null,
+      error: "Session persistence between reloads is unavailable.",
+    };
   }
 }
 
@@ -251,7 +278,10 @@ function isStoredSession(
 ): value is { session_id: string; last_event_id: string | null } {
   return (
     typeof value.session_id === "string" &&
-    (typeof value.last_event_id === "string" || value.last_event_id === null)
+    storedSessionId.test(value.session_id) &&
+    (value.last_event_id === null ||
+      (typeof value.last_event_id === "string" &&
+        storedCursor.test(value.last_event_id)))
   );
 }
 
