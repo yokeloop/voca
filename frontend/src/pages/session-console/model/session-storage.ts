@@ -19,7 +19,7 @@ export function loadSession(): {
       } catch {
         return {
           session: null,
-          error: "Stored session was invalid and was cleared.",
+          error: "Session persistence between reloads is unavailable.",
         };
       }
       return {
