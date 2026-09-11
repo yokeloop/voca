@@ -5,7 +5,10 @@ import logging
 import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import Final
+from typing import TYPE_CHECKING, Final
+
+if TYPE_CHECKING:
+    from voca.infrastructure.observability.diagnostics import Diagnostics
 
 LEVELS: Final = {
     "DEBUG": logging.DEBUG,
@@ -61,7 +64,9 @@ class ComponentFilter(logging.Filter):
         )
 
 
-def configure_logging(log_dir: Path, log_level: str, log_levels: dict[str, str]):
+def configure_logging(
+    log_dir: Path, log_level: str, log_levels: dict[str, str]
+) -> Diagnostics:
     from voca.infrastructure.observability.diagnostics import Diagnostics
 
     logger = logging.getLogger("voca")
