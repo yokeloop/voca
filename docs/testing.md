@@ -1,35 +1,20 @@
 # Testing
 
-VOCA-13 uses the cheapest sufficient test for the risk. There is no coverage or line-count target, no test infrastructure for future layers, and no browser/provider/GPU simulation.
+VOCA-13 uses the cheapest sufficient check: real SQLite/lifespan tests for persistence and lifecycle, focused diagnostics tests, pure frontend projection/protocol tests, and short AST/TypeScript-parser import-boundary checks. There is no coverage target, mock infrastructure, browser harness or duplicated layer suite. Browser/reload/reconnect walkthrough is `/review` evidence, not inferred from these checks.
 
-## Today
-
-| Risk | Evidence |
-|---|---|
-| session creation, cursor durability and restart | real SQLite plus `TestClient` in `test_session_flow.py` |
-| HTTP/WS validation and recovery after errors | parameterized real control workflow in `test_session_flow.py` |
-| lifespan ownership and unusable storage | `test_app_lifecycle.py` with actual close and incompatible paths/schema |
-| metadata safety, filtering, rotation and logging degradation | focused `test_diagnostics.py` |
-| browser wire client correctness | TypeScript typecheck/lint/build; manual browser walkthrough is separate evidence |
-
-The suite has no sleeps, async plugin, mock server, generic fixture factory, log snapshots or duplicated unit/API/browser assertions. Fakes are only appropriate later for expensive boundaries that actually exist. Hardware/browser/provider gates remain separate: a green API suite does not prove microphone, playback flush, GPU cancellation or credentials.
-
-## Reproducible checks
-
-From the application root after the documented locked bootstrap:
+From the repository root after the locked bootstrap:
 
 ```sh
-uv run --offline --no-sync ruff format --check src tests
-uv run --offline --no-sync ruff check src tests
-uv run --offline --no-sync mypy src/voca
-uv run --offline --no-sync pytest -q
-pnpm --dir web format:check
-pnpm --dir web lint
-pnpm --dir web typecheck
-pnpm --dir web build
+(cd backend && uv run --offline --no-sync ruff format --check src tests)
+(cd backend && uv run --offline --no-sync ruff check src tests)
+(cd backend && uv run --offline --no-sync mypy src/voca)
+(cd backend && uv run --offline --no-sync pytest -q)
+pnpm --dir frontend format:check
+pnpm --dir frontend lint
+pnpm --dir frontend typecheck
+pnpm --dir frontend test
+pnpm --dir frontend build
 git diff --check
 ```
 
-A small smoke is `uv run --offline --no-sync pytest tests/test_session_flow.py -q`; it requires no models, GPU, credentials, network service or provider call after bootstrap. The separate browser walkthrough records HTTP POST, WebSocket frames, reload/reconnect and backend restart using the same SQLite file. If browser access is unavailable, that acceptance evidence is explicitly unverified rather than inferred from TestClient.
-
-The GitHub workflow runs this same set with locked Python/uv/Node/pnpm dependencies and read-only repository contents. It has no secrets, GPU, external service, browser download matrix or coverage gate.
+The Python suite proves real schema/close/restart/error and bounded transport helpers. The Node built-in test runner imports pure TypeScript through Node strip-types and checks cursor precision, projection semantics and source boundaries. It adds no test dependency. The suite requires no GPU, credentials, models, services or browser after bootstrap.

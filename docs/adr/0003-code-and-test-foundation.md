@@ -26,6 +26,10 @@ The service/store boundary exists because current use cases need durable session
 
 Rejected approaches are: synthetic turns or scripted LLM behavior; framework/DI/plugin scaffolding; ORM, async storage, generic repository layers and future empty trees; duplicated tests across unit/API/browser; a browser-test framework before a browser risk justifies it. The cost is that VOCA-4 must add durable command dedup before it introduces side effects, and voice/hardware acceptance remains future work.
 
+## Rework clarification — 2026-09-11
+
+The initial layout did not pass acceptance because backend/frontend responsibilities were mixed and the core session, control and panel modules accumulated unrelated work. The chosen correction is an explicit `backend/` and `frontend/`, Simple Clean dependency direction for Python, and one pages-first FSD slice for the panel. This costs more explicit module boundaries and import checks, but avoids a giant hook or transport module. DI/CQRS/plugin frameworks, empty FSD layers, generic repositories and a new browser test platform were rejected as unnecessary for the current responsibility set. The status remains `agreed-pending-runtime-review`: this clarification is neither acceptance nor merge.
+
 ## References
 
 - [VOCA-13](https://github.com/yokeloop/voca/issues/13)

@@ -8,7 +8,7 @@ tags:
 
 # VOCA v3 — Domain Glossary
 
-Термины будущего голосового runtime и реализуемой VOCA-13 session-основы. Точный текущий subset описан в [code architecture](docs/code-architecture.md); будущие контракты — в [architecture](docs/architecture.md), порядок — в [roadmap](docs/roadmap.md).
+Термины будущего голосового runtime и реализуемой VOCA-13 session-основы; её `backend/`/`frontend/` границы описаны в [code architecture](docs/code-architecture.md). Точный текущий subset описан в [code architecture](docs/code-architecture.md); будущие контракты — в [architecture](docs/architecture.md), порядок — в [roadmap](docs/roadmap.md).
 
 - **Session** — в VOCA-13 durable SQLite запись с уникальным `session_id` и cursor; будущая реализация расширит её историей разговора, turns, инструкциями, tool calls и tasks. Session живёт дольше соединения или включённого микрофона.
 - **Connection** — работоспособность WebRTC и control WS: `connected` или `disconnected`; потеря любого канала инвалидирует активный ответ.

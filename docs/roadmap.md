@@ -6,7 +6,7 @@
 
 ## Foundation — VOCA-13
 
-**Outcome:** a diagnostic browser panel creates one durable SQLite session over HTTP, obtains an empty snapshot through control WS, and resumes the same session after reconnect or backend restart. Its own [tests](testing.md) and [diagnostics policy](diagnostics.md) are the proof. This is not a voice stage: it adds no microphone, providers, LangSmith, models, GPU or hardware gate result.
+**Outcome:** the `frontend/` diagnostic browser panel creates one durable session in the `backend/` SQLite application over HTTP, obtains an empty snapshot through control WS, and resumes the same session after reconnect or backend restart. Its own [tests](testing.md) and [diagnostics policy](diagnostics.md) are the proof. This is not a voice stage: it adds no microphone, providers, LangSmith, models, GPU or hardware gate result.
 
 ## Gates
 

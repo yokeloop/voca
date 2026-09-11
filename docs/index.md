@@ -15,7 +15,7 @@ tags:
 
 ## Current specification
 
-[VOCA-13](https://github.com/yokeloop/voca/issues/13) adds a small working session/control foundation. The voice stack remains planned: VOCA-2 supplies its contracts and roadmap, while VOCA-13 does not claim runtime inference or experiments.
+[VOCA-13](https://github.com/yokeloop/voca/issues/13) adds a small working session/control foundation split into `backend/` and `frontend/`; its actual module map is in [Code architecture](code-architecture.md). The voice stack remains planned: VOCA-2 supplies its contracts and roadmap, while VOCA-13 does not claim runtime inference or experiments.
 
 | Документ | Что читать |
 |---|---|
