@@ -41,15 +41,17 @@ def create_control_router() -> APIRouter:
         diagnostics: Diagnostics = socket.app.state.diagnostics
         await socket.accept()
         if not is_canonical_uuid(session_id):
-            await safe_close(socket, 4400, "invalid_session_id")
+            await safe_close(socket, diagnostics, None, 4400, "invalid_session_id")
             return
         try:
             await run_in_threadpool(service.get_session, session_id)
         except SessionNotFound:
-            await safe_close(socket, 4404, "session_not_found")
+            await safe_close(socket, diagnostics, session_id, 4404, "session_not_found")
             return
         except (StorageBusy, StorageUnavailable, StoreClosed):
-            await safe_close(socket, 1011, "storage_unavailable")
+            await safe_close(
+                socket, diagnostics, session_id, 1011, "storage_unavailable"
+            )
             return
         diagnostics.log_event(
             "control", "control.connect", "succeeded", session_id=session_id
@@ -61,7 +63,9 @@ def create_control_router() -> APIRouter:
                     raise WebSocketDisconnect(message.get("code", 1000))
                 binary = message.get("bytes")
                 if isinstance(binary, bytes) and len(binary) > MAX_FRAME_BYTES:
-                    await safe_close(socket, 1009, "frame_too_large")
+                    await safe_close(
+                        socket, diagnostics, session_id, 1009, "frame_too_large"
+                    )
                     return
                 if binary is not None:
                     await send_session_error(
@@ -75,7 +79,9 @@ def create_control_router() -> APIRouter:
                     continue
                 raw = message.get("text")
                 if isinstance(raw, str) and len(raw.encode()) > MAX_FRAME_BYTES:
-                    await safe_close(socket, 1009, "frame_too_large")
+                    await safe_close(
+                        socket, diagnostics, session_id, 1009, "frame_too_large"
+                    )
                     return
                 if not isinstance(raw, str):
                     await send_session_error(
@@ -93,10 +99,12 @@ def create_control_router() -> APIRouter:
                 "control", "control.disconnect", "succeeded", session_id=session_id
             )
         except asyncio.CancelledError:
-            await safe_close(socket, 1011, "cancelled")
+            await safe_close(socket, diagnostics, session_id, 1011, "cancelled")
             raise
         except (StorageBusy, StorageUnavailable, StoreClosed):
-            await safe_close(socket, 1011, "storage_unavailable")
+            await safe_close(
+                socket, diagnostics, session_id, 1011, "storage_unavailable"
+            )
         except (RuntimeError, ValueError, OSError, TimeoutError):
             diagnostics.log_event(
                 "app",
@@ -105,7 +113,7 @@ def create_control_router() -> APIRouter:
                 reason="internal_error",
                 session_id=session_id,
             )
-            await safe_close(socket, 1011, "internal_error")
+            await safe_close(socket, diagnostics, session_id, 1011, "internal_error")
 
     return router
 
@@ -239,8 +247,20 @@ async def send_session_error(
     )
 
 
-async def safe_close(socket: WebSocket, code: int, reason: str) -> None:
+async def safe_close(
+    socket: WebSocket,
+    diagnostics: Diagnostics,
+    session_id: str | None,
+    code: int,
+    reason: str,
+) -> None:
     try:
         await close_with_deadline(socket.close, code=code, reason=reason)
     except TimeoutError:
-        pass
+        diagnostics.log_event(
+            "control",
+            "control.close",
+            "timeout",
+            reason="close_timeout",
+            session_id=session_id,
+        )

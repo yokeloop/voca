@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from voca.bootstrap.app import create_app
-from voca.bootstrap.settings import Settings
+from voca.bootstrap.settings import Settings, load_settings
 
 
 def settings_for(tmp_path: Path) -> Settings:
@@ -97,6 +97,41 @@ def test_session_flow(tmp_path: Path) -> None:
         sum(entry["operation_id"] == operation_id for entry in resume_events) == 8
         for operation_id in operation_ids
     )
+
+
+@pytest.mark.parametrize(
+    "selected_path", [".local/voca.sqlite3", "custom/voca.sqlite3"]
+)
+def test_absolute_paths_survive_cwd_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, selected_path: str
+) -> None:
+    repo = tmp_path / "repo"
+    backend = repo / "backend"
+    backend.mkdir(parents=True)
+    monkeypatch.chdir(repo)
+    settings = load_settings(
+        {
+            "VOCA_DB_PATH": str((repo / selected_path).resolve()),
+            "VOCA_LOG_DIR": str((repo / ".local/logs").resolve()),
+        }
+    )
+    with TestClient(create_app(settings)) as client:
+        session_id = create_session(client)
+        with client.websocket_connect(f"/api/sessions/{session_id}/control") as socket:
+            socket.send_json(resume(session_id))
+            assert socket.receive_json()["event_id"] == "e1"
+    monkeypatch.chdir(backend)
+    with (
+        TestClient(create_app(settings)) as client,
+        client.websocket_connect(f"/api/sessions/{session_id}/control") as socket,
+    ):
+        socket.send_json(resume(session_id, "e1"))
+        assert socket.receive_json()["event_id"] == "e2"
+    with sqlite3.connect(settings.db_path) as database:
+        assert database.execute(
+            "SELECT session_id, event_cursor FROM sessions"
+        ).fetchall() == [(session_id, 2)]
+    assert not (backend / ".local").exists()
 
 
 @pytest.mark.parametrize(

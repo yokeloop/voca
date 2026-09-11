@@ -61,17 +61,26 @@ def test_unusable_database(tmp_path: Path) -> None:
         pass
 
 
+def resolved_import(node: ast.ImportFrom, path: Path, source_root: Path) -> str:
+    if node.level == 0:
+        return node.module or ""
+    package = list(path.relative_to(source_root).parent.parts)
+    parent = package[: len(package) - (node.level - 1)]
+    return ".".join(["voca", *parent, *(node.module or "").split(".")]).rstrip(".")
+
+
 def test_import_boundaries() -> None:
     source_root = Path(__file__).parents[1] / "src" / "voca"
     for path in source_root.rglob("*.py"):
+        tree = ast.parse(path.read_text())
         imports = [
             alias.name
-            for node in ast.walk(ast.parse(path.read_text()))
+            for node in ast.walk(tree)
             if isinstance(node, ast.Import)
             for alias in node.names
         ] + [
-            node.module or ""
-            for node in ast.walk(ast.parse(path.read_text()))
+            resolved_import(node, path, source_root)
+            for node in ast.walk(tree)
             if isinstance(node, ast.ImportFrom)
         ]
         relative = path.relative_to(source_root).as_posix()

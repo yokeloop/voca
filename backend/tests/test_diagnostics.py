@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import sqlite3
 from pathlib import Path
@@ -65,6 +66,24 @@ def test_timeout_is_logged_as_timeout(tmp_path: Path) -> None:
     assert len(timeout_entries) == 1
     assert timeout_entries[0]["event"] == "control.snapshot_send"
     assert timeout_entries[0]["reason"] == "operation_timeout"
+
+
+def test_cancellation_is_logged_and_reraised(tmp_path: Path) -> None:
+    log_dir = tmp_path / "logs"
+    diagnostics = configure_logging(log_dir, "INFO", {})
+
+    async def cancelled() -> None:
+        with diagnostics.operation("control", "control.snapshot_send"):
+            raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(cancelled())
+    diagnostics.close()
+    cancelled_entries = [
+        entry for entry in entries(log_dir) if entry["outcome"] == "cancelled"
+    ]
+    assert len(cancelled_entries) == 1
+    assert cancelled_entries[0]["event"] == "control.snapshot_send"
 
 
 def test_failure_warning_is_safe_and_once(

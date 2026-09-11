@@ -10,7 +10,23 @@ export function loadSession(): {
   try {
     const raw = localStorage.getItem(storageKey);
     if (raw === null) return { session: null, error: null };
-    const value: unknown = JSON.parse(raw);
+    let value: unknown;
+    try {
+      value = JSON.parse(raw);
+    } catch {
+      try {
+        localStorage.removeItem(storageKey);
+      } catch {
+        return {
+          session: null,
+          error: "Stored session was invalid and was cleared.",
+        };
+      }
+      return {
+        session: null,
+        error: "Stored session was invalid and was cleared.",
+      };
+    }
     if (
       !isRecord(value) ||
       !isSessionId(value.session_id) ||
