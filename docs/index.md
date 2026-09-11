@@ -15,15 +15,19 @@ tags:
 
 ## Current specification
 
-VOCA v3 пока **docs-only**. [VOCA-2](https://github.com/yokeloop/voca/issues/2) превращает стек из grill в проверяемые контракты и последовательность реализации; ни runtime, ни эксперименты этим документом не объявляются выполненными.
+[VOCA-13](https://github.com/yokeloop/voca/issues/13) adds a small working session/control foundation split into `backend/` and `frontend/`; its actual module map is in [Code architecture](code-architecture.md). The voice stack remains planned: VOCA-2 supplies its contracts and roadmap, while VOCA-13 does not claim runtime inference or experiments.
 
 | Документ | Что читать |
 |---|---|
 | [README](../README.md) | Краткий статус и стартовый стек |
-| [Architecture](architecture.md) | Runtime/provider boundaries, lifecycle/control/Pi/delivery, официальный LangSmith preflight, гипотезы H1–H7 |
+| [Code architecture](code-architecture.md) | Implemented session/control modules, owners and dependency direction |
+| [Testing](testing.md) | Risk matrix and repeatable foundation checks |
+| [Diagnostics](diagnostics.md) | Safe local JSONL policy and future diagnostic map |
+| [Architecture](architecture.md) | Future voice/provider boundaries, lifecycle/control/Pi/delivery, LangSmith preflight, hypotheses H1–H7 |
 | [Roadmap](roadmap.md) | Разговор → контекст/инструкции → Pi → остальные возможности; gates и приёмка |
 | [Glossary](../CONTEXT.md) | Единые определения conversation/session, turn/generation, task/playback |
-| [ADR-0002](adr/0002-conversation-lifecycle-and-roadmap.md) | Новые решения VOCA-2 и последствия |
+| [ADR-0002](adr/0002-conversation-lifecycle-and-roadmap.md) | Accepted documentary VOCA-2 decisions |
+| [ADR-0003](adr/0003-code-and-test-foundation.md) | Agreed foundation decision, executable result pending review |
 | [MiniCPM research](research/minicpm5-2b.md) | Официальный GGUF, пределы benchmark evidence и будущий протокол сравнения |
 | [ADR-0001](adr/0001-rewrite-v3.md) | Историческое решение rewrite от 2026-09-02 |
 

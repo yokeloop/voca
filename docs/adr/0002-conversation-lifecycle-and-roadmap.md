@@ -3,14 +3,14 @@ tags:
   - voice-agent
   - v3
   - adr
-status: proposed
+status: accepted
 ---
 
 # ADR-0002: Conversation lifecycle and gated roadmap
 
 ## Status
 
-Proposed for acceptance in [VOCA-2](https://github.com/yokeloop/voca/issues/2), 2026-09-10. This ADR records the planned v3 contract, not implemented or experimentally verified behavior. [ADR-0001](0001-rewrite-v3.md) remains the historical rewrite decision of 2026-09-02; this document refines its lifecycle, deployment and stage order.
+Accepted as the documentary contract in [VOCA-2](https://github.com/yokeloop/voca/issues/2) and merged [PR #3](https://github.com/yokeloop/voca/pull/3), 2026-09-10. This ADR records the planned v3 contract, not runtime or experimentally verified voice behavior. [ADR-0001](0001-rewrite-v3.md) remains the historical rewrite decision of 2026-09-02; this document refines its lifecycle, deployment and stage order.
 
 ## Context
 

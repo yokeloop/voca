@@ -8,9 +8,9 @@ tags:
 
 # VOCA v3 — Architecture
 
-> Спецификация будущей реализации, не описание работающей установки. [VOCA-2](https://github.com/yokeloop/voca/issues/2) — только документация; runtime, inference и измерения не выполнялись.
+> Нормативная спецификация будущего голосового пути. [VOCA-13](https://github.com/yokeloop/voca/issues/13) реализует только предшествующую session/control основу; её точный subset описан в [code architecture](code-architecture.md). Voice runtime, inference и hardware/browser измерения не выполнялись.
 
-Навигация: [roadmap](roadmap.md), [glossary](../CONTEXT.md), [ADR-0002](adr/0002-conversation-lifecycle-and-roadmap.md), [MiniCPM research](research/minicpm5-2b.md), [исторический grill](index.md).
+Навигация: [code architecture](code-architecture.md), [testing](testing.md), [diagnostics](diagnostics.md), [roadmap](roadmap.md), [glossary](../CONTEXT.md), [ADR-0002](adr/0002-conversation-lifecycle-and-roadmap.md), [ADR-0003](adr/0003-code-and-test-foundation.md), [MiniCPM research](research/minicpm5-2b.md), [исторический grill](index.md).
 
 ## System Overview
 
@@ -115,6 +115,8 @@ Stop, disconnect и provider failure используют тот же boundary. 
 История различает сгенерированный assistant text, начало playback и подтверждённое завершение. Прерванный ответ сохраняется с `interrupted`, `playback=started` либо `not_started`, но не как целиком услышанный. Потерянный ack даёт неизвестную слышимость, не выдуманный `finished`. Context получает эти отметки. Backend EOF или выдача первого TTS chunk не доказывают ни начало, ни завершение слышимости.
 
 ## Control contract
+
+This is the normative future protocol. VOCA-13 implements a deliberately smaller subset: HTTP session bootstrap and `session.resume` snapshot/error wire events with durable `eN` cursors; it implements neither voice commands nor future envelopes. The exact current behavior and idempotency limit are in [code architecture](code-architecture.md#implemented-control-subset).
 
 Это спецификация сообщений, не существующий API. Везде обязательны `type`, `session_id`, `event_id`. Server `event_id` — монотонный durable cursor внутри session; client `event_id` — уникальный command/ack ID, не двигающий server cursor. Turn-сообщения требуют `turn_id`, `generation_id`; task-сообщения — `task_id` и исходный turn. Browser дедуплицирует server events по ID, применяет их по порядку и хранит последний применённый server cursor. Повтор client command ID не повторяет действие; stop идемпотентен. Для initial connection session ID выдаётся backend при установке сессии до start.
 
