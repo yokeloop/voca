@@ -44,6 +44,41 @@ scripts/down.sh
 
 Check the route with `scripts/check-rtc.sh https://voca.priney.com`. The route holds no secrets. Host and Traefik details live in the owner's deployment documentation.
 
+### 0.4 Hermes preflight
+
+`bench/hermes_runs.py` plays the VOCA agent against the Hermes Runs API and checks gate G7; the result goes to `bench/report_g7.md`.
+
+**What it needs.**
+
+- The main Hermes profile with its API server on port 8642 (`API_SERVER_ENABLED=true`, `API_SERVER_KEY`, `API_SERVER_HOST`, `API_SERVER_PORT=8642` in the profile's `.env`).
+- The entry `https://hermes.priney.com`: Cloudflare DNS-only A record → `100.108.52.92`, Traefik on that host, reachable only inside the owner's tailnet; every request needs the key.
+- MCP mypi in that profile (`mcp_servers.mypi`, `http://100.108.140.49:8737/mcp`) with a mypi write token, for `delegate`.
+
+**Variables** (`.env.example`):
+
+- `VOCA_HERMES_URL` — `https://hermes.priney.com`.
+- `VOCA_HERMES_KEY` — the `API_SERVER_KEY` from the Hermes profile's `.env`; it stays in your `.env` and is never committed.
+
+**Steps**, from the repository root:
+
+```sh
+cp .env.example .env
+# set VOCA_HERMES_URL and VOCA_HERMES_KEY in .env
+(cd agent && uv sync --locked)
+set -a; . ./.env; set +a
+uv run --project agent python bench/hermes_runs.py
+```
+
+Without a subcommand the script runs `all`: `preflight`, `create`, `resume` (a separate process, the agent restarted while the run is running), `conflict`, `session`; each prints `PASS <phase>` or `FAIL <phase>`, and the exit code is 0 only when all pass.
+
+These subcommands change state outside the repository and need the owner's permission:
+
+- `delegate` — Hermes writes a journal note to the mypi task VOCA-3 through MCP mypi.
+- `restart --phase start`, then a gateway restart, then `restart --phase verify` — interrupts the Hermes gateway and every session it serves.
+- `backend-down [--deadline 600]` — needs a temporary provider `voca-unreachable` in the profile's `config.yaml`, removed afterwards.
+
+Phase logs (requests without keys, responses, SSE events) go to `.local/bench/hermes/`. Host, Hermes profile and Traefik details live in the owner's deployment documentation.
+
 ## Contributing
 
 Open an issue or a pull request. Run the checks from [AGENTS.md](AGENTS.md#checks) before sending a change.
