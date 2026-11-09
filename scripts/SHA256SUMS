@@ -13,3 +13,4 @@ dcf128a3ecaf74c51d79bf6885d899a9db065205b50fbd0b62a862685a8de105  apps/llama.cpp
 a77eeb711d350a7791a45a07f37cd3b2ae61c71da4db1bf50cc8bd45d33b5b72  apps/llama.cpp/llama-b11869/libcudart.so.13  untar:cudart-llama-b11869-bin-ubuntu-cuda-13.4-x64.tar.gz
 c1f021ca3a67ee793b518bfe2e77b87ad4b4ed1a0e8362e5a11b4186ebe82ea3  apps/llama.cpp/llama-b11869/libcublas.so.13  untar:cudart-llama-b11869-bin-ubuntu-cuda-13.4-x64.tar.gz
 39c97a2e9497a71076356efec398eb9f946e81bce843e6979c82dfac61e64157  apps/llama.cpp/llama-b11869/libcublasLt.so.13  untar:cudart-llama-b11869-bin-ubuntu-cuda-13.4-x64.tar.gz
+84ff34f5834b929043f5ae74799e8d562d4056998f6a5923ceb44831e8ad84d6  models/unsloth/NVIDIA-Nemotron-3.5-Bolt-E4B-UD-Q4_K_XL.gguf  https://huggingface.co/unsloth/NVIDIA-Nemotron-3.5-Bolt-E4B-GGUF/resolve/b738967d6da3441a7d1c71fcec15e49e32e16ecd/NVIDIA-Nemotron-3.5-Bolt-E4B-UD-Q4_K_XL.gguf
