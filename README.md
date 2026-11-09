@@ -10,7 +10,7 @@
 
 ### 0.1 Repository and launch
 
-**Toolchain.** uv 0.12.23 (it installs Python 3.13.16 from `agent/.python-version`), Node 24.21.0 and pnpm 12.6.0 through mise 2026.11.3.
+**Toolchain.** `mise.toml` pins uv 0.12.23, Node 24.21.0 and pnpm 12.6.0; `mise install` (mise 2026.11.3) installs them. uv installs Python 3.13.16 from `agent/.python-version`.
 
 **livekit-server.** Release v1.13.11, `https://github.com/livekit/livekit/releases/download/v1.13.11/livekit_1.13.11_linux_amd64.tar.gz`. `scripts/fetch.sh` downloads the archive to `~/Apps/livekit/1.13.11/`, extracts `livekit-server` next to it and verifies both against the sha256 in `scripts/SHA256SUMS`; `scripts/fetch.sh --check` verifies without writing. `VOCA_LIVEKIT_BIN` points at the binary. The `SHA256SUMS` format is described in [AGENTS.md](AGENTS.md#downloads).
 
