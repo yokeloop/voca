@@ -3,3 +3,13 @@
 # <source>: https://... downloads the file; tar:<archive> extracts <file> from <archive>; untar:<archive> unpacks the whole <archive> without its top-level directory (existing files kept); the archive is in the same directory, listed above.
 1e9ee90ca301e1842b2887fc77cb122759756a9c8aeb4334ee91de3325ec43fb  apps/livekit/1.13.11/livekit_1.13.11_linux_amd64.tar.gz  https://github.com/livekit/livekit/releases/download/v1.13.11/livekit_1.13.11_linux_amd64.tar.gz
 85a58024d9b36542712514e0e926c0adb74f6182bcb19a664b9d9eb98ad01b52  apps/livekit/1.13.11/livekit-server  tar:livekit_1.13.11_linux_amd64.tar.gz
+554f4006f4e2456c4dcc0482a207230602758d3f5a700f55c8754c58f4088a29  apps/llama.cpp/llama-b11869/llama-b11869-bin-ubuntu-cuda-13.4-x64.tar.gz  https://github.com/ggml-org/llama.cpp/releases/download/b11869/llama-b11869-bin-ubuntu-cuda-13.4-x64.tar.gz
+d879e8e8070bcfcfd4f8bc01664e52787b2253409b5be4c3dd6cfd7e1409f385  apps/llama.cpp/llama-b11869/cudart-llama-b11869-bin-ubuntu-cuda-13.4-x64.tar.gz  https://github.com/ggml-org/llama.cpp/releases/download/b11869/cudart-llama-b11869-bin-ubuntu-cuda-13.4-x64.tar.gz
+ad9fa5d2ace5684e506288a3b3e117a9bf0ebcf320e1e0bdeb3bd04da82a628a  apps/llama.cpp/llama-b11869/llama-server  untar:llama-b11869-bin-ubuntu-cuda-13.4-x64.tar.gz
+7ba8ee92e98f9bb0faa0c7d0e3b566ad2e9097a29c52f65bd3e9c0302ac864da  apps/llama.cpp/llama-b11869/libllama-server-impl.so  untar:llama-b11869-bin-ubuntu-cuda-13.4-x64.tar.gz
+dcf128a3ecaf74c51d79bf6885d899a9db065205b50fbd0b62a862685a8de105  apps/llama.cpp/llama-b11869/libllama.so.0.7.0  untar:llama-b11869-bin-ubuntu-cuda-13.4-x64.tar.gz
+18a46948fdc4f795ed85851f8a94c793b154d9e161625e6fa267fa36f8e17a9a  apps/llama.cpp/llama-b11869/libggml-base.so.0.27.0  untar:llama-b11869-bin-ubuntu-cuda-13.4-x64.tar.gz
+22dc2a50ac50660e03f480866c5ab8df8e0f7dc8d9356d4d9874129a1bed68ea  apps/llama.cpp/llama-b11869/libggml-cuda.so  untar:llama-b11869-bin-ubuntu-cuda-13.4-x64.tar.gz
+a77eeb711d350a7791a45a07f37cd3b2ae61c71da4db1bf50cc8bd45d33b5b72  apps/llama.cpp/llama-b11869/libcudart.so.13  untar:cudart-llama-b11869-bin-ubuntu-cuda-13.4-x64.tar.gz
+c1f021ca3a67ee793b518bfe2e77b87ad4b4ed1a0e8362e5a11b4186ebe82ea3  apps/llama.cpp/llama-b11869/libcublas.so.13  untar:cudart-llama-b11869-bin-ubuntu-cuda-13.4-x64.tar.gz
+39c97a2e9497a71076356efec398eb9f946e81bce843e6979c82dfac61e64157  apps/llama.cpp/llama-b11869/libcublasLt.so.13  untar:cudart-llama-b11869-bin-ubuntu-cuda-13.4-x64.tar.gz
