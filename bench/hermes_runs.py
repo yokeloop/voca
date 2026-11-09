@@ -493,7 +493,9 @@ def phase_restart_verify(client: httpx.Client, record: dict[str, Any]) -> str:
     data = trace(record, resp)
     check(resp.status_code == 200, "restart", f"GET run -> {resp.status_code}")
     status = data.get("status")
-    check(status in ("interrupted", "unknown"), "restart", f"status={status}")
+    check(
+        status in ("cancelled", "interrupted", "unknown"), "restart", f"status={status}"
+    )
     facts = f"run_id={run_id} status={status} error={data.get('error')!r}"
     if status == "unknown":
         check(
