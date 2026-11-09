@@ -75,7 +75,14 @@ while read -r sum path source rest || [ -n "${sum:-}" ]; do
       mv "$dest.part" "$dest"
       ;;
     tar:*)
-      tar -xzf "$dir/${source#tar:}" -C "$dir" "$(basename "$dest")"
+      archive="$dir/${source#tar:}"
+      name="$(basename "$dest")"
+      member="$(tar -tzf "$archive" | grep -Fx -e "$name" -e "./$name" | head -n 1)"
+      if [ -z "$member" ]; then
+        echo "SHA256SUMS:$number: в ${source#tar:} нет $name" >&2
+        exit 1
+      fi
+      tar -xzf "$archive" -C "$dir" "$member"
       if [ "$(digest "$dest")" != "$sum" ]; then
         echo "SHA256SUMS:$number: sha256 $dest из ${source#tar:} не совпадает: удалите файл и повторите" >&2
         exit 1
