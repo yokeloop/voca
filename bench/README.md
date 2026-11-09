@@ -7,6 +7,12 @@ Stand scripts that measure the E0 pieces against their gates. They run in the
 uv run --project agent python bench/<script>.py
 ```
 
+Scripts:
+
+- `hermes_runs.py` (VOCA-3) — G7, the Hermes Runs API: `preflight`, `create`,
+  `resume`, `conflict`, `session`, `all` (the default: those five in order),
+  `delegate`, `restart --phase start|verify`, `backend-down`.
+
 Reports, one per measurement task:
 
 - `report_g7.md` (VOCA-3)

@@ -59,6 +59,8 @@ exports; it does not read `.env` itself.
 | `VOCA_WEB_HOST` | `127.0.0.1` | Address `voca web` listens on |
 | `VOCA_WEB_PORT` | `8083` | Port `voca web` listens on |
 | `VOCA_PUBLIC_LIVEKIT_URL` | `ws://127.0.0.1:7880` | LiveKit URL returned with each token |
+| `VOCA_HERMES_URL` | empty | Hermes API server URL for `bench/hermes_runs.py`; `https://hermes.priney.com` on the stand |
+| `VOCA_HERMES_KEY` | empty | `API_SERVER_KEY` of the Hermes profile; a secret, only in `.env` |
 
 Everything downloaded lives outside the clone, in the machine's shared
 directories `~/Apps/<tool>/<version>/` and `~/models/`; a variable with that
