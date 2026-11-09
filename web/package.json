@@ -1,0 +1,26 @@
+{
+  "name": "voca-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "packageManager": "pnpm@12.6.0",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome lint .",
+    "format:check": "biome format .",
+    "format": "biome format --write ."
+  },
+  "dependencies": {
+    "livekit-client": "2.23.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.6.6",
+    "typescript": "5.9.3",
+    "vite": "8.3.7"
+  }
+}
