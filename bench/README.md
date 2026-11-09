@@ -17,6 +17,9 @@ Scripts:
 - `llm_ru_tools.py` (VOCA-4) — G3: `dialogs`, `delegate`, `all` (the default),
   `delegate-thinking` (the ten scenarios with thinking on).
 - `llm_speed.py` (VOCA-4) — G4: `turns`, `points`, `all` (the default).
+- `llm_two_turn.py` (VOCA-4) — the two-turn mechanic (a fast phrase without
+  thinking, then a thinking turn with tools): `timing [--label np1|np2]`,
+  `dialogs`, `delegate`, `g3` (the default: G3 by the mechanic).
 - `llm_common.py` — what the three `llm_*` scripts share: `openai.LLM` setup,
   the `delegate` tool, the system prompt, template markers.
 
