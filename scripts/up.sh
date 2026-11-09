@@ -63,14 +63,22 @@ for name in "$@"; do
     livekit)
       command=("$VOCA_LIVEKIT_BIN" --dev --bind 0.0.0.0 --node-ip "$VOCA_LIVEKIT_NODE_IP")
       ready="http://127.0.0.1:7880/"
+      wait_s=20
       ;;
     web)
       command=("$VOCA_ROOT/agent/.venv/bin/voca" web)
       ready="http://$VOCA_WEB_HOST:$VOCA_WEB_PORT/healthz"
+      wait_s=20
+      ;;
+    audio)
+      command=("$VOCA_ROOT/scripts/audiocpp.sh")
+      ready="http://127.0.0.1:8082/health"
+      wait_s=120
       ;;
     llm)
       command=("$VOCA_ROOT/scripts/llama.sh")
       ready="http://127.0.0.1:8081/health"
+      wait_s=120
       ;;
   esac
   log="$log_dir/$name.log"
@@ -79,11 +87,7 @@ for name in "$@"; do
   echo "$pid" >"$run_dir/$name.pid"
   started+=("$name")
   up=0
-  tries=40
-  if [ "$name" = llm ]; then
-    tries=240
-  fi
-  for _ in $(seq "$tries"); do
+  for _ in $(seq $((wait_s * 2))); do
     if curl -fsS -o /dev/null "$ready" 2>/dev/null; then
       up=1
       break
@@ -92,7 +96,7 @@ for name in "$@"; do
     sleep 0.5
   done
   if [ "$up" = 0 ]; then
-    echo "$name не ответил на $ready за $((tries / 2)) с; последние строки $log:" >&2
+    echo "$name не ответил на $ready за $wait_s с; последние строки $log:" >&2
     tail -n 20 "$log" >&2
     "$VOCA_ROOT/scripts/down.sh" "${started[@]}" >&2
     exit 1
