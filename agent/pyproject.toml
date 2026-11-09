@@ -1,0 +1,39 @@
+[build-system]
+requires = ["hatchling>=1.33,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "voca"
+version = "0.1.0"
+description = "VOCA voice assistant: web entry and stand tooling"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+  "aiohttp>=3.14.4,<4",
+  "livekit-api>=1.2.2,<2",
+  "pydantic-settings>=2.16,<3",
+]
+
+[project.scripts]
+voca = "voca.__main__:main"
+
+[dependency-groups]
+dev = [
+  "mypy>=2.4,<3",
+  "pytest>=9.2,<10",
+  "ruff>=0.17,<1",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/voca"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["--import-mode=importlib"]
+
+[tool.ruff]
+target-version = "py313"
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+files = ["src/voca"]
