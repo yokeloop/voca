@@ -20,7 +20,7 @@ Scripts:
 - `llm_two_turn.py` (VOCA-4) — the two-turn mechanic (a fast phrase without
   thinking, then a thinking turn with tools): `timing [--label np1|np2]`,
   `dialogs`, `delegate`, `g3` (the default: G3 by the mechanic).
-- `llm_common.py` — what the three `llm_*` scripts share: `openai.LLM` setup,
+- `llm_common.py` — what the `llm_*` scripts share: `openai.LLM` setup,
   the `delegate` tool, the system prompt, template markers.
 
 The `llm_*` scripts need `scripts/up.sh llm`; their corpora are
