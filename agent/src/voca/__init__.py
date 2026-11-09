@@ -1,0 +1,1 @@
+"""VOCA voice assistant."""

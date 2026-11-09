@@ -1,0 +1,5 @@
+# <sha256>  <root>/<tool>/<version>/<file>  <source>
+# <root>: apps -> $VOCA_APPS_DIR (~/Apps), models -> $VOCA_MODELS_DIR (~/models); relative, no "..".
+# <source>: https://... downloads the file; tar:<archive> extracts <file> from <archive> in the same directory (listed above).
+1e9ee90ca301e1842b2887fc77cb122759756a9c8aeb4334ee91de3325ec43fb  apps/livekit/1.13.11/livekit_1.13.11_linux_amd64.tar.gz  https://github.com/livekit/livekit/releases/download/v1.13.11/livekit_1.13.11_linux_amd64.tar.gz
+85a58024d9b36542712514e0e926c0adb74f6182bcb19a664b9d9eb98ad01b52  apps/livekit/1.13.11/livekit-server  tar:livekit_1.13.11_linux_amd64.tar.gz
