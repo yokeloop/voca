@@ -104,6 +104,24 @@ stops them in reverse order. `audio` and `llm` are placeholders until VOCA-5
 
 livekit-server runs as `--dev --bind 0.0.0.0 --node-ip "$VOCA_LIVEKIT_NODE_IP"`.
 
+`scripts/check-rtc.sh [page-url]` (default `http://$VOCA_WEB_HOST:$VOCA_WEB_PORT`)
+checks LiveKit signalling as a real client would. It takes a token from
+`<page-url>/api/token`, maps the returned `url` (`ws`/`wss`) to `http`/`https`,
+and expects `200` from both validate paths of livekit-client:
+
+- `/rtc/validate?access_token=<token>` — the v0 signal path;
+- `/rtc/v1/validate?access_token=<token>&join_request=<…>` — the v1 path, which
+  livekit-server rejects with 400 `join_request is required` without the second
+  parameter.
+
+`join_request` is generated, never hard-coded, the same way livekit-client 2.23
+builds it in `createJoinRequestConnectionParams`: a `livekit.JoinRequest` with
+`ClientInfo` (`sdk` JS, `version` from `web/package.json`, `protocol` 17 and
+`client_protocol` 2 — the client's `protocolVersion` and `clientProtocol`) and
+`ConnectionSettings(auto_subscribe=True)`, gzip-compressed into a
+`livekit.WrappedJoinRequest` (`compression` GZIP), URL-safe base64. The protobuf
+classes come from `livekit-api` in the `agent/` environment.
+
 ## Ports
 
 | Port | Service |
