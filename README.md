@@ -46,7 +46,7 @@ Check the route with `scripts/check-rtc.sh https://voca.priney.com`. The route h
 
 ### 0.4 Hermes preflight
 
-`bench/hermes_runs.py` plays the VOCA agent against the Hermes Runs API and checks gate G7; the result goes to `bench/report_g7.md`.
+`bench/hermes_runs.py` plays the VOCA agent against the Hermes Runs API and checks gate G7; the result is [bench/report_g7.md](bench/report_g7.md).
 
 **What it needs.**
 
