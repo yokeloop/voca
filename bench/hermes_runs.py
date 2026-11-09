@@ -445,7 +445,10 @@ def phase_delegate(client: httpx.Client, record: dict[str, Any]) -> str:
 def phase_restart_start(client: httpx.Client, record: dict[str, Any]) -> str:
     idem = uuid4().hex
     body = {
-        "input": LONG_TASK.format(n=120),
+        "input": (
+            "Выполни в терминале три команды по очереди, каждую отдельным вызовом: "
+            "`sleep 240`, `sleep 240`, `sleep 240`. После них ответь одним словом: готово."
+        ),
         "session_id": f"voca-g7-{uuid4().hex[:12]}",
     }
     run_id = admitted("restart", post_run(client, body, idem_key=idem), record, body)[
