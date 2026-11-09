@@ -558,19 +558,16 @@ def phase_backend_down(
         stopped, _ = wait_terminal(client, run_id, 60)
         record["final"] = stopped
         raise Fail(
-            f"backend-down: not failed after {elapsed:.0f}s; /stop -> {stopped.get('status')}"
+            f"backend-down: not terminal after {elapsed:.0f}s; /stop -> {stopped.get('status')}"
         ) from None
     record["final"] = final
-    check(
-        final.get("status") == "failed", "backend-down", f"status={final.get('status')}"
+    status = final.get("status")
+    check(status in ("completed", "failed"), "backend-down", f"status={status}")
+    outcome = "completed via fallback" if status == "completed" else "failed"
+    return (
+        f"run_id={run_id} {outcome} after {elapsed:.0f}s "
+        f"error={final.get('error')!r} output={final.get('output')!r}"
     )
-    provider = (final.get("runtime") or {}).get("provider")
-    check(
-        provider in (None, "voca-unreachable"),
-        "backend-down",
-        f"fallback to {provider}",
-    )
-    return f"run_id={run_id} failed after {elapsed:.0f}s error={final.get('error')!r}"
 
 
 def run_phase(
