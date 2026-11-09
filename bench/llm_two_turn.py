@@ -258,7 +258,7 @@ async def dialogs(fast: openai.LLM, slow: openai.LLM) -> int:
             history += [("user", user), ("assistant", turn.answer)]
             entry = {"user": user, **turn.as_dict()}
             turns.append(entry)
-            ok = ok and russian(turn.answer) and not turn.b.tool_calls
+            ok = ok and russian(turn.spoken_b) and not turn.b.tool_calls
         passed += ok
         log.append(
             {"id": dialog["id"], "status": "PASS" if ok else "FAIL", "turns": turns}
@@ -293,7 +293,7 @@ async def delegate_scenarios(fast: openai.LLM, slow: openai.LLM) -> int:
         turn = await two_turn(fast, slow, [], item["user"], False, item["tool_output"])
         kind = item["kind"]
         if kind == "refuse":
-            ok = not turn.b.tool_calls and russian(turn.answer)
+            ok = not turn.b.tool_calls and russian(turn.spoken_b)
         elif kind == "incomplete":
             ok = not turn.b.tool_calls and "?" in turn.answer
         else:
