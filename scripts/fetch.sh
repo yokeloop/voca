@@ -81,8 +81,15 @@ while read -r sum path source rest || [ -n "${sum:-}" ]; do
         exit 1
       fi
       ;;
+    untar:*)
+      tar -xzf "$dir/${source#untar:}" -C "$dir" --strip-components=1 --skip-old-files
+      if [ "$(digest "$dest")" != "$sum" ]; then
+        echo "SHA256SUMS:$number: sha256 $dest из ${source#untar:} не совпадает: удалите файл и повторите" >&2
+        exit 1
+      fi
+      ;;
     *)
-      echo "SHA256SUMS:$number: неизвестный источник $source (https://…|tar:<archive>)" >&2
+      echo "SHA256SUMS:$number: неизвестный источник $source (https://…|tar:<archive>|untar:<archive>)" >&2
       exit 2
       ;;
   esac
