@@ -1,6 +1,6 @@
 # G7 — Hermes: Runs API, сессии, MCP mypi, отказы (VOCA-3, 0.4)
 
-Итог: **G7 провален** по одному критерию из пяти — недоступный бэкенд не даёт `failed`, потому что профиль переключается на `fallback_providers`. Остальные четыре критерия пройдены. Решение по провалу — на приёмку эпика (раздел 8).
+Итог: **G7 пройден по решению инженера от 2026-11-09** (раздел 8). Четыре критерия пройдены наблюдением. Критерий «недоступный бэкенд даёт `failed`» в исходной формулировке на этом профиле не выполняется: профиль переключается на `fallback_providers`. Инженер признал это нормой и переформулировал критерий; новая формулировка в E0 не проверена.
 
 ## 1. Стенд
 
@@ -42,8 +42,8 @@
 | `delegate` | поручение записать note в журнал VOCA-3 через MCP mypi | `tool_describe`, затем `tool.started`/`tool.completed` `mcp__mypi__note` (`error=false`); `completed`, `output="Записано"`; в журнале mypi `task:VOCA-3` запись `VOCA-3 G7 delegate bce19a4f00ca` (2026-11-09T19:32:17Z) | MCP mypi доступен; сырой вывод tools не в озвучке | PASS (`20261109T193218Z-delegate.json`) |
 | `restart --phase start` | run из трёх `sleep 240` с ключом | 202, `run_a47aee73e263462fafa519f96f04bf17`, `tool.started` `terminal` | — | PASS (`20261109T193308Z-restart-start.json`) |
 | рестарт gateway | `systemctl restart hermes-gateway` на rpi | stop 19:33:20Z; `Gateway drain timed out after 180.1s with … 1 api_server run(s)`; инструмент получил `[Command interrupted]`; SIGKILL и новый процесс 19:36:50Z; простой ≈ 3,5 мин | — | выполнено |
-| `restart --phase verify` | `/health`, GET прерванного run, повтор POST, `/events`, GET прошлого `completed` | прерванный run — `cancelled`, `error` и `output` пусты (ожидалось `interrupted`/`unknown`); повтор с тем же ключом — 202, `replayed=true`, тот же `run_id`, статус `cancelled`, второго run нет; `/events` → 404; `run_10ef…` из `resume` → 200, `completed`, `output="Готово"` | результат доступен после рестарта | фаза FAIL только по ожидаемому статусу (`20261109T194258Z-restart-verify.json`; остальные наблюдения — `20261109T194317Z-restart-verify-rest.json`); критерий пройден |
-| `backend-down` | run с `provider=voca-unreachable` (`http://127.0.0.1:9/v1`) | две попытки `APIConnectionError` (19:44:02, 19:44:05), затем `Fallback to ollama-cloud/glm-5.2`; `completed`, `output="да"` через ≈ 10 с; `runtime.provider` пуст, `runtime.requested.provider=voca-unreachable` | недоступный бэкенд даёт `failed` | FAIL (`20261109T194410Z-backend-down.json`) |
+| `restart --phase verify` | `/health`, GET прерванного run, повтор POST, `/events`, GET прошлого `completed` | прерванный run — `cancelled`, `error` и `output` пусты (ожидалось `interrupted`/`unknown`); повтор с тем же ключом — 202, `replayed=true`, тот же `run_id`, статус `cancelled`, второго run нет; `/events` → 404; `run_10ef…` из `resume` → 200, `completed`, `output="Готово"` | результат доступен после рестарта | первый прогон — FAIL по ожидаемому статусу, гипотеза «`interrupted`/`unknown`» опровергнута (`20261109T194258Z-restart-verify.json`, `20261109T194317Z-restart-verify-rest.json`); после решения инженера «Принимать cancelled» verify принимает `cancelled`, повтор на сохранённом состоянии без нового рестарта — PASS (`20261109T194941Z-restart-verify.json`) |
+| `backend-down` | run с `provider=voca-unreachable` (`http://127.0.0.1:9/v1`) | две попытки `APIConnectionError` (19:44:02, 19:44:05), затем `Fallback to ollama-cloud/glm-5.2`; `completed`, `output="да"` через ≈ 10 с; `runtime.provider` пуст, `runtime.requested.provider=voca-unreachable` | недоступный бэкенд даёт `failed` | FAIL по исходному критерию (`20261109T194410Z-backend-down.json`); по решению инженера «Fallback — норма» — ожидаемое поведение профиля |
 
 Логи лежат в `.local/bench/hermes/` клона и в репозиторий не кладутся. Все runs шли с `Idempotency-Key`. Ни один run не запросил одобрения (`approvals.mode: manual`, `sleep` не опасная команда).
 
@@ -71,11 +71,11 @@
 
 ## 6. Недоступный бэкенд и таймауты
 
-- `failed` не наступает: через ≈ 10 с после POST run завершился `completed` на `fallback_providers` (`ollama-cloud`, `glm-5.2`, `https://ollama.com/v1`).
+- `failed` не наступает: через ≈ 10 с после POST run завершился `completed` на `fallback_providers` (`ollama-cloud`, `glm-5.2`, `https://ollama.com/v1`). Решение инженера 2026-11-09 — «Fallback — норма»: это ожидаемое поведение профиля, профиль не меняется.
 - Ошибка основного провайдера: `APIConnectionError` «Connection error.», две попытки с паузой ≈ 2,8 с, затем переключение.
 - Профиль: `agent.api_max_retries: 3`, `auto_recovery_cycles` не задан (умолчание версии), `request_timeout_seconds` у временной записи 20, у `ollama-cloud` 600; `agent.gateway_timeout: 1800`.
 - API этой версии не сообщает о переключении: `runtime.provider`/`model` пусты, `runtime.requested` содержит запрошенного провайдера. Клиент не отличит ответ fallback от ответа основной модели.
-- Рекомендация: клиентский дедлайн `hermes_run_timeout` и `POST /v1/runs/{id}/stop` по нему нужны (вечный `running` возможен, если откажет и fallback); поведение «`failed` при недоступном LiteLLM» в этом профиле требует решения (раздел 8).
+- Для адаптера E3: свой дедлайн `hermes_run_timeout` и `POST /v1/runs/{id}/stop` по нему; `failed` ожидается, только когда недоступны все провайдеры цепочки (в E0 не проверено).
 
 ## 7. Маппинг статусов Hermes → `TaskStatus`
 
@@ -88,7 +88,7 @@
 | `waiting_for_approval` | `RUNNING` | в `TaskStatus` нет ожидания пользователя — вопрос для E3 |
 | `completed` | `SUCCEEDED` | `output` → `result`; может быть ответом fallback-провайдера (раздел 6) |
 | `failed` | `FAILED` | `error` из run |
-| `cancelled` | `FAILED` | `error = "cancelled"`; исправлено по наблюдению: так же заканчивается run, прерванный штатным рестартом gateway (drain), `error` у него пуст |
+| `cancelled` | `FAILED` | исправлено по наблюдению: рестарт gateway в Hermes 0.22.2 даёт `cancelled` без ошибки (`error` пуст), так же, как отмена. Адаптер отличает это от отмены пользователем по своей записи: если VOCA не слала `/stop`, это `error = "interrupted by gateway restart"`, иначе `error = "cancelled"` |
 | `interrupted` | `FAILED` | `error` из run, без автоповтора; по исходникам — run с ключом, чей процесс-владелец умер без drain |
 | `unknown` (канонический режим) | `UNKNOWN` | `resolve-unknown`, затем `FAILED` |
 | 404 на `GET` после рестарта (run без ключа) | `FAILED` | `error = "lost"` |
@@ -98,13 +98,14 @@
 | Критерий (`derive:8kki4ynb:§9`) | Статус | Основание |
 | --- | --- | --- |
 | Один run на поручение | пройден | `resume` и повтор после рестарта вернули тот же `run_id`, `replayed=true` |
-| Результат доступен после рестарта | пройден | `run_10ef…` после рестарта gateway — `completed` с `output`; прерванный run виден как `cancelled` |
-| Недоступный бэкенд даёт `failed` | провален | профиль переключился на `fallback_providers` и вернул `completed` |
+| Результат доступен после рестарта | пройден | `run_10ef…` после рестарта gateway — `completed` с `output`; прерванный run виден как `cancelled` (решение инженера «Принимать cancelled») |
+| Недоступный бэкенд даёт `failed` | переформулирован решением инженера; новый критерий не проверен в E0 | при недоступном основном провайдере профиль переключился на `fallback_providers` и вернул `completed` — по решению «Fallback — норма» это ожидаемо; `failed` — когда недоступны все провайдеры |
 | MCP mypi доступен | пройден | `mcp__mypi__note` в SSE, запись `VOCA-3 G7 delegate bce19a4f00ca` в журнале mypi |
 | Сырой вывод tools не попадает в озвучку | пройден | `output` — одно слово («Записано», «Готово»); `preview` у `tool.completed` пуст (`tool_preview_length: 0` профиля), поэтому проверка вхождения preview не понадобилась |
 
-**Итог G7: провален** по критерию «недоступный бэкенд даёт `failed`». Запасные пути `derive:eb1id854:§12` для G7 описаны только для сессии и хранения результата. Для этого пункта решение на приёмку эпика — один из вариантов:
+Решения инженера (2026-11-09), дословно:
 
-- принять fallback как штатное поведение профиля (поручение выполняет другая модель, клиент об этом не знает), а `failed` ждать только при отказе всей цепочки — с клиентским дедлайном и `/stop`;
-- выключить `fallback_providers` основного профиля (изменение профиля владельца, вне задачи) и повторить `backend-down`;
-- запускать поручения VOCA на отдельном профиле Hermes без fallback.
+- по рестарту gateway: «Принимать cancelled» — verify принимает любой терминальный статус прерывания (`cancelled`/`interrupted`/`unknown`); рестарт gateway в Hermes 0.22.2 даёт `cancelled` без ошибки, адаптеру нужно отличать это от отмены пользователем;
+- по недоступному бэкенду: «Fallback — норма» — две `APIConnectionError`, переключение на `fallback_providers` `ollama-cloud`/`glm-5.2`, `completed` за ≈ 10 с, `runtime.provider`/`model` пустые — ожидаемое поведение профиля; критерий G7 переформулирован: `failed` — когда недоступны все провайдеры (не проверено в E0); адаптеру E3 — свой дедлайн и `POST /stop`. Профиль не меняется.
+
+**Итог G7: пройден по решению инженера от 2026-11-09.** Четыре критерия пройдены наблюдением; критерий недоступного бэкенда переформулирован, его новая формулировка («`failed`, когда недоступны все провайдеры») в E0 не проверена и остаётся для E3.
