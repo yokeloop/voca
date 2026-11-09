@@ -44,6 +44,51 @@ scripts/down.sh
 
 Check the route with `scripts/check-rtc.sh https://voca.priney.com`. The route holds no secrets. Host and Traefik details live in the owner's deployment documentation.
 
+### 0.3 LLM stand
+
+llama-server with the Bolt-E4B model in profile B (the per-layer embeddings stay in RAM); gates G3 and G4. The result is [bench/report_g3_g4.md](bench/report_g3_g4.md).
+
+**llama.cpp.** CUDA release `b11869` (`build 11869, commit d327bf1f0`), build `ubuntu-cuda-13.4-x64`, two archives:
+
+- `https://github.com/ggml-org/llama.cpp/releases/download/b11869/llama-b11869-bin-ubuntu-cuda-13.4-x64.tar.gz` — sha256 `554f4006f4e2456c4dcc0482a207230602758d3f5a700f55c8754c58f4088a29`;
+- `https://github.com/ggml-org/llama.cpp/releases/download/b11869/cudart-llama-b11869-bin-ubuntu-cuda-13.4-x64.tar.gz` — sha256 `d879e8e8070bcfcfd4f8bc01664e52787b2253409b5be4c3dd6cfd7e1409f385`.
+
+`scripts/fetch.sh` downloads both to `~/Apps/llama.cpp/llama-b11869/` and unpacks them there (`untar:` in `scripts/SHA256SUMS`); `llama-server` (sha256 `ad9fa5d2ace5684e506288a3b3e117a9bf0ebcf320e1e0bdeb3bd04da82a628a`) and its llama, ggml and CUDA libraries are verified against `scripts/SHA256SUMS`. `VOCA_LLAMA_BIN` points at `llama-server`.
+
+**Model.** Hugging Face `unsloth/NVIDIA-Nemotron-3.5-Bolt-E4B-GGUF`, revision `b738967d6da3441a7d1c71fcec15e49e32e16ecd`, file `NVIDIA-Nemotron-3.5-Bolt-E4B-UD-Q4_K_XL.gguf` (5.06 GB, sha256 `84ff34f5834b929043f5ae74799e8d562d4056998f6a5923ceb44831e8ad84d6`), placed by `scripts/fetch.sh` in `$VOCA_MODELS_DIR/unsloth/`.
+
+**Requirements.** x86_64 Linux, an NVIDIA GPU and a driver with CUDA 13.4 (the stand: RTX 4070 12 GB, driver 615.78.08). llama-server takes about 3.8 GB VRAM and 2.6–5 GB RAM (measured in the report). No nvcc or CUDA toolkit: the CUDA libraries come from the cudart archive.
+
+**Steps**, from the repository root:
+
+```sh
+cp .env.example .env
+scripts/fetch.sh
+scripts/fetch.sh --check
+(cd agent && uv sync --locked)
+scripts/up.sh llm
+curl http://127.0.0.1:8081/health
+uv run --project agent python bench/llm_template.py
+uv run --project agent python bench/llm_ru_tools.py
+uv run --project agent python bench/llm_speed.py
+scripts/down.sh llm
+```
+
+`scripts/up.sh llm` runs `scripts/llama.sh`, which checks the binary, the model and port 8081, then starts:
+
+```sh
+"$VOCA_LLAMA_BIN" -m "$VOCA_MODELS_DIR/unsloth/NVIDIA-Nemotron-3.5-Bolt-E4B-UD-Q4_K_XL.gguf" --alias bolt-e4b \
+  --jinja --host 127.0.0.1 --port 8081 \
+  -c 16384 -fa on -ctk q8_0 -ctv q8_0 \
+  --cache-reuse 256 --parallel 1 -t 2 \
+  -ngl 99 --override-tensor 'per_layer.*=CPU' \
+  --temp 1.0 --top-p 0.95
+```
+
+It waits up to 120 s for `/health`. Port 8081 listens on `127.0.0.1` only. The chat template kwargs `enable_thinking=false` and `conversational_mode=true` are sent by the client (`openai.LLM(extra_body={"chat_template_kwargs": …})`); the server sets none.
+
+**Variables** (`.env.example`): `VOCA_LLAMA_BIN`, plus `VOCA_APPS_DIR` and `VOCA_MODELS_DIR` from 0.1.
+
 ### 0.4 Hermes preflight
 
 `bench/hermes_runs.py` plays the VOCA agent against the Hermes Runs API and checks gate G7; the result is [bench/report_g7.md](bench/report_g7.md).

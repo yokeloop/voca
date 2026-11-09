@@ -68,6 +68,10 @@ for name in "$@"; do
       command=("$VOCA_ROOT/agent/.venv/bin/voca" web)
       ready="http://$VOCA_WEB_HOST:$VOCA_WEB_PORT/healthz"
       ;;
+    llm)
+      command=("$VOCA_ROOT/scripts/llama.sh")
+      ready="http://127.0.0.1:8081/health"
+      ;;
   esac
   log="$log_dir/$name.log"
   nohup "${command[@]}" >>"$log" 2>&1 </dev/null &
@@ -75,7 +79,11 @@ for name in "$@"; do
   echo "$pid" >"$run_dir/$name.pid"
   started+=("$name")
   up=0
-  for _ in $(seq 40); do
+  tries=40
+  if [ "$name" = llm ]; then
+    tries=240
+  fi
+  for _ in $(seq "$tries"); do
     if curl -fsS -o /dev/null "$ready" 2>/dev/null; then
       up=1
       break
@@ -84,7 +92,7 @@ for name in "$@"; do
     sleep 0.5
   done
   if [ "$up" = 0 ]; then
-    echo "$name не ответил на $ready за 20 с; последние строки $log:" >&2
+    echo "$name не ответил на $ready за $((tries / 2)) с; последние строки $log:" >&2
     tail -n 20 "$log" >&2
     "$VOCA_ROOT/scripts/down.sh" "${started[@]}" >&2
     exit 1
