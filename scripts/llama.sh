@@ -2,12 +2,14 @@
 set -euo pipefail
 . "$(dirname "$0")/env.sh"
 
-model="$VOCA_MODELS_DIR/unsloth/NVIDIA-Nemotron-3.5-Bolt-E4B-UD-Q4_K_XL.gguf"
-
 fail() {
   echo "$*" >&2
   exit 1
 }
+
+profile="$VOCA_ROOT/scripts/llm-profiles/$VOCA_LLM_PROFILE.sh"
+[ -f "$profile" ] || fail "профиль VOCA_LLM_PROFILE=$VOCA_LLM_PROFILE не найден: scripts/llm-profiles/<name>.sh"
+. "$profile"
 
 [ -x "$VOCA_LLAMA_BIN" ] || fail "VOCA_LLAMA_BIN=$VOCA_LLAMA_BIN не найден: scripts/fetch.sh"
 [ -f "$model" ] || fail "модель $model не найдена: scripts/fetch.sh"
@@ -18,10 +20,9 @@ if [ "${1:-}" = "--check" ]; then
   exit 0
 fi
 
-exec "$VOCA_LLAMA_BIN" -m "$model" --alias bolt-e4b \
+exec "$VOCA_LLAMA_BIN" -m "$model" --alias "$VOCA_LLM_PROFILE" \
   --jinja --host 127.0.0.1 --port 8081 \
   -c 16384 -fa on -ctk q8_0 -ctv q8_0 \
-  --cache-reuse 256 --parallel 1 -t 2 \
-  -ngl 99 --override-tensor 'per_layer.*=CPU' \
-  --temp 1.0 --top-p 0.95 \
+  --parallel 1 -t 2 -ngl 99 \
+  "${args[@]}" \
   "$@"

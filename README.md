@@ -105,12 +105,14 @@ uv run --project agent python bench/tts_pipeline.py think
 
 llama-server with the Bolt-E4B model in profile B (the per-layer embeddings stay in RAM); gates G3 and G4. The result is [bench/report_g3_g4.md](bench/report_g3_g4.md).
 
-**llama.cpp.** CUDA release `b11869` (`build 11869, commit d327bf1f0`), build `ubuntu-cuda-13.4-x64`, two archives:
+**llama.cpp.** CUDA release `b12167` (`build 12167, commit 240d68fcf`), build `ubuntu-cuda-13.4-x64`, two archives:
 
-- `https://github.com/ggml-org/llama.cpp/releases/download/b11869/llama-b11869-bin-ubuntu-cuda-13.4-x64.tar.gz` — sha256 `554f4006f4e2456c4dcc0482a207230602758d3f5a700f55c8754c58f4088a29`;
-- `https://github.com/ggml-org/llama.cpp/releases/download/b11869/cudart-llama-b11869-bin-ubuntu-cuda-13.4-x64.tar.gz` — sha256 `d879e8e8070bcfcfd4f8bc01664e52787b2253409b5be4c3dd6cfd7e1409f385`.
+- `https://github.com/ggml-org/llama.cpp/releases/download/b12167/llama-b12167-bin-ubuntu-cuda-13.4-x64.tar.gz` — sha256 `adf9d677741afd3bcf1f8debea51926b0341cb94c2758afa727cb3a38f0b2ac4`;
+- `https://github.com/ggml-org/llama.cpp/releases/download/b12167/cudart-llama-b12167-bin-ubuntu-cuda-13.4-x64.tar.gz` — sha256 `db0c22114db5751a12ff1c970ceed6e805fb0dbde12f57ca7ddc28414079b0f5`.
 
-`scripts/fetch.sh` downloads both to `~/Apps/llama.cpp/llama-b11869/` and unpacks them there (`untar:` in `scripts/SHA256SUMS`); `llama-server` (sha256 `ad9fa5d2ace5684e506288a3b3e117a9bf0ebcf320e1e0bdeb3bd04da82a628a`) and its llama, ggml and CUDA libraries are verified against `scripts/SHA256SUMS`. `VOCA_LLAMA_BIN` points at `llama-server`.
+`scripts/fetch.sh` downloads both to `~/Apps/llama.cpp/llama-b12167/` and unpacks them there (`untar:` in `scripts/SHA256SUMS`); `llama-server` (sha256 `5f542c73d6e2604d6e070d1435d33e39354da60c0aba36ce852cee0c3055d6be`) and its llama, ggml and CUDA libraries are verified against `scripts/SHA256SUMS`. `VOCA_LLAMA_BIN` points at `llama-server`.
+
+`b11869` (`build 11869, commit d327bf1f0`; `llama-b11869-bin-ubuntu-cuda-13.4-x64.tar.gz` sha256 `554f4006f4e2456c4dcc0482a207230602758d3f5a700f55c8754c58f4088a29`, `cudart-llama-b11869-bin-ubuntu-cuda-13.4-x64.tar.gz` sha256 `d879e8e8070bcfcfd4f8bc01664e52787b2253409b5be4c3dd6cfd7e1409f385`, `llama-server` sha256 `ad9fa5d2ace5684e506288a3b3e117a9bf0ebcf320e1e0bdeb3bd04da82a628a`, same release URLs with `b11869`) is the build of the VOCA-4/5 measurements; it stays in `scripts/SHA256SUMS`, the stand no longer runs it.
 
 **Model.** Hugging Face `unsloth/NVIDIA-Nemotron-3.5-Bolt-E4B-GGUF`, revision `b738967d6da3441a7d1c71fcec15e49e32e16ecd`, file `NVIDIA-Nemotron-3.5-Bolt-E4B-UD-Q4_K_XL.gguf` (5.06 GB, sha256 `84ff34f5834b929043f5ae74799e8d562d4056998f6a5923ceb44831e8ad84d6`), placed by `scripts/fetch.sh` in `$VOCA_MODELS_DIR/unsloth/`.
 
@@ -131,20 +133,45 @@ uv run --project agent python bench/llm_speed.py
 scripts/down.sh llm
 ```
 
-`scripts/up.sh llm` runs `scripts/llama.sh`, which checks the binary, the model and port 8081, then starts:
+`scripts/up.sh llm` runs `scripts/llama.sh`, which loads the profile `VOCA_LLM_PROFILE` (0.3.1), checks the binary, the model and port 8081, then starts; for the default profile `bolt-e4b`:
 
 ```sh
-"$VOCA_LLAMA_BIN" -m "$VOCA_MODELS_DIR/unsloth/NVIDIA-Nemotron-3.5-Bolt-E4B-UD-Q4_K_XL.gguf" --alias bolt-e4b \
+~/Apps/llama.cpp/llama-b12167/llama-server -m ~/models/unsloth/NVIDIA-Nemotron-3.5-Bolt-E4B-UD-Q4_K_XL.gguf --alias bolt-e4b \
   --jinja --host 127.0.0.1 --port 8081 \
   -c 16384 -fa on -ctk q8_0 -ctv q8_0 \
-  --cache-reuse 256 --parallel 1 -t 2 \
-  -ngl 99 --override-tensor 'per_layer.*=CPU' \
-  --temp 1.0 --top-p 0.95
+  --parallel 1 -t 2 -ngl 99 \
+  --cache-reuse 256 --override-tensor 'per_layer.*=CPU' --temp 1.0 --top-p 0.95
 ```
 
-It waits up to 120 s for `/health`. Port 8081 listens on `127.0.0.1` only. The chat template kwargs `enable_thinking=false` and `conversational_mode=true` are sent by the client (`openai.LLM(extra_body={"chat_template_kwargs": …})`); the server sets none.
+It waits up to 120 s for `/health`. Port 8081 listens on `127.0.0.1` only. The chat template kwargs `enable_thinking=false` and `conversational_mode=true` are sent by the client (`openai.LLM(extra_body={"chat_template_kwargs": …})`); the server sets none. Sampling comes from the profile on the server; the client sends none.
 
-**Variables** (`.env.example`): `VOCA_LLAMA_BIN`, plus `VOCA_APPS_DIR` and `VOCA_MODELS_DIR` from 0.1.
+**Variables** (`.env.example`): `VOCA_LLAMA_BIN`, `VOCA_LLM_PROFILE`, plus `VOCA_APPS_DIR` and `VOCA_MODELS_DIR` from 0.1.
+
+### 0.3.1 LLM profiles
+
+`VOCA_LLM_PROFILE` (default `bolt-e4b`, set in `.env` or the environment) picks the model llama-server loads. A profile is the bash file `scripts/llm-profiles/<name>.sh` with two variables: `model` (the GGUF path) and `args` (the profile's own flags: sampling from the model card and special flags). The shared flags (`--jinja`, `127.0.0.1:8081`, `-c 16384`, `-fa on`, q8_0 KV cache, `--parallel 1`, `-t 2`, `-ngl 99`) stay in `scripts/llama.sh`, and `--alias` is the profile name, so `GET /v1/models` names the profile. An unknown profile stops `scripts/llama.sh` with «профиль VOCA_LLM_PROFILE=<name> не найден» and nothing starts.
+
+| Profile | Model | Sampling (model card) | Special flags |
+| --- | --- | --- | --- |
+| `bolt-e4b` | HF `unsloth/NVIDIA-Nemotron-3.5-Bolt-E4B-GGUF`, revision `b738967d6da3441a7d1c71fcec15e49e32e16ecd`, `NVIDIA-Nemotron-3.5-Bolt-E4B-UD-Q4_K_XL.gguf`, 5.06 GB, sha256 `84ff34f5834b929043f5ae74799e8d562d4056998f6a5923ceb44831e8ad84d6` | `--temp 1.0 --top-p 0.95` | `--cache-reuse 256`, `--override-tensor 'per_layer.*=CPU'` (profile B) |
+| `lfm3-1.7b` | HF `LiquidAI/LFM3-1.7B-GGUF`, revision `cd0c74c575b5c416f3011b5b4c298077f26ca8c2`, `LFM3-1.7B-Q4_K_M.gguf`, 1 099 627 808 bytes, sha256 `3793e1e6e2266919d6e015287221b41100175a98eddaba92e111aed3b05c93c4` | General preset: `--temp 0.1 --top-k 50 --repeat-penalty 1.1` | none: no `--cache-reuse` (unsupported by this context, checkpoints are used), no `per_layer` override; ≈ 1.4 GB VRAM |
+
+`scripts/fetch.sh` places both models in `$VOCA_MODELS_DIR` (`unsloth/`, `LiquidAI/`).
+
+**Switching the model**, from the repository root:
+
+```sh
+scripts/down.sh llm
+VOCA_LLM_PROFILE=lfm3-1.7b scripts/up.sh llm   # or VOCA_LLM_PROFILE=lfm3-1.7b in .env
+curl -fsS http://127.0.0.1:8081/health
+curl -fsS http://127.0.0.1:8081/v1/models       # "id": "lfm3-1.7b"
+```
+
+Exactly one model is loaded at a time: there is one `llm` service on one port, 8081.
+
+**Adding a profile:** a file `scripts/llm-profiles/<name>.sh` with `model` and `args`, plus the GGUF line in `scripts/SHA256SUMS`.
+
+The LFM3-1.7B run on the E0 cases is [bench/report_lfm3_1_7b.md](bench/report_lfm3_1_7b.md).
 
 ### 0.4 Hermes preflight
 

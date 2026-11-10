@@ -1,23 +1,36 @@
+import functools
 import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import httpx
 from livekit.agents import function_tool, llm
 from livekit.plugins import openai
 
 BASE_URL = "http://127.0.0.1:8081/v1"
-MODEL = "bolt-e4b"
+SERVER = BASE_URL.removesuffix("/v1")
+DEFAULT_MODEL = "bolt-e4b"
 ROOT = Path(__file__).resolve().parents[1]
 OUT_DIR = ROOT / ".local" / "bench" / "llm"
 KWARGS = {"enable_thinking": False, "conversational_mode": True}
+THINKING = {"enable_thinking": True, "conversational_mode": True}
 SYSTEM_RU = (
     "Ты — VOCA, голосовой ассистент. Отвечай по-русски. Поручения, которые требуют "
     "работы с проектами, файлами, поиском или долгой работы, передавай инструментом "
     "delegate. Если неясно, что поручить, задай уточняющий вопрос."
 )
 MARKERS = re.compile(r"<\||\|>|<channel|<turn|<tool_call|<think|</think")
+
+
+@functools.cache
+def model_id() -> str:
+    return str(httpx.get(f"{BASE_URL}/models", timeout=10).json()["data"][0]["id"])
+
+
+def model_dir(base: Path) -> Path:
+    return base if model_id() == DEFAULT_MODEL else base / model_id()
 
 
 @function_tool
@@ -40,10 +53,9 @@ class ChatResult:
 
 def make_llm(kwargs: dict[str, bool] = KWARGS, base_url: str = BASE_URL) -> openai.LLM:
     return openai.LLM(
-        model=MODEL,
+        model=model_id(),
         base_url=base_url,
         api_key="none",
-        temperature=1.0,
         extra_body={"chat_template_kwargs": kwargs},
     )
 
@@ -75,7 +87,8 @@ def result_dict(result: ChatResult) -> dict[str, Any]:
 
 
 def write_json(name: str, data: object) -> Path:
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-    path = OUT_DIR / f"{name}.json"
+    out_dir = model_dir(OUT_DIR)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / f"{name}.json"
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
     return path

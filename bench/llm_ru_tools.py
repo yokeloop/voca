@@ -9,6 +9,7 @@ from livekit.plugins import openai
 from llm_common import (
     MARKERS,
     SYSTEM_RU,
+    THINKING,
     ChatResult,
     delegate,
     make_llm,
@@ -52,7 +53,7 @@ def base_ctx() -> llm.ChatContext:
     return ctx
 
 
-async def dialogs(model: openai.LLM) -> bool:
+async def dialogs(model: openai.LLM, name: str) -> bool:
     corpus = json.loads((CORPUS / "llm_dialogs.json").read_text())
     log: list[dict[str, Any]] = []
     passed = 0
@@ -70,7 +71,7 @@ async def dialogs(model: openai.LLM) -> bool:
             {"id": dialog["id"], "status": "PASS" if ok else "FAIL", "answers": answers}
         )
         print(f"{'PASS' if ok else 'FAIL'} {dialog['id']}", flush=True)
-    write_json("dialogs", {"passed": passed, "total": len(corpus), "dialogs": log})
+    write_json(name, {"passed": passed, "total": len(corpus), "dialogs": log})
     return passed == len(corpus)
 
 
@@ -143,11 +144,13 @@ async def run(command: str) -> int:
     model = make_llm()
     ok = True
     if command in ("dialogs", "all"):
-        ok = await dialogs(model) and ok
+        ok = await dialogs(model, "dialogs") and ok
     if command in ("delegate", "all"):
         ok = await scenarios(model, "delegate") and ok
+    if command == "dialogs-thinking":
+        ok = await dialogs(make_llm(THINKING), "dialogs_thinking")
     if command == "delegate-thinking":
-        thinking = make_llm({"enable_thinking": True, "conversational_mode": True})
+        thinking = make_llm(THINKING)
         ok = await scenarios(thinking, "delegate_thinking")
     return 0 if ok else 1
 
@@ -158,7 +161,7 @@ def main() -> int:
         "command",
         nargs="?",
         default="all",
-        choices=["dialogs", "delegate", "delegate-thinking", "all"],
+        choices=["dialogs", "delegate", "dialogs-thinking", "delegate-thinking", "all"],
     )
     args = parser.parse_args()
     return asyncio.run(run(args.command))

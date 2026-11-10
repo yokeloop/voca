@@ -27,7 +27,7 @@ from audio_stand import (
 )
 from livekit.agents import APIError, llm, tokenize
 from livekit.plugins import openai
-from llm_common import SYSTEM_RU, make_llm
+from llm_common import SERVER, SYSTEM_RU, make_llm, model_dir
 
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 import ruaccent
@@ -57,7 +57,6 @@ CAPS = [
     ("Во\u0301здух", "ВО\u0301здух", "стал свежее."),
     ("Де\u0301ньги", "ДЕ\u0301ньги", "лежат на столе."),
 ]
-LLM_URL = "http://127.0.0.1:8081"
 THINK_MODES: dict[str, tuple[bool, int | None]] = {
     "off": (False, None),
     "on": (True, None),
@@ -117,6 +116,10 @@ def percentile(values: list[float], q: int) -> float:
     if len(values) == 1:
         return values[0]
     return statistics.quantiles(values, n=100, method="inclusive")[q - 1]
+
+
+def llm_dir() -> Path:
+    return model_dir(OUT_DIR)
 
 
 def write_tsv(path: Path, header: list[str], rows: list[list[str]]) -> None:
@@ -293,13 +296,13 @@ async def cmd_run(args: argparse.Namespace) -> int:
         if int(item["id"]) <= CLIPS:
             full, _ = place(accent, reply.text)
             frame, _, _ = await synthesize(tts, full)
-            write_wav(OUT_DIR / "clips" / f"{item['id']}.wav", frame)
-            (OUT_DIR / "clips" / f"{item['id']}.txt").write_text(
+            write_wav(llm_dir() / "clips" / f"{item['id']}.wav", frame)
+            (llm_dir() / "clips" / f"{item['id']}.txt").write_text(
                 f"{item['user']}\n{full}\n", encoding="utf-8"
             )
     await tts.aclose()
     write_tsv(
-        OUT_DIR / "run.tsv",
+        llm_dir() / "run.tsv",
         [
             "id",
             "ttft_ms",
@@ -374,7 +377,7 @@ async def cmd_chunks(args: argparse.Namespace) -> int:
     for kind in ("sentence", "fragment"):
         header += [f"{kind}_llm_ms", f"{kind}_accent_ms", f"{kind}_tts_ms"]
         header += [f"{kind}_total_ms", f"{kind}_text"]
-    write_tsv(OUT_DIR / "chunks.tsv", header, rows)
+    write_tsv(llm_dir() / "chunks.tsv", header, rows)
     split = sum(1 for row in rows if row[10] != row[5])
     print(f"\nреплик {len(rows)}, первый фрагмент короче предложения в {split}")
     for name, values in links.items():
@@ -409,15 +412,18 @@ class Thought:
 
 
 async def ask_thinking(
-    client: httpx.AsyncClient, user: str, thinking: bool, budget: int | None
+    client: httpx.AsyncClient,
+    user: str,
+    thinking: bool,
+    budget: int | None,
+    system: str,
 ) -> Thought:
     body: dict[str, object] = {
         "messages": [
-            {"role": "system", "content": SYSTEM},
+            {"role": "system", "content": system},
             {"role": "user", "content": user},
         ],
         "stream": True,
-        "temperature": 1.0,
         "max_tokens": 1500,
         "chat_template_kwargs": {
             "enable_thinking": thinking,
@@ -441,7 +447,7 @@ async def ask_thinking(
     first_token = 0.0
     first_content = 0.0
     async with client.stream(
-        "POST", f"{LLM_URL}/v1/chat/completions", json=body, timeout=300
+        "POST", f"{SERVER}/v1/chat/completions", json=body, timeout=300
     ) as response:
         response.raise_for_status()
         async for line in response.aiter_lines():
@@ -472,11 +478,15 @@ async def cmd_think(args: argparse.Namespace) -> int:
     tts = make_tts(args.base_url, VOICE, "ru")
     warm, _ = place(accent, "Прогревочная фраза номер один.")
     await synthesize(tts, warm)
+    system = SYSTEM_RU if args.digits else SYSTEM
+    suffix = "-digits" if args.digits else ""
     summary = []
     async with httpx.AsyncClient() as client:
         for mode in args.modes.split(","):
             thinking, budget = THINK_MODES[mode]
-            await ask_thinking(client, "Сколько будет два плюс два?", thinking, budget)
+            await ask_thinking(
+                client, "Сколько будет два плюс два?", thinking, budget, system
+            )
             rows = []
             stats: dict[str, list[float]] = {
                 "reasoning_tokens": [],
@@ -490,10 +500,15 @@ async def cmd_think(args: argparse.Namespace) -> int:
             right = 0
             scored = 0
             leftovers = 0
+            empty = 0
             for item in corpus:
-                reply = await ask_thinking(client, item["user"], thinking, budget)
+                reply = await ask_thinking(
+                    client, item["user"], thinking, budget, system
+                )
                 placed, accent_s = place(accent, reply.sentence.strip())
-                _, tts_ttfb, _ = await synthesize(tts, placed)
+                tts_ttfb = 0.0
+                if placed.strip():
+                    _, tts_ttfb, _ = await synthesize(tts, placed)
                 total = reply.first_sentence + accent_s + tts_ttfb
                 verdict = correct(item["keys"], reply.text)
                 if verdict != "-":
@@ -502,12 +517,15 @@ async def cmd_think(args: argparse.Namespace) -> int:
                 found = LEFTOVER.findall(reply.text)
                 leftovers += bool(found)
                 stats["reasoning_tokens"].append(reply.reasoning_tokens)
-                stats["thinking"].append(reply.first_content - reply.first_token)
-                stats["ttft_content"].append(reply.first_content)
-                stats["sentence"].append(reply.first_sentence - reply.first_content)
-                stats["accent"].append(accent_s)
-                stats["tts"].append(tts_ttfb)
-                stats["total"].append(total)
+                if placed.strip():
+                    stats["thinking"].append(reply.first_content - reply.first_token)
+                    stats["ttft_content"].append(reply.first_content)
+                    stats["sentence"].append(reply.first_sentence - reply.first_content)
+                    stats["accent"].append(accent_s)
+                    stats["tts"].append(tts_ttfb)
+                    stats["total"].append(total)
+                else:
+                    empty += 1
                 print(
                     f"{mode}\t{item['id']}\t{verdict}\tразмышление"
                     f" {reply.reasoning_tokens} ток\tcontent {reply.first_content * 1000:.0f}"
@@ -530,7 +548,7 @@ async def cmd_think(args: argparse.Namespace) -> int:
                     ]
                 )
             write_tsv(
-                OUT_DIR / f"think-{mode}.tsv",
+                llm_dir() / f"think-{mode}{suffix}.tsv",
                 [
                     "id",
                     "correct",
@@ -556,13 +574,14 @@ async def cmd_think(args: argparse.Namespace) -> int:
                 ]
             summary.append(line)
             print(
-                f"{mode}: верно {right}/{scored}, с цифрами {leftovers}/{len(corpus)}"
+                f"{mode}: верно {right}/{scored}, с цифрами {leftovers}/{len(corpus)},"
+                f" без ответа {empty}/{len(corpus)}"
             )
     await tts.aclose()
     header = ["mode", "correct", "leftover"]
     for name in stats:
         header += [f"{name}_p50", f"{name}_p95"]
-    write_tsv(OUT_DIR / "think.tsv", header, summary)
+    write_tsv(llm_dir() / f"think{suffix}.tsv", header, summary)
     for line in summary:
         print("\t".join(line))
     return 0
@@ -701,6 +720,11 @@ def main() -> int:
     think = sub.add_parser("think")
     think.add_argument("--modes", default="off,on,b128,b64")
     think.add_argument("--omograph", default="turbo3.1")
+    think.add_argument(
+        "--digits",
+        action="store_true",
+        help="drop the numbers-as-words line from the system prompt",
+    )
     sub.add_parser("poezd")
     sub.add_parser("caps")
     sub.add_parser("caps-listen")

@@ -13,7 +13,8 @@ Hermes. This file is the working contract for agents and contributors.
 - `bench/` — stand scripts and their reports; they run in the `agent/`
   environment (`bench/README.md`).
 - `scripts/` — the stand: `up.sh`, `down.sh`, `fetch.sh`, `env.sh`, the
-  `SHA256SUMS` of every download and the audio.cpp `server.json` template.
+  `SHA256SUMS` of every download, the audio.cpp `server.json` template and
+  `llm-profiles/`, one llama-server model profile per file.
 - `.local/` — only what VOCA itself creates: logs, pid files, the assembled
   `server.json`, recordings. Never committed.
 
@@ -32,7 +33,7 @@ pnpm --dir web format:check
 pnpm --dir web lint
 pnpm --dir web typecheck
 pnpm --dir web build
-bash -n scripts/*.sh
+bash -n scripts/*.sh scripts/llm-profiles/*.sh
 git diff --check
 ```
 
@@ -54,7 +55,8 @@ exports; it does not read `.env` itself.
 | `VOCA_MODELS_DIR` | `$HOME/models` | Root of downloaded models, `models/` in `SHA256SUMS` |
 | `VOCA_LIVEKIT_BIN` | `$VOCA_APPS_DIR/livekit/1.13.11/livekit-server` | livekit-server release binary |
 | `VOCA_AUDIOCPP_BIN` | `$VOCA_APPS_DIR/audio.cpp/0.9.4/audiocpp_server` | audio.cpp server release binary (CPU); its ggml libraries sit next to it |
-| `VOCA_LLAMA_BIN` | `$VOCA_APPS_DIR/llama.cpp/llama-b11869/llama-server` | llama-server of the llama.cpp CUDA release; its libraries sit next to it |
+| `VOCA_LLAMA_BIN` | `$VOCA_APPS_DIR/llama.cpp/llama-b12167/llama-server` | llama-server of the llama.cpp CUDA release; its libraries sit next to it |
+| `VOCA_LLM_PROFILE` | `bolt-e4b` | llama-server model profile, `scripts/llm-profiles/<name>.sh`; only this model is loaded |
 | `VOCA_LIVEKIT_NODE_IP` | `127.0.0.1` | `--node-ip`: the address livekit-server announces for media |
 | `VOCA_LIVEKIT_API_KEY` | `devkey` | Key that signs tokens; the built-in key of `livekit-server --dev` |
 | `VOCA_LIVEKIT_API_SECRET` | `secret` | Secret that signs tokens; the built-in secret of `livekit-server --dev` |
@@ -122,14 +124,16 @@ and its port (8082) is free; with `--check` it stops there. Otherwise it `exec`s
 them into the `ruaccent` package of `agent/.venv`; it is idempotent, and
 `bench/tts_pipeline.py` stops without the link.
 
-`scripts/llama.sh [--check]` checks that `VOCA_LLAMA_BIN` is executable, the
-model `$VOCA_MODELS_DIR/unsloth/NVIDIA-Nemotron-3.5-Bolt-E4B-UD-Q4_K_XL.gguf`
-exists and port 8081 is free; with `--check` it stops there. Otherwise it
-`exec`s llama-server with the profile B command (README 0.3): `--alias
-bolt-e4b`, `127.0.0.1:8081`, `-c 16384`, q8_0 KV cache, `--parallel 1`, all
-layers on the GPU and `per_layer.*` tensors in RAM. Extra arguments are
-appended to the command. Chat template kwargs come from the client, not the
-server.
+`scripts/llama.sh [--check]` sources the profile
+`scripts/llm-profiles/$VOCA_LLM_PROFILE.sh` (README 0.3.1), which sets `model`
+and `args`; an unknown profile or a missing profile file stops it. It then
+checks that `VOCA_LLAMA_BIN` is executable, the profile's model exists and port
+8081 is free; with `--check` it stops there. Otherwise it `exec`s llama-server
+with the shared flags — `--alias "$VOCA_LLM_PROFILE"`, `--jinja`,
+`127.0.0.1:8081`, `-c 16384`, `-fa on`, q8_0 KV cache, `--parallel 1`, `-t 2`,
+all layers on the GPU — plus the profile's `args`. Extra arguments are
+appended to the command. Sampling is set on the server by the profile, from
+the model card; chat template kwargs come from the client.
 
 livekit-server runs as `--dev --bind 0.0.0.0 --node-ip "$VOCA_LIVEKIT_NODE_IP"`.
 

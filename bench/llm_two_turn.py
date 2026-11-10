@@ -10,12 +10,11 @@ from typing import Any
 
 from livekit.agents import llm
 from livekit.plugins import openai
-from llm_common import MARKERS, SYSTEM_RU, delegate, make_llm, write_json
+from llm_common import MARKERS, SYSTEM_RU, THINKING, delegate, make_llm, write_json
 from llm_ru_tools import cyrillic, russian
 from llm_speed import llm_pid, rss_mb, vram_mb
 
 CORPUS = Path(__file__).resolve().parent / "corpus"
-THINKING = {"enable_thinking": True, "conversational_mode": True}
 SYSTEM_A = (
     "Ты — VOCA, голосовой ассистент. Скажи пользователю одну короткую нейтральную "
     "фразу-подтверждение по-русски, например «Сейчас» или «Секунду, смотрю». "

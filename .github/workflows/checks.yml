@@ -21,7 +21,7 @@ jobs:
       - run: (cd agent && uv run --offline --no-sync ruff check src tests ../bench)
       - run: (cd agent && uv run --offline --no-sync mypy)
       - run: (cd agent && uv run --offline --no-sync pytest -q)
-      - run: bash -n scripts/*.sh
+      - run: bash -n scripts/*.sh scripts/llm-profiles/*.sh
       - run: git diff --check
 
   web:
