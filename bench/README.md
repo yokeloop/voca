@@ -84,6 +84,7 @@ Reports, one per measurement task:
 - `report_g3_g4.md` (VOCA-4)
 - `report_g1_g2.md` (VOCA-5)
 - `report_lfm3_1_7b.md` (VOCA-7)
+- `report_lfm2_5_2_6b.md` (VOCA-8)
 
 Corpora are plain text or JSON in `bench/corpus/`. Voice recordings stay out of the
 repository, in `.local/bench/`; each report names the recordings it used with
