@@ -32,7 +32,7 @@ pnpm --dir web format:check
 pnpm --dir web lint
 pnpm --dir web typecheck
 pnpm --dir web build
-bash -n scripts/*.sh
+bash -n scripts/*.sh scripts/llm-profiles/*.sh
 git diff --check
 ```
 
