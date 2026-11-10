@@ -52,7 +52,9 @@ Scripts:
   at a comma or dash after at least 3 words), `think [--modes
   off,on,b128,b64]` (answer accuracy against the `answer`/`keys` of
   `corpus/tts_pipeline.json` and first-sound delay without thinking, with it
-  and with `thinking_budget_tokens` 128 and 64), `caps` (stress on a capital
+  and with `thinking_budget_tokens` 128 and 64; `--digits` drops the
+  numbers-as-words line from the system prompt and writes
+  `think-<mode>-digits.tsv` and `think-digits.tsv`), `caps` (stress on a capital
   vowel at the start of a phrase), `listen` and `caps-listen` (for a person);
   needs
   `scripts/ruaccent-setup.sh` once per `agent/.venv`.
