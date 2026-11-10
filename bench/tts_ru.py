@@ -33,7 +33,16 @@ from livekit.plugins import openai
 TTS_DIR = BENCH_DIR / "tts"
 CORPUS = ROOT / "bench" / "corpus" / "tts_ru.txt"
 VARIANTS: dict[str, str | None] = {"default": None, "ru": "ru"}
-RENDER_HEADER = ["variant", "n", "chars", "ttfb_s", "total_s", "audio_s", "rtf"]
+RENDER_HEADER = [
+    "variant",
+    "n",
+    "chars",
+    "ttfb_s",
+    "total_s",
+    "audio_s",
+    "rtf",
+    "voice",
+]
 NORM_CORPUS = ROOT / "bench" / "corpus" / "tts_ru_norm.txt"
 AB_DIR = TTS_DIR / "ab"
 AB_NUMBERS = [1, 2, 4]
@@ -149,6 +158,7 @@ async def cmd_render(args: argparse.Namespace) -> int:
                     f"{total:.3f}",
                     f"{seconds:.3f}",
                     f"{total / seconds:.4f}",
+                    args.voice,
                 ]
             )
         await tts.aclose()
@@ -464,21 +474,28 @@ def cmd_ab2(args: argparse.Namespace) -> int:
     return 0
 
 
-def render_rates(variant: str) -> dict[int, float]:
+def render_rates(variant: str, voice: str) -> dict[int, float]:
     rates: dict[int, float] = {}
     path = TTS_DIR / "render.tsv"
     if not path.exists():
         return rates
     with path.open(encoding="utf-8") as source:
         for row in csv.DictReader(source, delimiter="\t"):
-            if row["variant"] == variant:
+            if row["variant"] == variant and row.get("voice") == voice:
                 rates[int(row["n"])] = float(row["audio_s"]) / int(row["chars"])
     return rates
 
 
 async def cmd_soak(args: argparse.Namespace) -> int:
     corpus = load_corpus()
-    rates = render_rates(args.variant)
+    rates = render_rates(args.variant, args.voice)
+    if not rates:
+        print(
+            f"нет строк render для варианта {args.variant} и голоса {args.voice}:"
+            f" tts_ru.py --voice {args.voice} render",
+            file=sys.stderr,
+        )
+        return 1
     tts = make_tts(args.base_url, args.voice, VARIANTS[args.variant])
     rows = []
     errors = 0
