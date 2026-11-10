@@ -115,7 +115,7 @@ them in order with logs in `.local/logs/<name>.log` and pids in
 `VOCA_AUDIOCPP_BIN` is executable, every model path in the rendered config exists
 and its port (8082) is free; with `--check` it stops there. Otherwise it `exec`s
 `audiocpp_server --config .local/server.json --no-ui` (README 0.2): Parakeet as
-`asr` in `mode: offline`, Supertonic as `tts` in `mode: streaming`.
+`asr` in `mode: offline`, Supertonic as `tts` in `mode: streaming` with voice `F4`.
 
 `scripts/ruaccent-setup.sh` verifies the ruaccent `koziev/` files in
 `$VOCA_MODELS_DIR/ruaccent/accentuator-b78ae5e/` against `SHA256SUMS` and links
