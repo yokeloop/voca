@@ -17,6 +17,8 @@ from audio_stand import (
     TTS_SAMPLE_RATE,
     health,
     make_tts,
+    read_answer,
+    read_line,
     synthesize,
     write_wav,
 )
@@ -143,7 +145,7 @@ def play(path: Path) -> None:
 
 def ask(prompt: str, choices: list[str]) -> str:
     while True:
-        answer = input(prompt).strip().lower()
+        answer = read_answer(prompt)
         if answer in choices:
             return answer
 
@@ -171,7 +173,7 @@ def cmd_listen(args: argparse.Namespace) -> int:
                     )
                     if answer != "p":
                         break
-                note = input("  заметка (Enter — пусто): ").strip()
+                note = read_line("  заметка (Enter — пусто): ").strip()
                 writer.writerow([f"{number:02d}", variant, answer, note, text])
                 out.flush()
         difference = ask("\nразница default/ru слышна? [y/n] ", ["y", "n"])

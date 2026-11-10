@@ -1,3 +1,4 @@
+import sys
 import time
 import wave
 from pathlib import Path
@@ -16,6 +17,10 @@ STT_MODEL = "asr"
 TTS_MODEL = "tts"
 TTS_SAMPLE_RATE = 44100
 API_KEY = "none"
+RU_LAYOUT = str.maketrans(
+    "йцукенгшщзхъфывапролджэячсмитьбю",
+    "qwertyuiop[]asdfghjkl;'zxcvbnm,.",
+)
 
 
 class SpeechLanguageClient(openai_sdk.AsyncOpenAI):
@@ -120,3 +125,15 @@ def health(url: str) -> dict[str, Any]:
         raise SystemExit("audiocpp_server не отвечает: scripts/up.sh audio")
     data: dict[str, Any] = response.json()
     return data
+
+
+def read_line(prompt: str) -> str:
+    print(prompt, end="", flush=True)
+    line = sys.stdin.buffer.readline()
+    if not line:
+        raise EOFError
+    return line.decode("utf-8", errors="replace").rstrip("\r\n")
+
+
+def read_answer(prompt: str) -> str:
+    return read_line(prompt).strip().lower().translate(RU_LAYOUT)

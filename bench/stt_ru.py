@@ -12,7 +12,17 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from audio_stand import AUDIO_URL, BENCH_DIR, ROOT, health, make_stt, read_wav, trim
+from audio_stand import (
+    AUDIO_URL,
+    BENCH_DIR,
+    ROOT,
+    health,
+    make_stt,
+    read_answer,
+    read_line,
+    read_wav,
+    trim,
+)
 from livekit import rtc
 from livekit.agents import APIError, stt
 from livekit.plugins import silero
@@ -311,7 +321,7 @@ def record_one(path: Path, target: str | None) -> None:
         command += ["--target", target]
     command.append(str(path))
     process = subprocess.Popen(command)
-    input("  запись… Enter — стоп ")
+    read_line("  запись… Enter — стоп ")
     process.send_signal(signal.SIGINT)
     process.wait()
     print(f"  {path.name}: {duration(read_wav(path)):.2f} с")
@@ -332,15 +342,13 @@ def cmd_record(args: argparse.Namespace) -> int:
                 if exists
                 else "  Enter — начать, q — выйти "
             )
-            answer = input(prompt).strip().lower()
+            answer = read_answer(prompt)
             if answer == "q":
                 return 0
             if exists and answer != "r":
                 break
             record_one(path, args.target)
-            again = (
-                input("  Enter — дальше, r — перезаписать, q — выйти ").strip().lower()
-            )
+            again = read_answer("  Enter — дальше, r — перезаписать, q — выйти ")
             if again == "q":
                 return 0
             if again != "r":
