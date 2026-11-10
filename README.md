@@ -44,6 +44,52 @@ scripts/down.sh
 
 Check the route with `scripts/check-rtc.sh https://voca.priney.com`. The route holds no secrets. Host and Traefik details live in the owner's deployment documentation.
 
+### 0.2 Audio stand
+
+audiocpp_server on the CPU with Parakeet-TDT 0.6B v3 (speech recognition) and Supertonic 3 (speech synthesis); gates G1 and G2. The result is [bench/report_g1_g2.md](bench/report_g1_g2.md).
+
+**audio.cpp.** Release 0.9.4 (`git: f7ac446f 2026-11-04`, `backends: cpu`), build `ubuntu-x64-cpu-portable`: `https://github.com/0xShug0/audio.cpp/releases/download/v0.9.4/audio-v0.9.4-bin-ubuntu-x64-cpu-portable.tar.gz` — sha256 `02756c556d78ccca8040cab6fbc6c7bf57d4f6ed70fe534e8a9e846bab464687`. `scripts/fetch.sh` downloads the archive to `~/Apps/audio.cpp/0.9.4/` and extracts next to it `audiocpp_server` (sha256 `b4c3e9881165ded6fd63b05e8cefcbf7517bb4c364a518e783d51d2f1a29c6dd`), `libggml.so.0`, `libggml-base.so.0` and every `libggml-cpu-*.so` (ggml picks the variant for the CPU at start; the binary finds them through RUNPATH `$ORIGIN`); each file is a `tar:` line in `scripts/SHA256SUMS`. No build from source. `VOCA_AUDIOCPP_BIN` points at `audiocpp_server`.
+
+**Models.** Hugging Face `audio-cpp/audio.cpp-gguf`, revision `6f45df32f8fb283e4cfce3d3e1cb7688986fcbe6`, ready GGUF files (no `audiocpp_gguf` conversion), placed by `scripts/fetch.sh` in `$VOCA_MODELS_DIR/audio-cpp/`:
+
+- `Parakeet-TDT-0.6B-v3-GGUF/parakeet-tdt-0.6b-v3-q8_0.gguf` (915 735 760 bytes) — sha256 `6fa498f10f8cb606f041aa9512733cfee842a932359b00b0c45b9b723c4f4f4b`;
+- `Supertonic-3-GGUF/supertonic-3-q8_0.gguf` (454 076 228 bytes) — sha256 `9edd05cf92feab49c6b29721d14c86566459dca7f4a6eeb99306372cdce03697`.
+
+**Server config.** `scripts/server.json` is a template; `scripts/audiocpp.sh` renders it with `envsubst '${VOCA_MODELS_DIR}'` into `.local/server.json`, checks the binary, both model files and the port, then `exec`s `audiocpp_server --config .local/server.json --no-ui`. `envsubst` (gettext) and `jq` are required. The config: `127.0.0.1:8082`, `backend: cpu`, `threads: 6` (measured against llama-server decode in the report), `lazy_load: false`, `max_loaded_models: 2`, `ui: false`, two models:
+
+- `asr` — Parakeet, `mode: offline`: `openai.STT` posts each segment whole, without `stream=true`, and offline mode resamples any input rate;
+- `tts` — Supertonic, `mode: streaming`: `openai.TTS` always asks for `stream_format: "sse"`, which the server accepts only from a streaming model; `default_voice_preset` `F1`. Voices are `M1…M5`/`F1…F5`; the plugin default `ash` is rejected.
+
+**Requirements.** x86_64 Linux; no GPU. Both models load before `/health` answers; `scripts/up.sh audio` waits up to 120 s.
+
+**Steps**, from the repository root:
+
+```sh
+cp .env.example .env
+scripts/fetch.sh
+scripts/fetch.sh --check
+(cd agent && uv sync --locked)
+scripts/audiocpp.sh --check
+scripts/up.sh audio
+curl http://127.0.0.1:8082/health
+scripts/down.sh audio
+```
+
+**Benches** (server up), the gate details are in [bench/README.md](bench/README.md):
+
+```sh
+uv run --project agent python bench/stt_ru.py samples
+uv run --project agent python bench/stt_ru.py rtf5
+uv run --project agent python bench/tts_ru.py check
+uv run --project agent python bench/tts_ru.py render
+uv run --project agent python bench/tts_ru.py soak --variant ru
+uv run --project agent python bench/audio_parallel.py
+```
+
+A person records the G1 phrases with `bench/stt_ru.py record` and listens to the G2 phrases with `bench/tts_ru.py listen`; recordings and synthesis stay in `.local/bench/`.
+
+**Variables** (`.env.example`): `VOCA_AUDIOCPP_BIN`, plus `VOCA_APPS_DIR` and `VOCA_MODELS_DIR` from 0.1.
+
 ### 0.3 LLM stand
 
 llama-server with the Bolt-E4B model in profile B (the per-layer embeddings stay in RAM); gates G3 and G4. The result is [bench/report_g3_g4.md](bench/report_g3_g4.md).
