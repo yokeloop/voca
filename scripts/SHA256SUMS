@@ -13,7 +13,22 @@ dcf128a3ecaf74c51d79bf6885d899a9db065205b50fbd0b62a862685a8de105  apps/llama.cpp
 a77eeb711d350a7791a45a07f37cd3b2ae61c71da4db1bf50cc8bd45d33b5b72  apps/llama.cpp/llama-b11869/libcudart.so.13  untar:cudart-llama-b11869-bin-ubuntu-cuda-13.4-x64.tar.gz
 c1f021ca3a67ee793b518bfe2e77b87ad4b4ed1a0e8362e5a11b4186ebe82ea3  apps/llama.cpp/llama-b11869/libcublas.so.13  untar:cudart-llama-b11869-bin-ubuntu-cuda-13.4-x64.tar.gz
 39c97a2e9497a71076356efec398eb9f946e81bce843e6979c82dfac61e64157  apps/llama.cpp/llama-b11869/libcublasLt.so.13  untar:cudart-llama-b11869-bin-ubuntu-cuda-13.4-x64.tar.gz
+# llama.cpp b12167 (VOCA-7): the build every llm profile uses; b11869 above is the build of the VOCA-4/5 measurements.
+adf9d677741afd3bcf1f8debea51926b0341cb94c2758afa727cb3a38f0b2ac4  apps/llama.cpp/llama-b12167/llama-b12167-bin-ubuntu-cuda-13.4-x64.tar.gz  https://github.com/ggml-org/llama.cpp/releases/download/b12167/llama-b12167-bin-ubuntu-cuda-13.4-x64.tar.gz
+db0c22114db5751a12ff1c970ceed6e805fb0dbde12f57ca7ddc28414079b0f5  apps/llama.cpp/llama-b12167/cudart-llama-b12167-bin-ubuntu-cuda-13.4-x64.tar.gz  https://github.com/ggml-org/llama.cpp/releases/download/b12167/cudart-llama-b12167-bin-ubuntu-cuda-13.4-x64.tar.gz
+5f542c73d6e2604d6e070d1435d33e39354da60c0aba36ce852cee0c3055d6be  apps/llama.cpp/llama-b12167/llama-server  untar:llama-b12167-bin-ubuntu-cuda-13.4-x64.tar.gz
+8f87ebc08558f506f3e5be547ef64fca35e4a1794471478b155668e388eb53e5  apps/llama.cpp/llama-b12167/libllama-server-impl.so  untar:llama-b12167-bin-ubuntu-cuda-13.4-x64.tar.gz
+2e10732b7709bf45fa4492bd0442c3e614e63f189fcf02cad27d34a7c9b884d1  apps/llama.cpp/llama-b12167/libllama.so.0.9.0  untar:llama-b12167-bin-ubuntu-cuda-13.4-x64.tar.gz
+82144a6c5f79deded27687b7c1a17add577000d4343593ef54c11206fbcce84e  apps/llama.cpp/llama-b12167/libllama-common.so.0.9.0  untar:llama-b12167-bin-ubuntu-cuda-13.4-x64.tar.gz
+8e7b200d2c75f119d79afd1b0fe30d08facc5bc67f257bbd72e6b2aa7d2fe4cd  apps/llama.cpp/llama-b12167/libmtmd.so.0.9.0  untar:llama-b12167-bin-ubuntu-cuda-13.4-x64.tar.gz
+14cdbea738a56355629ec8dc200fc5e307a728d907893cfacd9dd84f7032538b  apps/llama.cpp/llama-b12167/libggml-base.so.0.29.0  untar:llama-b12167-bin-ubuntu-cuda-13.4-x64.tar.gz
+207cfc7c4b4b957a0e6f330cd2678290eae05508da23d8ed59b4b7fc0a828390  apps/llama.cpp/llama-b12167/libggml.so.0.29.0  untar:llama-b12167-bin-ubuntu-cuda-13.4-x64.tar.gz
+e24cfa71d5e802863e4c60c63dca687d784aec172c3217ba17098f9dfe841c2e  apps/llama.cpp/llama-b12167/libggml-cuda.so  untar:llama-b12167-bin-ubuntu-cuda-13.4-x64.tar.gz
+a77eeb711d350a7791a45a07f37cd3b2ae61c71da4db1bf50cc8bd45d33b5b72  apps/llama.cpp/llama-b12167/libcudart.so.13  untar:cudart-llama-b12167-bin-ubuntu-cuda-13.4-x64.tar.gz
+c1f021ca3a67ee793b518bfe2e77b87ad4b4ed1a0e8362e5a11b4186ebe82ea3  apps/llama.cpp/llama-b12167/libcublas.so.13  untar:cudart-llama-b12167-bin-ubuntu-cuda-13.4-x64.tar.gz
+39c97a2e9497a71076356efec398eb9f946e81bce843e6979c82dfac61e64157  apps/llama.cpp/llama-b12167/libcublasLt.so.13  untar:cudart-llama-b12167-bin-ubuntu-cuda-13.4-x64.tar.gz
 84ff34f5834b929043f5ae74799e8d562d4056998f6a5923ceb44831e8ad84d6  models/unsloth/NVIDIA-Nemotron-3.5-Bolt-E4B-UD-Q4_K_XL.gguf  https://huggingface.co/unsloth/NVIDIA-Nemotron-3.5-Bolt-E4B-GGUF/resolve/b738967d6da3441a7d1c71fcec15e49e32e16ecd/NVIDIA-Nemotron-3.5-Bolt-E4B-UD-Q4_K_XL.gguf
+3793e1e6e2266919d6e015287221b41100175a98eddaba92e111aed3b05c93c4  models/LiquidAI/LFM3-1.7B-Q4_K_M.gguf  https://huggingface.co/LiquidAI/LFM3-1.7B-GGUF/resolve/cd0c74c575b5c416f3011b5b4c298077f26ca8c2/LFM3-1.7B-Q4_K_M.gguf
 02756c556d78ccca8040cab6fbc6c7bf57d4f6ed70fe534e8a9e846bab464687  apps/audio.cpp/0.9.4/audio-v0.9.4-bin-ubuntu-x64-cpu-portable.tar.gz  https://github.com/0xShug0/audio.cpp/releases/download/v0.9.4/audio-v0.9.4-bin-ubuntu-x64-cpu-portable.tar.gz
 b4c3e9881165ded6fd63b05e8cefcbf7517bb4c364a518e783d51d2f1a29c6dd  apps/audio.cpp/0.9.4/audiocpp_server  tar:audio-v0.9.4-bin-ubuntu-x64-cpu-portable.tar.gz
 9e0e0f477e8d5611deb428cb2d5c0c52265168601b647eeee935aa5984297db3  apps/audio.cpp/0.9.4/libggml-base.so.0  tar:audio-v0.9.4-bin-ubuntu-x64-cpu-portable.tar.gz
