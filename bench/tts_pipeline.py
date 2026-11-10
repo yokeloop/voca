@@ -492,10 +492,13 @@ async def cmd_think(args: argparse.Namespace) -> int:
             right = 0
             scored = 0
             leftovers = 0
+            empty = 0
             for item in corpus:
                 reply = await ask_thinking(client, item["user"], thinking, budget)
                 placed, accent_s = place(accent, reply.sentence.strip())
-                _, tts_ttfb, _ = await synthesize(tts, placed)
+                tts_ttfb = 0.0
+                if placed.strip():
+                    _, tts_ttfb, _ = await synthesize(tts, placed)
                 total = reply.first_sentence + accent_s + tts_ttfb
                 verdict = correct(item["keys"], reply.text)
                 if verdict != "-":
@@ -504,12 +507,15 @@ async def cmd_think(args: argparse.Namespace) -> int:
                 found = LEFTOVER.findall(reply.text)
                 leftovers += bool(found)
                 stats["reasoning_tokens"].append(reply.reasoning_tokens)
-                stats["thinking"].append(reply.first_content - reply.first_token)
-                stats["ttft_content"].append(reply.first_content)
-                stats["sentence"].append(reply.first_sentence - reply.first_content)
-                stats["accent"].append(accent_s)
-                stats["tts"].append(tts_ttfb)
-                stats["total"].append(total)
+                if placed.strip():
+                    stats["thinking"].append(reply.first_content - reply.first_token)
+                    stats["ttft_content"].append(reply.first_content)
+                    stats["sentence"].append(reply.first_sentence - reply.first_content)
+                    stats["accent"].append(accent_s)
+                    stats["tts"].append(tts_ttfb)
+                    stats["total"].append(total)
+                else:
+                    empty += 1
                 print(
                     f"{mode}\t{item['id']}\t{verdict}\tразмышление"
                     f" {reply.reasoning_tokens} ток\tcontent {reply.first_content * 1000:.0f}"
@@ -558,7 +564,8 @@ async def cmd_think(args: argparse.Namespace) -> int:
                 ]
             summary.append(line)
             print(
-                f"{mode}: верно {right}/{scored}, с цифрами {leftovers}/{len(corpus)}"
+                f"{mode}: верно {right}/{scored}, с цифрами {leftovers}/{len(corpus)},"
+                f" без ответа {empty}/{len(corpus)}"
             )
     await tts.aclose()
     header = ["mode", "correct", "leftover"]
