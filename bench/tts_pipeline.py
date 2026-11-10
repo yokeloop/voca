@@ -49,6 +49,8 @@ LEFTOVER = re.compile(r"[0-9%№$€₽°+=*/#@]")
 VOWELS = "аеёиоуыэюяАЕЁИОУЫЭЮЯ"
 ACUTE = "́"
 CLIPS = 6
+FRAGMENT_BREAK = re.compile(r",|\s[—–-]\s")
+FRAGMENT_WORDS = 3
 POEZD = {
     "p1": "По́езд прибывает утром.",
     "p2": "по́езд прибывает утром.",
@@ -58,10 +60,8 @@ POEZD = {
 
 
 def load_accent(omograph: str) -> RUAccent:
-    package = pathlib.Path(ruaccent.__file__).parent
-    link = package / "koziev"
-    if not link.exists():
-        link.symlink_to(ACCENT_DIR / "koziev")
+    if not (pathlib.Path(ruaccent.__file__).parent / "koziev").exists():
+        raise SystemExit("нет ruaccent/koziev: scripts/ruaccent-setup.sh")
     accent = RUAccent()
     accent.load(
         omograph_model_size=omograph, use_dictionary=True, workdir=str(ACCENT_DIR)
@@ -81,6 +81,14 @@ def to_tts(marked: str) -> str:
         return token if vowels(token) > 1 else token.replace(ACUTE, "")
 
     return re.sub(r"[\ẃ-]+", word, text)
+
+
+def fragment_of(text: str) -> str | None:
+    for match in FRAGMENT_BREAK.finditer(text):
+        head = text[: match.end()].strip()
+        if len(re.findall(r"\w+", head)) >= FRAGMENT_WORDS:
+            return head
+    return None
 
 
 def place(accent: RUAccent, text: str) -> tuple[str, float]:
@@ -174,6 +182,8 @@ class Reply:
     ttft: float
     first_sentence: float
     sentence: str
+    first_fragment: float
+    fragment: str
 
 
 async def ask_llm(model: openai.LLM, user: str) -> Reply:
@@ -192,6 +202,7 @@ async def ask_llm(model: openai.LLM, user: str) -> Reply:
 
     reader = asyncio.create_task(first_sentence())
     text = ""
+    fragment: tuple[float, str] | None = None
     async with model.chat(chat_ctx=ctx) as stream:
         async for chunk in stream:
             delta = chunk.delta.content if chunk.delta else None
@@ -200,11 +211,17 @@ async def ask_llm(model: openai.LLM, user: str) -> Reply:
                     ttft = time.perf_counter() - start
                 text += delta
                 sentences.push_text(delta)
+                if fragment is None and not first:
+                    head = fragment_of(text)
+                    if head is not None:
+                        fragment = (time.perf_counter() - start, head)
     sentences.end_input()
     await reader
     await sentences.aclose()
     elapsed, sentence = first[0] if first else (time.perf_counter() - start, text)
-    return Reply(text, ttft, elapsed, sentence)
+    if fragment is None or len(fragment[1]) >= len(sentence.strip()):
+        fragment = (elapsed, sentence)
+    return Reply(text, ttft, elapsed, sentence, fragment[0], fragment[1])
 
 
 async def cmd_run(args: argparse.Namespace) -> int:
@@ -295,6 +312,64 @@ async def cmd_run(args: argparse.Namespace) -> int:
     return 0
 
 
+async def cmd_chunks(args: argparse.Namespace) -> int:
+    corpus = json.loads(CORPUS.read_text(encoding="utf-8"))
+    accent = load_accent(args.omograph)
+    model = make_llm()
+    tts = make_tts(args.base_url, VOICE, "ru")
+    await ask_llm(model, "Сколько будет два плюс два?")
+    warm, _ = place(accent, "Прогревочная фраза номер один.")
+    await synthesize(tts, warm)
+    rows = []
+    links: dict[str, list[float]] = {
+        "sentence_llm": [],
+        "sentence_tts": [],
+        "sentence_total": [],
+        "fragment_llm": [],
+        "fragment_tts": [],
+        "fragment_total": [],
+    }
+    for item in corpus:
+        reply = await ask_llm(model, item["user"])
+        result = [item["id"]]
+        for kind, ready, text in [
+            ("sentence", reply.first_sentence, reply.sentence.strip()),
+            ("fragment", reply.first_fragment, reply.fragment.strip()),
+        ]:
+            placed, accent_s = place(accent, text)
+            _, tts_ttfb, _ = await synthesize(tts, placed)
+            total = ready + accent_s + tts_ttfb
+            links[f"{kind}_llm"].append(ready)
+            links[f"{kind}_tts"].append(tts_ttfb)
+            links[f"{kind}_total"].append(total)
+            result += [
+                f"{ready * 1000:.0f}",
+                f"{accent_s * 1000:.1f}",
+                f"{tts_ttfb * 1000:.0f}",
+                f"{total * 1000:.0f}",
+                text,
+            ]
+        print(
+            f"{item['id']}\tпредложение {result[4]} мс\tфрагмент {result[9]} мс"
+            f"\t{reply.fragment.strip()}"
+        )
+        rows.append(result)
+    await tts.aclose()
+    header = ["id"]
+    for kind in ("sentence", "fragment"):
+        header += [f"{kind}_llm_ms", f"{kind}_accent_ms", f"{kind}_tts_ms"]
+        header += [f"{kind}_total_ms", f"{kind}_text"]
+    write_tsv(OUT_DIR / "chunks.tsv", header, rows)
+    split = sum(1 for row in rows if row[10] != row[5])
+    print(f"\nреплик {len(rows)}, первый фрагмент короче предложения в {split}")
+    for name, values in links.items():
+        print(
+            f"{name}: p50 {percentile(values, 50) * 1000:.0f} мс,"
+            f" p95 {percentile(values, 95) * 1000:.0f} мс"
+        )
+    return 0
+
+
 async def cmd_poezd(args: argparse.Namespace) -> int:
     tts = make_tts(args.base_url, VOICE, "ru")
     rows = []
@@ -367,6 +442,8 @@ def main() -> int:
     accent.add_argument("--omograph", default="tiny2.1,turbo3.1")
     run = sub.add_parser("run")
     run.add_argument("--omograph", default="turbo3.1")
+    chunks = sub.add_parser("chunks")
+    chunks.add_argument("--omograph", default="turbo3.1")
     sub.add_parser("poezd")
     sub.add_parser("listen")
     args = parser.parse_args()
@@ -375,7 +452,7 @@ def main() -> int:
     if args.command == "listen":
         return cmd_listen(args)
     health(args.base_url)
-    commands = {"run": cmd_run, "poezd": cmd_poezd}
+    commands = {"run": cmd_run, "chunks": cmd_chunks, "poezd": cmd_poezd}
     try:
         return asyncio.run(commands[args.command](args))
     except (APIError, httpx.HTTPError) as exc:
