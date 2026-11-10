@@ -40,7 +40,9 @@ Scripts:
   `corpus/tts_ru_stress.tsv`), `run [--omograph turbo3.1]` (LLM reply with
   numbers as words → stress → F4 synthesis, time to the first sound over
   `corpus/tts_pipeline.json`, needs `scripts/up.sh llm`), `poezd` (stress mark
-  spellings of «поезд»), `listen` (for a person).
+  spellings of «поезд»), `chunks` (first sound when the first fragment is cut
+  at a comma or dash after at least 3 words), `listen` (for a person); needs
+  `scripts/ruaccent-setup.sh` once per `agent/.venv`.
 - `audio_parallel.py` (VOCA-5) — «STT does not wait for TTS» and llama-server
   decode under audio load: `--skip-llm`, `--threads-label N`, `--llm-url`.
 - `audio_stand.py` — what the audio scripts share: `openai.STT`/`openai.TTS`

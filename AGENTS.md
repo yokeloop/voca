@@ -117,6 +117,11 @@ and its port (8082) is free; with `--check` it stops there. Otherwise it `exec`s
 `audiocpp_server --config .local/server.json --no-ui` (README 0.2): Parakeet as
 `asr` in `mode: offline`, Supertonic as `tts` in `mode: streaming`.
 
+`scripts/ruaccent-setup.sh` verifies the ruaccent `koziev/` files in
+`$VOCA_MODELS_DIR/ruaccent/accentuator-b78ae5e/` against `SHA256SUMS` and links
+them into the `ruaccent` package of `agent/.venv`; it is idempotent, and
+`bench/tts_pipeline.py` stops without the link.
+
 `scripts/llama.sh [--check]` checks that `VOCA_LLAMA_BIN` is executable, the
 model `$VOCA_MODELS_DIR/unsloth/NVIDIA-Nemotron-3.5-Bolt-E4B-UD-Q4_K_XL.gguf`
 exists and port 8081 is free; with `--check` it stops there. Otherwise it
