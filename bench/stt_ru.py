@@ -1,4 +1,5 @@
 import argparse
+import array
 import asyncio
 import csv
 import os
@@ -22,6 +23,7 @@ MODELS_DIR = Path(os.environ.get("VOCA_MODELS_DIR", Path.home() / "models"))
 SAMPLES_DIR = MODELS_DIR / "audio-cpp" / "samples"
 FALLBACK_FILE = SAMPLES_DIR / "cat_Russian_0.wav"
 FRAME_MS = 20
+SILENT_PEAK = 2000
 PUNCT = re.compile(r"[^\w\s]|_")
 
 
@@ -43,6 +45,11 @@ class Result:
     @property
     def rtf(self) -> float:
         return self.batch_time / self.seconds
+
+
+def peak(frame: rtc.AudioFrame) -> int:
+    samples = array.array("h", bytes(frame.data))
+    return max((abs(sample) for sample in samples), default=0)
 
 
 def duration(frame: rtc.AudioFrame) -> float:
@@ -159,8 +166,15 @@ async def cmd_samples(args: argparse.Namespace) -> int:
         return 1
     vad = load_vad()
     rows = []
+    skipped = []
     failed = 0
     for path in files:
+        level = peak(read_wav(path))
+        if level < SILENT_PEAK:
+            print(f"{path.name}\tskip: пик {level} < {SILENT_PEAK}")
+            skipped.append(path.name)
+            rows.append([path.name, "", "", "", "", "", "", f"skip peak {level}"])
+            continue
         try:
             result = await run_both(args.base_url, path, vad)
         except (APIError, RuntimeError) as exc:
@@ -184,17 +198,20 @@ async def cmd_samples(args: argparse.Namespace) -> int:
                 result.batch_text,
                 result.adapter_text,
                 str(result.finals),
+                "ok",
             ]
         )
     write_tsv(
         STT_DIR / "samples.tsv",
-        ["file", "seconds", "batch_s", "rtf", "batch", "adapter", "finals"],
+        ["file", "seconds", "batch_s", "rtf", "batch", "adapter", "finals", "status"],
         rows,
     )
-    rtfs = [float(row[3]) for row in rows]
+    if skipped:
+        print(f"пропущено тихих образцов {len(skipped)}: {', '.join(skipped)}")
+    rtfs = [float(row[3]) for row in rows if row[7] == "ok"]
     if rtfs:
         print(
-            f"файлов {len(rows)}, RTF медиана {statistics.median(rtfs):.3f},"
+            f"распознано файлов {len(rtfs)}, RTF медиана {statistics.median(rtfs):.3f},"
             f" максимум {max(rtfs):.3f}"
         )
     return failed

@@ -23,7 +23,9 @@ Scripts:
 - `llm_common.py` — what the `llm_*` scripts share: `openai.LLM` setup,
   the `delegate` tool, the system prompt, template markers.
 - `stt_ru.py` (VOCA-5) — G1 and «STT batch»: `samples` (the Russian samples in
-  `$VOCA_MODELS_DIR/audio-cpp/samples/`, batch and `StreamAdapter`), `record
+  `$VOCA_MODELS_DIR/audio-cpp/samples/`, batch and `StreamAdapter`; a sample
+  whose peak is below 2000 of 32767 is reported as `skip` and does not fail the
+  run), `record
   [--from ID] [--target NODE]` (for a person: records `bench/corpus/stt_ru.tsv`
   with `pw-record`), `recordings` (G1 on those recordings, key words checked),
   `rtf5 [--file PATH] [--repeat 5]` (RTF on a 5 s segment).
