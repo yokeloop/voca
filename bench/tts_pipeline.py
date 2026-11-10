@@ -49,6 +49,13 @@ LEFTOVER = re.compile(r"[0-9%№$€₽°+=*/#@]")
 VOWELS = "аеёиоуыэюяАЕЁИОУЫЭЮЯ"
 ACUTE = "́"
 CLIPS = 6
+LLM_URL = "http://127.0.0.1:8081"
+THINK_MODES: dict[str, tuple[bool, int | None]] = {
+    "off": (False, None),
+    "on": (True, None),
+    "b128": (True, 128),
+    "b64": (True, 64),
+}
 FRAGMENT_BREAK = re.compile(r",|\s[—–-]\s")
 FRAGMENT_WORDS = 3
 POEZD = {
@@ -370,6 +377,189 @@ async def cmd_chunks(args: argparse.Namespace) -> int:
     return 0
 
 
+def normalize(text: str) -> str:
+    text = re.sub(r"[^\w\s]|_", " ", text.lower().replace("ё", "е"))
+    return " ".join(text.split())
+
+
+def correct(keys: list[list[str]] | None, text: str) -> str:
+    if keys is None:
+        return "-"
+    plain = f" {normalize(text)}"
+    found = any(all(f" {part}" in plain for part in alt) for alt in keys)
+    return "y" if found else "n"
+
+
+@dataclass
+class Thought:
+    text: str
+    reasoning_tokens: int
+    first_token: float
+    first_content: float
+    first_sentence: float
+    sentence: str
+
+
+async def ask_thinking(
+    client: httpx.AsyncClient, user: str, thinking: bool, budget: int | None
+) -> Thought:
+    body: dict[str, object] = {
+        "messages": [
+            {"role": "system", "content": SYSTEM},
+            {"role": "user", "content": user},
+        ],
+        "stream": True,
+        "temperature": 1.0,
+        "max_tokens": 1500,
+        "chat_template_kwargs": {
+            "enable_thinking": thinking,
+            "conversational_mode": True,
+        },
+    }
+    if budget is not None:
+        body["thinking_budget_tokens"] = budget
+    sentences = tokenize.blingfire.SentenceTokenizer(retain_format=True).stream()
+    first: list[tuple[float, str]] = []
+    start = time.perf_counter()
+
+    async def first_sentence() -> None:
+        async for token in sentences:
+            if not first:
+                first.append((time.perf_counter() - start, token.token))
+
+    reader = asyncio.create_task(first_sentence())
+    text = ""
+    reasoning = 0
+    first_token = 0.0
+    first_content = 0.0
+    async with client.stream(
+        "POST", f"{LLM_URL}/v1/chat/completions", json=body, timeout=300
+    ) as response:
+        response.raise_for_status()
+        async for line in response.aiter_lines():
+            if not line.startswith("data: ") or line == "data: [DONE]":
+                continue
+            for choice in json.loads(line[6:]).get("choices", []):
+                delta = choice.get("delta", {})
+                if delta.get("reasoning_content"):
+                    reasoning += 1
+                    if not first_token:
+                        first_token = time.perf_counter() - start
+                if delta.get("content"):
+                    if not first_content:
+                        first_content = time.perf_counter() - start
+                        first_token = first_token or first_content
+                    text += delta["content"]
+                    sentences.push_text(delta["content"])
+    sentences.end_input()
+    await reader
+    await sentences.aclose()
+    elapsed, sentence = first[0] if first else (time.perf_counter() - start, text)
+    return Thought(text, reasoning, first_token, first_content, elapsed, sentence)
+
+
+async def cmd_think(args: argparse.Namespace) -> int:
+    corpus = json.loads(CORPUS.read_text(encoding="utf-8"))
+    accent = load_accent(args.omograph)
+    tts = make_tts(args.base_url, VOICE, "ru")
+    warm, _ = place(accent, "Прогревочная фраза номер один.")
+    await synthesize(tts, warm)
+    summary = []
+    async with httpx.AsyncClient() as client:
+        for mode in args.modes.split(","):
+            thinking, budget = THINK_MODES[mode]
+            await ask_thinking(client, "Сколько будет два плюс два?", thinking, budget)
+            rows = []
+            stats: dict[str, list[float]] = {
+                "reasoning_tokens": [],
+                "thinking": [],
+                "ttft_content": [],
+                "sentence": [],
+                "accent": [],
+                "tts": [],
+                "total": [],
+            }
+            right = 0
+            scored = 0
+            leftovers = 0
+            for item in corpus:
+                reply = await ask_thinking(client, item["user"], thinking, budget)
+                placed, accent_s = place(accent, reply.sentence.strip())
+                _, tts_ttfb, _ = await synthesize(tts, placed)
+                total = reply.first_sentence + accent_s + tts_ttfb
+                verdict = correct(item["keys"], reply.text)
+                if verdict != "-":
+                    scored += 1
+                    right += verdict == "y"
+                found = LEFTOVER.findall(reply.text)
+                leftovers += bool(found)
+                stats["reasoning_tokens"].append(reply.reasoning_tokens)
+                stats["thinking"].append(reply.first_content - reply.first_token)
+                stats["ttft_content"].append(reply.first_content)
+                stats["sentence"].append(reply.first_sentence - reply.first_content)
+                stats["accent"].append(accent_s)
+                stats["tts"].append(tts_ttfb)
+                stats["total"].append(total)
+                print(
+                    f"{mode}\t{item['id']}\t{verdict}\tразмышление"
+                    f" {reply.reasoning_tokens} ток\tcontent {reply.first_content * 1000:.0f}"
+                    f"\tитого {total * 1000:.0f} мс\t{reply.text.strip()[:120]}"
+                )
+                rows.append(
+                    [
+                        item["id"],
+                        verdict,
+                        str(reply.reasoning_tokens),
+                        f"{reply.first_token * 1000:.0f}",
+                        f"{reply.first_content * 1000:.0f}",
+                        f"{reply.first_sentence * 1000:.0f}",
+                        f"{accent_s * 1000:.1f}",
+                        f"{tts_ttfb * 1000:.0f}",
+                        f"{total * 1000:.0f}",
+                        "".join(found),
+                        item["user"],
+                        reply.text.strip(),
+                    ]
+                )
+            write_tsv(
+                OUT_DIR / f"think-{mode}.tsv",
+                [
+                    "id",
+                    "correct",
+                    "reasoning_tokens",
+                    "first_token_ms",
+                    "first_content_ms",
+                    "first_sentence_ms",
+                    "accent_ms",
+                    "tts_ttfb_ms",
+                    "total_ms",
+                    "leftover",
+                    "user",
+                    "reply",
+                ],
+                rows,
+            )
+            line = [mode, f"{right}/{scored}", str(leftovers)]
+            for name, values in stats.items():
+                scale = 1 if name == "reasoning_tokens" else 1000
+                line += [
+                    f"{percentile(values, 50) * scale:.0f}",
+                    f"{percentile(values, 95) * scale:.0f}",
+                ]
+            summary.append(line)
+            print(
+                f"{mode}: верно {right}/{scored}, с цифрами {leftovers}/{len(corpus)}"
+            )
+    await tts.aclose()
+    header = ["mode", "correct", "leftover"]
+    for name in stats:
+        header += [f"{name}_p50", f"{name}_p95"]
+    write_tsv(OUT_DIR / "think.tsv", header, summary)
+    for line in summary:
+        print("\t".join(line))
+    return 0
+
+
 async def cmd_poezd(args: argparse.Namespace) -> int:
     tts = make_tts(args.base_url, VOICE, "ru")
     rows = []
@@ -444,6 +634,9 @@ def main() -> int:
     run.add_argument("--omograph", default="turbo3.1")
     chunks = sub.add_parser("chunks")
     chunks.add_argument("--omograph", default="turbo3.1")
+    think = sub.add_parser("think")
+    think.add_argument("--modes", default="off,on,b128,b64")
+    think.add_argument("--omograph", default="turbo3.1")
     sub.add_parser("poezd")
     sub.add_parser("listen")
     args = parser.parse_args()
@@ -452,7 +645,12 @@ def main() -> int:
     if args.command == "listen":
         return cmd_listen(args)
     health(args.base_url)
-    commands = {"run": cmd_run, "chunks": cmd_chunks, "poezd": cmd_poezd}
+    commands = {
+        "run": cmd_run,
+        "chunks": cmd_chunks,
+        "think": cmd_think,
+        "poezd": cmd_poezd,
+    }
     try:
         return asyncio.run(commands[args.command](args))
     except (APIError, httpx.HTTPError) as exc:
