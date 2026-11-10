@@ -1,8 +1,10 @@
 import argparse
 import asyncio
 import csv
+import difflib
 import io
 import random
+import re
 import statistics
 import subprocess
 import sys
@@ -474,6 +476,57 @@ def cmd_ab2(args: argparse.Namespace) -> int:
     return 0
 
 
+VOICES = [f"{gender}{n}" for gender in "FM" for n in range(1, 6)]
+
+
+def plain_words(text: str) -> str:
+    text = re.sub(r"[^\w\s]", " ", text.lower().replace("ё", "е"))
+    return " ".join(text.split())
+
+
+async def cmd_voiceprobe(args: argparse.Namespace) -> int:
+    corpus = NORM_CORPUS.read_text(encoding="utf-8").splitlines()
+    rows = []
+    summary = []
+    async with httpx.AsyncClient(timeout=300) as client:
+        for voice in VOICES:
+            scores = []
+            for number in AB_NUMBERS:
+                text = corpus[number - 1]
+                speech = await client.post(
+                    f"{args.base_url}/audio/speech",
+                    json={
+                        "model": args.model,
+                        "input": text,
+                        "voice": voice,
+                        "language": "ru",
+                        "speed": 1.0,
+                        "num_inference_steps": args.steps,
+                    },
+                )
+                speech.raise_for_status()
+                heard = await client.post(
+                    f"{args.base_url}/audio/transcriptions",
+                    files={"file": ("speech.wav", speech.content, "audio/wav")},
+                    data={"model": "asr"},
+                )
+                heard.raise_for_status()
+                recognized = heard.json()["text"]
+                score = difflib.SequenceMatcher(
+                    None, plain_words(text), plain_words(recognized)
+                ).ratio()
+                scores.append(score)
+                print(f"{voice}\t{number:02d}\t{score:.3f}\t{recognized}")
+                rows.append([voice, f"{number:02d}", f"{score:.3f}", recognized])
+            mean = sum(scores) / len(scores)
+            summary.append((mean, voice))
+            print(f"== {voice} {mean:.3f}")
+    write_tsv(TTS_DIR / "voiceprobe.tsv", ["voice", "n", "score", "asr"], rows)
+    best = max(summary)
+    print(f"лучший round-trip: {best[1]} {best[0]:.3f}")
+    return 0
+
+
 def render_rates(variant: str, voice: str) -> dict[int, float]:
     rates: dict[int, float] = {}
     path = TTS_DIR / "render.tsv"
@@ -574,6 +627,9 @@ def main() -> int:
     ab_render.add_argument("--numbers", default="1,2,4")
     ab = sub.add_parser("ab")
     ab.add_argument("--numbers", default="1,2,4")
+    voiceprobe = sub.add_parser("voiceprobe")
+    voiceprobe.add_argument("--model", default="tts-f16")
+    voiceprobe.add_argument("--steps", type=int, default=16)
     sub.add_parser("ab2-render")
     sub.add_parser("ab2")
     args = parser.parse_args()
@@ -590,6 +646,7 @@ def main() -> int:
         "soak": cmd_soak,
         "ab-render": cmd_ab_render,
         "ab2-render": cmd_ab2_render,
+        "voiceprobe": cmd_voiceprobe,
     }
     try:
         return asyncio.run(commands[args.command](args))

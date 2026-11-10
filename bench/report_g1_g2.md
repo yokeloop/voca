@@ -1,6 +1,6 @@
 # Отчёт G1, G2 — стенд аудио (VOCA-5, 0.2)
 
-Стенд: этот хост (omarchy), 2026-11-10. Прогоны — `bench/stt_ru.py`, `bench/tts_ru.py`, `bench/audio_parallel.py`; таблицы и аудио — `.local/bench/{stt,tts,parallel}/`, лог сервера — `.local/logs/audio.log` (в репозиторий не кладутся). Все числа ниже — из этих файлов.
+Стенд: этот хост (omarchy), 2026-11-10. Прогоны — `bench/stt_ru.py`, `bench/tts_ru.py`, `bench/audio_parallel.py`, `bench/tts_pipeline.py`; таблицы и аудио — `.local/bench/{stt,tts,parallel,pipeline}/` (полный список — раздел 7), лог сервера — `.local/logs/audio.log` (в репозиторий не кладутся). Все числа ниже — из этих файлов.
 
 **Итог.**
 
@@ -69,7 +69,7 @@
 
 | Проверка | Как | Наблюдение | Итог |
 | --- | --- | --- | --- |
-| STT батчем | `stt_ru.py samples`: каждый образец — `openai.STT.recognize` и `stt.StreamAdapter(vad=silero.VAD.load(min_silence_duration=0.3))`, кадры по 20 мс, 1 с тишины, `end_input()` | 72 образца, 3 тихих пропущены (`skip`); у остальных 69 оба пути дали текст; RTF батча медиана 0.081, максимум 0.210 (threads 6). Тексты батча и адаптера совпадают по смыслу, адаптер режет речь на 1–9 финальных событий | решено |
+| STT батчем | `stt_ru.py samples`: каждый образец — `openai.STT.recognize` и `stt.StreamAdapter(vad=silero.VAD.load(min_silence_duration=0.3))`, кадры по 20 мс, 1 с тишины, `end_input()` | 72 образца, 3 тихих пропущены (`skip`); у остальных 69 оба пути дали текст; RTF батча медиана 0.081, максимум 0.210 (threads 6). Тексты батча и адаптера совпадают по смыслу, адаптер режет речь на 1–10 финальных событий | решено |
 | TTS pcm/частота | `tts_ru.py check`: фраза 1 через `openai.TTS(response_format="pcm", sample_rate=44100)` с `language: "ru"` и тот же запрос прямым `POST /v1/audio/speech` → WAV | WAV 44100 Гц; кадры плагина 44100 Гц; плагин 6.160 с, WAV 6.150 с; `content-type` при `stream_format: "sse"` — `text/event-stream; charset=utf-8`. Все четыре `PASS` | решено |
 | STT во время TTS | `audio_parallel.py`: весь `tts_ru.txt` одной строкой (≈ 119 с аудио, синтез ≈ 30 с, первый кадр через ≈ 7 с), после первого кадра 5 STT сегмента 5 с | все 5 STT закончились до конца TTS при threads 2, 4, 6; медиана при threads 6 — 0.488 с при одиночной 0.263 с (порог 0.526) | решено, один экземпляр |
 | Потоки при decode | `audio_parallel.py --threads-label N`, сервер с `threads` = N, llama-server VOCA-4 без изменений (`-t 2`) | таблица ниже | `threads: 6` |
@@ -192,7 +192,7 @@ b09170d877daf43be150db33ceccf504e03a53b1c14990844f4643bf9ed56b1a  25.wav
 | --- | --- | --- | --- | --- |
 | 01 | В 2026 году конференция пройдёт 14 марта в 10:30. | n | y | default: «2026 и 14 прозвучало непонятно, весь текст с акцентом»; ru: «уже лучше, но заметный акцент при произношении числительных» |
 | 02 | Стоимость заказа составила 1 245 рублей 50 копеек. | n | n | «цифры произнеслись коряво и непонятно»; ru: «1245 вообще произнесено криво» |
-| 03 | Позвоните по номеру 8 800 555-35-35 до 18:00. | n | n | «числа произносятся непонятно» в обоих |
+| 03 | Позвоните по номеру 8 800 555-35-35 до 18:00. | n | n | default: «числа произносятся непонятно»; ru: «цифры произнесены непонятно вообще» |
 | 04 | Поезд прибывает 3 сентября в 7 часов 15 минут. | y | y | «разборчиво, но нет склонения и звучит с сильным акцентом» |
 | 05 | Температура опустилась до минус 23 градусов. | y | y | «нет склонения» |
 
@@ -200,7 +200,7 @@ b09170d877daf43be150db33ceccf504e03a53b1c14990844f4643bf9ed56b1a  25.wav
 
 **Вывод по исходному корпусу.** Supertonic 3 через audio.cpp не читает числа, записанные цифрами: на фразах 1–5 они непонятны или без склонения в обоих вариантах. Без поля `language` текст синтезируется как английский (раздел 2), поэтому `default` для 1.1 не годится.
 
-**A/B, раунд 1 (`tts_ru.py ab-render`, `tts_ru.py ab`, `.local/bench/tts/ab.tsv`).** Корпус `bench/corpus/tts_ru_norm.txt` — те же 30 фраз, числа, время, телефоны и суммы записаны словами в нужном падеже вручную (имитация того, что LLM пишет числа словами или что стоит нормализатор). Фразы 1, 2, 4; `language: "ru"`, `speed: 1.0`; Supertonic 3 f16 (`supertonic-3-f16.gguf`, 312 785 732 байта, sha256 `7a44c47d1f387e4fb163e2eed9615b58470c77e26ac8b2b1a6be49dfb8670899`, HF-коммит `6f45df32…`, строка «G2 fallback» в `scripts/SHA256SUMS`) — третьей моделью `tts-f16` во временном конфиге `.local/bench/server-ab.json`. `num_inference_steps` и голос передаются полями запроса; в `openai.TTS` голос — свой параметр плагина, `num_inference_steps` добавляет `SpeechLanguageClient(speech_options=…)`. Голос варианта d выбран исполнителем без прослушивания: синтез трёх фраз всеми 10 голосами (f16, 16 шагов) и распознавание Parakeet — у F4 лучшее совпадение с текстом (0.77 против 0.66–0.70).
+**A/B, раунд 1 (`tts_ru.py ab-render`, `tts_ru.py ab`, `.local/bench/tts/ab.tsv`).** Корпус `bench/corpus/tts_ru_norm.txt` — те же 30 фраз, числа, время, телефоны и суммы записаны словами в нужном падеже вручную (имитация того, что LLM пишет числа словами или что стоит нормализатор). Фразы 1, 2, 4; `language: "ru"`, `speed: 1.0`; Supertonic 3 f16 (`supertonic-3-f16.gguf`, 312 785 732 байта, sha256 `7a44c47d1f387e4fb163e2eed9615b58470c77e26ac8b2b1a6be49dfb8670899`, HF-коммит `6f45df32…`, строка «G2 fallback» в `scripts/SHA256SUMS`) — третьей моделью `tts-f16` во временном конфиге `.local/bench/server-ab.json`. `num_inference_steps` и голос передаются полями запроса; в `openai.TTS` голос — свой параметр плагина, `num_inference_steps` добавляет `SpeechLanguageClient(speech_options=…)`. Голос варианта d выбран исполнителем без прослушивания: синтез трёх фраз всеми 10 голосами (f16, 16 шагов) и распознавание Parakeet — у F4 лучшее совпадение с текстом (0.77 против 0.66–0.70); воспроизводится `uv run --project agent python bench/tts_ru.py voiceprobe` на сервере из `server-ab.json` — повтор дал те же числа (`tts/voiceprobe.tsv`).
 
 | Вариант | Модель / шаги / голос | Разборчиво (01, 02, 04) | RTF синтеза на 30 фразах norm | Полное время p50 / p95, с |
 | --- | --- | --- | --- | --- |
@@ -346,6 +346,6 @@ b09170d877daf43be150db33ceccf504e03a53b1c14990844f4643bf9ed56b1a  25.wav
 - `stt/samples.tsv`, `stt/samples.out` — прогон автоматического корпуса;
 - `stt/01.wav … 25.wav` — записи инженера (16 кГц, моно), `stt/recordings.tsv` — G1 по ним;
 - `tts/default/NN.wav`, `tts/ru/NN.wav` — 60 файлов `render`, `tts/render.tsv`; `tts/listening.tsv` — ответы инженера; `tts/soak-ru.tsv`, `tts/soak-default.tsv` — 200 фраз;
-- `tts/ab/`, `tts/ab.tsv`, `tts/ab2/`, `tts/ab2.tsv` — A/B раундов 1 и 2; `server-ab.json` — конфиг с тремя моделями;
-- `pipeline/accent.tsv`, `pipeline/run.tsv`, `pipeline/clips/`, `pipeline/poezd/`, `pipeline/listening.tsv` — сквозной тракт;
+- `tts/ab/`, `tts/ab/render.tsv`, `tts/ab/render-all.tsv` (RTF на 30 фразах norm), `tts/ab.tsv`, `tts/ab2/`, `tts/ab2/render.tsv`, `tts/ab2.tsv` — A/B раундов 1 и 2; `tts/voiceprobe.out` (первый прогон) и `tts/voiceprobe.tsv` (`tts_ru.py voiceprobe`) — выбор голоса d; `server-ab.json` — конфиг с тремя моделями;
+- `pipeline/accent.tsv`, `pipeline/run.tsv`, `pipeline/clips/`, `pipeline/listening.tsv` — сквозной тракт; `pipeline/chunks.tsv` — короткий первый фрагмент; `pipeline/think-off.tsv`, `think-on.tsv`, `think-b128.tsv`, `think-b64.tsv`, `pipeline/think.tsv` — размышление; `pipeline/poezd/`, `pipeline/poezd.tsv` — «поезд»; `pipeline/caps/`, `pipeline/caps.tsv`, `pipeline/caps-listening.tsv` — ударная гласная заглавной; логи прогонов `pipeline-run.out`, `pipeline-chunks.out`, `pipeline-think.out`;
 - `parallel/{2,4,6}.tsv`, `parallel/skip.tsv` — «STT во время TTS» и decode; `server-threads-{2,4,6}.json` — конфиги замера, логи `.local/logs/audio-threads-{2,4,6}.log`.
