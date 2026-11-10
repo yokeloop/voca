@@ -2,6 +2,7 @@ import argparse
 import asyncio
 import csv
 import io
+import random
 import statistics
 import subprocess
 import sys
@@ -42,6 +43,16 @@ AB_VARIANTS: dict[str, tuple[str, str, int]] = {
     "c": ("tts-f16", "M1", 16),
     "d": ("tts-f16", "F4", 16),
 }
+AB2_DIR = TTS_DIR / "ab2"
+AB2_SEED = 2
+AB2_VARIANTS: dict[str, tuple[str, str, int]] = {
+    "e1": (TTS_MODEL, "F4", 8),
+    "e2": (TTS_MODEL, "F4", 16),
+    "e3": ("tts-f16", "F4", 8),
+    "e4": ("tts-f16", "F4", 16),
+}
+STRESS_CORPUS = ROOT / "bench" / "corpus" / "tts_ru_stress.tsv"
+STRESS_VARIANT = ("s", TTS_MODEL, "F4", 8)
 
 
 def load_corpus() -> list[str]:
@@ -318,6 +329,141 @@ def cmd_ab(args: argparse.Namespace) -> int:
     return 0
 
 
+def load_stress() -> dict[int, str]:
+    lines = STRESS_CORPUS.read_text(encoding="utf-8").splitlines()
+    return {int(n): text for n, text in (line.split("\t") for line in lines)}
+
+
+async def cmd_ab2_render(args: argparse.Namespace) -> int:
+    corpus = NORM_CORPUS.read_text(encoding="utf-8").splitlines()
+    stress = load_stress()
+    jobs = [
+        (variant, model, voice, steps, corpus)
+        for variant, (model, voice, steps) in AB2_VARIANTS.items()
+    ]
+    rows = []
+    for variant, model, voice, steps, texts in jobs + [(*STRESS_VARIANT, [])]:
+        tts = make_ab_tts(args.base_url, model, voice, steps)
+        for number in AB_NUMBERS:
+            text = stress[number] if variant == "s" else texts[number - 1]
+            frame, _, total = await synthesize(tts, text)
+            write_wav(AB2_DIR / variant / f"{number:02d}.wav", frame)
+            seconds = duration(frame)
+            print(
+                f"{variant} {model} {voice} {steps}\t{number:02d}\tвсего {total:.3f} с"
+                f"\tаудио {seconds:.2f} с\tRTF {total / seconds:.3f}"
+            )
+            rows.append(
+                [
+                    variant,
+                    model,
+                    voice,
+                    str(steps),
+                    f"{number:02d}",
+                    f"{total:.3f}",
+                    f"{seconds:.3f}",
+                    f"{total / seconds:.4f}",
+                ]
+            )
+        await tts.aclose()
+    write_tsv(
+        AB2_DIR / "render.tsv",
+        ["variant", "model", "voice", "steps", "n", "total_s", "audio_s", "rtf"],
+        rows,
+    )
+    return 0
+
+
+def ab2_labels() -> tuple[dict[str, str], dict[int, list[str]]]:
+    rng = random.Random(AB2_SEED)
+    variants = list(AB2_VARIANTS)
+    shuffled = variants[:]
+    rng.shuffle(shuffled)
+    labels = {variant: str(i) for i, variant in enumerate(shuffled, start=1)}
+    orders = {}
+    for number in AB_NUMBERS:
+        order = variants[:]
+        rng.shuffle(order)
+        orders[number] = order
+    return labels, orders
+
+
+def cmd_ab2(args: argparse.Namespace) -> int:
+    corpus = NORM_CORPUS.read_text(encoding="utf-8").splitlines()
+    path = TTS_DIR / "ab2.tsv"
+    header = ["n", "label", "variant", "model", "steps", "clear", "note", "text"]
+    answers: dict[tuple[str, str], list[str]] = {}
+
+    def save() -> None:
+        write_tsv(path, header, [[n, *rest] for (n, _), rest in answers.items()])
+
+    labels, orders = ab2_labels()
+    for number in AB_NUMBERS:
+        text = corpus[number - 1]
+        print(f"\n{number:02d}. {text}")
+        for variant in orders[number]:
+            label = labels[variant]
+            model, _, steps = AB2_VARIANTS[variant]
+            wav = AB2_DIR / variant / f"{number:02d}.wav"
+            while True:
+                print(f"  вариант {label}")
+                play(wav)
+                answer = read_key(
+                    "  разборчиво? [y/n, p — повторить] ", ["y", "n", "p"]
+                )
+                if answer != "p":
+                    break
+            flush_input()
+            note = read_line("  заметка (Enter — пусто): ").strip()
+            answers[(f"{number:02d}", variant)] = [
+                label,
+                variant,
+                model,
+                str(steps),
+                answer,
+                note,
+                text,
+            ]
+            save()
+    differ = read_key(
+        "\nотличаются ли варианты по произношению/ударениям? [y/n] ", ["y", "n"]
+    )
+    answers[("summary", "differ")] = ["", "differ", "", "", differ, "", ""]
+    if differ == "y":
+        best = read_key("если да — лучший [1-4] ", ["1", "2", "3", "4"])
+        revealed = next(v for v, label in labels.items() if label == best)
+        answers[("summary", "best")] = [best, revealed, "", "", "", "", ""]
+    save()
+    stress = load_stress()
+    print("\nдополнительно: ударения расставлены вручную (F4, q8_0, 8 шагов)")
+    for number in AB_NUMBERS:
+        variant, model, _, steps = STRESS_VARIANT
+        print(f"\n{number:02d}. {stress[number]}")
+        wav = AB2_DIR / variant / f"{number:02d}.wav"
+        while True:
+            play(wav)
+            answer = read_key(
+                "  ударения правильные, разборчиво? [y/n, p — повторить] ",
+                ["y", "n", "p"],
+            )
+            if answer != "p":
+                break
+        flush_input()
+        note = read_line("  заметка (Enter — пусто): ").strip()
+        answers[(f"{number:02d}", variant)] = [
+            "s",
+            variant,
+            model,
+            str(steps),
+            answer,
+            note,
+            stress[number],
+        ]
+        save()
+    print(f"ответы: {path}")
+    return 0
+
+
 def render_rates(variant: str) -> dict[int, float]:
     rates: dict[int, float] = {}
     path = TTS_DIR / "render.tsv"
@@ -411,7 +557,11 @@ def main() -> int:
     ab_render.add_argument("--numbers", default="1,2,4")
     ab = sub.add_parser("ab")
     ab.add_argument("--numbers", default="1,2,4")
+    sub.add_parser("ab2-render")
+    sub.add_parser("ab2")
     args = parser.parse_args()
+    if args.command == "ab2":
+        return cmd_ab2(args)
     if args.command == "listen":
         return cmd_listen(args)
     if args.command == "ab":
@@ -422,6 +572,7 @@ def main() -> int:
         "render": cmd_render,
         "soak": cmd_soak,
         "ab-render": cmd_ab_render,
+        "ab2-render": cmd_ab2_render,
     }
     try:
         return asyncio.run(commands[args.command](args))
