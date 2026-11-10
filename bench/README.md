@@ -36,7 +36,9 @@ Scripts:
   and `ab` (numbers as words, q8_0/f16, 8/16 steps, voices), `ab2-render` and
   `ab2` (blind F4 q8_0/f16 × 8/16 steps, then manual stress marks), `voiceprobe
   [--model tts-f16] [--steps 16]` (all 10 voices on phrases 1, 2, 4, scored by
-  a Parakeet round-trip); `soak` needs a `render` with the same `--voice`.
+  a Parakeet round-trip; its default model `tts-f16` exists only on the
+  server from `.local/bench/server-ab.json`, README 0.2); `soak` needs a
+  `render` with the same `--voice`.
 - `tts_pipeline.py` (VOCA-5) — the text path before TTS: `accent [--omograph
   tiny2.1,turbo3.1]` (ruaccent latency and accuracy against
   `corpus/tts_ru_stress.tsv`), `run [--omograph turbo3.1]` (LLM reply with

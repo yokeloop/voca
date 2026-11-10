@@ -97,7 +97,7 @@ uv run --project agent python bench/tts_pipeline.py chunks
 uv run --project agent python bench/tts_pipeline.py think
 ```
 
-`bench/tts_pipeline.py run` also needs `scripts/up.sh llm` (0.3). A person records the G1 phrases with `bench/stt_ru.py record` and listens with `bench/tts_ru.py listen`, `ab`, `ab2` and `bench/tts_pipeline.py listen`; recordings and synthesis stay in `.local/bench/`. `ab-render`, `ab`, `ab2-render` and `ab2` compare Supertonic q8_0 and f16 as two models of one server: `jq '.max_loaded_models = 3 | .models += [(.models[1] | .id = "tts-f16" | .path |= sub("q8_0"; "f16"))]' .local/server.json > .local/bench/server-ab.json` and start `$VOCA_AUDIOCPP_BIN --config .local/bench/server-ab.json --no-ui` instead of `scripts/up.sh audio`.
+`bench/tts_pipeline.py run` also needs `scripts/up.sh llm` (0.3). A person records the G1 phrases with `bench/stt_ru.py record` and listens with `bench/tts_ru.py listen`, `ab`, `ab2` and `bench/tts_pipeline.py listen`; recordings and synthesis stay in `.local/bench/`. `ab-render`, `ab`, `ab2-render`, `ab2` and `voiceprobe` use Supertonic q8_0 and f16 as two models of one server: `jq '.max_loaded_models = 3 | .models += [(.models[1] | .id = "tts-f16" | .path |= sub("q8_0"; "f16"))]' .local/server.json > .local/bench/server-ab.json` and start `$VOCA_AUDIOCPP_BIN --config .local/bench/server-ab.json --no-ui` instead of `scripts/up.sh audio`.
 
 **Variables** (`.env.example`): `VOCA_AUDIOCPP_BIN`, plus `VOCA_APPS_DIR` and `VOCA_MODELS_DIR` from 0.1.
 
