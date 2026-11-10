@@ -11,12 +11,12 @@ from llm_common import (
     BASE_URL,
     KWARGS,
     MARKERS,
-    MODEL,
     SYSTEM_RU,
     TOOL_SCHEMAS,
     ChatResult,
     delegate,
     make_llm,
+    model_id,
     result_dict,
     run_chat,
     write_json,
@@ -46,11 +46,10 @@ def raw_stream(body: dict[str, Any]) -> list[dict[str, Any]]:
 def raw_body(chat_ctx: llm.ChatContext, tools: bool) -> dict[str, Any]:
     messages, _ = chat_ctx.to_provider_format("openai")
     body: dict[str, Any] = {
-        "model": MODEL,
+        "model": model_id(),
         "messages": messages,
         "stream": True,
         "stream_options": {"include_usage": True},
-        "temperature": 1.0,
         "chat_template_kwargs": KWARGS,
     }
     if tools:
@@ -89,7 +88,7 @@ async def kwargs_body(log: dict[str, Any]) -> tuple[bool, str]:
             "id": "stub",
             "object": "chat.completion.chunk",
             "created": 0,
-            "model": MODEL,
+            "model": model_id(),
             "choices": [
                 {
                     "index": 0,

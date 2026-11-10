@@ -8,9 +8,17 @@ from typing import Any
 from uuid import uuid4
 
 import httpx
-from llm_common import BASE_URL, KWARGS, MODEL, ROOT, TOOL_SCHEMAS, write_json
+from llm_common import (
+    BASE_URL,
+    KWARGS,
+    ROOT,
+    SERVER,
+    THINKING,
+    TOOL_SCHEMAS,
+    model_id,
+    write_json,
+)
 
-SERVER = BASE_URL.removesuffix("/v1")
 CORPUS = Path(__file__).resolve().parent / "corpus" / "llm_speed.json"
 PID_FILE = ROOT / ".local" / "run" / "llm.pid"
 SIZES = (2048, 4096, 8192)
@@ -68,21 +76,23 @@ def vram_mb(pid: int | None) -> int | None:
     return None
 
 
-def request(client: httpx.Client, messages: list[Message]) -> dict[str, Any]:
+def request(
+    client: httpx.Client, messages: list[Message], kwargs: dict[str, bool]
+) -> dict[str, Any]:
+    thinking = kwargs["enable_thinking"]
     body = {
-        "model": MODEL,
+        "model": model_id(),
         "messages": messages,
         "tools": TOOL_SCHEMAS,
         "stream": True,
         "stream_options": {"include_usage": True},
         "cache_prompt": True,
-        "max_tokens": 96,
-        "temperature": 1.0,
-        "top_p": 0.95,
-        "chat_template_kwargs": KWARGS,
+        "max_tokens": 1024 if thinking else 96,
+        "chat_template_kwargs": kwargs,
     }
     text = ""
-    ttft_ms: float | None = None
+    first_output_ms: float | None = None
+    first_content_ms: float | None = None
     timings: dict[str, Any] = {}
     start = time.perf_counter()
     with client.stream("POST", f"{BASE_URL}/chat/completions", json=body) as resp:
@@ -94,17 +104,26 @@ def request(client: httpx.Client, messages: list[Message]) -> dict[str, Any]:
             if chunk.get("timings"):
                 timings = chunk["timings"]
             for choice in chunk.get("choices") or []:
-                content = (choice.get("delta") or {}).get("content")
+                delta = choice.get("delta") or {}
+                content = delta.get("content")
+                if (content or delta.get("reasoning_content")) and (
+                    first_output_ms is None
+                ):
+                    first_output_ms = round((time.perf_counter() - start) * 1000, 1)
                 if content:
-                    if ttft_ms is None:
-                        ttft_ms = round((time.perf_counter() - start) * 1000, 1)
+                    if first_content_ms is None:
+                        first_content_ms = round(
+                            (time.perf_counter() - start) * 1000, 1
+                        )
                     text += content
     pid = llm_pid()
     cache_n = timings.get("cache_n", 0)
     prompt_n = timings.get("prompt_n", 0)
     return {
         "text": text,
-        "ttft_ms": ttft_ms,
+        "ttft_ms": first_output_ms if thinking else first_content_ms,
+        "first_output_ms": first_output_ms,
+        "first_content_ms": first_content_ms,
         "context": cache_n + prompt_n,
         "cache_n": cache_n,
         "prompt_n": prompt_n,
@@ -117,13 +136,15 @@ def request(client: httpx.Client, messages: list[Message]) -> dict[str, Any]:
     }
 
 
-def count_tokens(client: httpx.Client, messages: list[Message]) -> int:
+def count_tokens(
+    client: httpx.Client, messages: list[Message], kwargs: dict[str, bool]
+) -> int:
     resp = client.post(
         f"{SERVER}/apply-template",
         json={
             "messages": messages,
             "tools": TOOL_SCHEMAS,
-            "chat_template_kwargs": KWARGS,
+            "chat_template_kwargs": kwargs,
         },
     )
     resp.raise_for_status()
@@ -140,13 +161,15 @@ def history(corpus: dict[str, Any], system: str, n: int) -> list[Message]:
     return messages
 
 
-def turns(client: httpx.Client, corpus: dict[str, Any]) -> list[dict[str, Any]]:
+def turns(
+    client: httpx.Client, corpus: dict[str, Any], kwargs: dict[str, bool]
+) -> list[dict[str, Any]]:
     messages = [{"role": "system", "content": corpus["system"]}]
     rows: list[dict[str, Any]] = []
     print(TURN_COLUMNS, flush=True)
     for number, turn in enumerate(corpus["turns"], start=1):
         messages.append({"role": "user", "content": turn})
-        row = {"turn": number, **request(client, messages)}
+        row = {"turn": number, **request(client, messages, kwargs)}
         messages.append({"role": "assistant", "content": row["text"]})
         rows.append(row)
         print(
@@ -187,18 +210,30 @@ def point_row(row: dict[str, Any]) -> None:
     )
 
 
-def points(client: httpx.Client, corpus: dict[str, Any]) -> list[dict[str, Any]]:
+def points(
+    client: httpx.Client, corpus: dict[str, Any], kwargs: dict[str, bool]
+) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     print(POINT_COLUMNS, flush=True)
     for size in SIZES:
         system = f"[{uuid4().hex}] {corpus['system']}"
         counts = [
-            (abs(count_tokens(client, history(corpus, system, n)[:-1]) - size), n)
+            (
+                abs(
+                    count_tokens(client, history(corpus, system, n)[:-1], kwargs) - size
+                ),
+                n,
+            )
             for n in range(1, len(corpus["turns"]) + 1)
         ]
         n = min(counts)[1]
         messages = history(corpus, system, n)[:-1]
-        row = {"size": size, "request": "cold", "turns": n, **request(client, messages)}
+        row = {
+            "size": size,
+            "request": "cold",
+            "turns": n,
+            **request(client, messages, kwargs),
+        }
         rows.append(row)
         point_row(row)
         for k, extra in enumerate(WARM_TURNS, start=1):
@@ -211,7 +246,7 @@ def points(client: httpx.Client, corpus: dict[str, Any]) -> list[dict[str, Any]]
                 "size": size,
                 "request": f"warm-{k}",
                 "turns": n,
-                **request(client, messages),
+                **request(client, messages, kwargs),
             }
             rows.append(row)
             point_row(row)
@@ -252,17 +287,26 @@ def main() -> int:
     parser.add_argument(
         "command", nargs="?", default="all", choices=["turns", "points", "all"]
     )
+    parser.add_argument(
+        "--thinking",
+        action="store_true",
+        help="enable_thinking on, max_tokens 1024, TTFT by the first output",
+    )
     args = parser.parse_args()
+    kwargs = THINKING if args.thinking else KWARGS
     corpus = json.loads(CORPUS.read_text())
     turn_rows: list[dict[str, Any]] = []
     point_rows: list[dict[str, Any]] = []
     with httpx.Client(timeout=300.0) as client:
         if args.command in ("turns", "all"):
-            turn_rows = turns(client, corpus)
+            turn_rows = turns(client, corpus, kwargs)
         if args.command in ("points", "all"):
-            point_rows = points(client, corpus)
+            point_rows = points(client, corpus, kwargs)
     result = summary(turn_rows, point_rows)
-    write_json("speed", {"turns": turn_rows, "points": point_rows, "summary": result})
+    write_json(
+        "speed_thinking" if args.thinking else "speed",
+        {"turns": turn_rows, "points": point_rows, "summary": result},
+    )
     return 0
 
 
