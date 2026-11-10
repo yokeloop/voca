@@ -133,7 +133,18 @@ def health(url: str) -> dict[str, Any]:
 
 def read_line(prompt: str) -> str:
     print(prompt, end="", flush=True)
-    line = sys.stdin.buffer.readline()
+    if sys.stdin.isatty():
+        fd = sys.stdin.fileno()
+        saved = termios.tcgetattr(fd)
+        utf8 = termios.tcgetattr(fd)
+        utf8[0] |= termios.IUTF8
+        termios.tcsetattr(fd, termios.TCSANOW, utf8)
+        try:
+            line = sys.stdin.buffer.readline()
+        finally:
+            termios.tcsetattr(fd, termios.TCSANOW, saved)
+    else:
+        line = sys.stdin.buffer.readline()
     if not line:
         raise EOFError
     return line.decode("utf-8", errors="replace").rstrip("\r\n")
