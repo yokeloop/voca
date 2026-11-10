@@ -49,6 +49,14 @@ LEFTOVER = re.compile(r"[0-9%№$€₽°+=*/#@]")
 VOWELS = "аеёиоуыэюяАЕЁИОУЫЭЮЯ"
 ACUTE = "́"
 CLIPS = 6
+CAPS = [
+    ("По\u0301езд", "ПО\u0301езд", "прибывает утром."),
+    ("Ра\u0301дио", "РА\u0301дио", "играет тихо."),
+    ("Го\u0301род", "ГО\u0301род", "спит под снегом."),
+    ("Ле\u0301том", "ЛЕ\u0301том", "здесь жарко."),
+    ("Во\u0301здух", "ВО\u0301здух", "стал свежее."),
+    ("Де\u0301ньги", "ДЕ\u0301ньги", "лежат на столе."),
+]
 LLM_URL = "http://127.0.0.1:8081"
 THINK_MODES: dict[str, tuple[bool, int | None]] = {
     "off": (False, None),
@@ -582,6 +590,30 @@ async def cmd_poezd(args: argparse.Namespace) -> int:
     return 0
 
 
+async def cmd_caps(args: argparse.Namespace) -> int:
+    tts = make_tts(args.base_url, VOICE, "ru")
+    rows = []
+    async with httpx.AsyncClient(timeout=120) as client:
+        for index, (lower, upper, tail) in enumerate(CAPS, start=1):
+            for kind, word in [("lower", lower), ("upper", upper)]:
+                text = f"{word} {tail}"
+                frame, _, _ = await synthesize(tts, text)
+                path = OUT_DIR / "caps" / f"{index:02d}-{kind}.wav"
+                write_wav(path, frame)
+                response = await client.post(
+                    f"{args.base_url}/audio/transcriptions",
+                    files={"file": (path.name, path.read_bytes(), "audio/wav")},
+                    data={"model": "asr"},
+                )
+                response.raise_for_status()
+                heard = response.json()["text"]
+                print(f"{index:02d}-{kind}\t{text}\t→ {heard}")
+                rows.append([f"{index:02d}-{kind}", text, heard])
+    await tts.aclose()
+    write_tsv(OUT_DIR / "caps.tsv", ["clip", "text", "asr"], rows)
+    return 0
+
+
 def play(path: Path) -> None:
     subprocess.run(["pw-play", str(path)], check=False)
 
@@ -638,6 +670,7 @@ def main() -> int:
     think.add_argument("--modes", default="off,on,b128,b64")
     think.add_argument("--omograph", default="turbo3.1")
     sub.add_parser("poezd")
+    sub.add_parser("caps")
     sub.add_parser("listen")
     args = parser.parse_args()
     if args.command == "accent":
@@ -650,6 +683,7 @@ def main() -> int:
         "chunks": cmd_chunks,
         "think": cmd_think,
         "poezd": cmd_poezd,
+        "caps": cmd_caps,
     }
     try:
         return asyncio.run(commands[args.command](args))
