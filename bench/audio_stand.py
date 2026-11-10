@@ -28,8 +28,15 @@ RU_LAYOUT = str.maketrans(
 
 
 class SpeechLanguageClient(openai_sdk.AsyncOpenAI):
-    def __init__(self, *, speech_language: str, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        *,
+        speech_language: str,
+        speech_options: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> None:
         self._speech_language = speech_language
+        self._speech_options = speech_options or {}
         super().__init__(**kwargs)
 
     async def _prepare_options(
@@ -39,6 +46,7 @@ class SpeechLanguageClient(openai_sdk.AsyncOpenAI):
         if options.url == "/audio/speech" and isinstance(options.json_data, dict):
             options.json_data = {
                 **options.json_data,
+                **self._speech_options,
                 "language": self._speech_language,
             }
         return options

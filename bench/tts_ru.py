@@ -10,11 +10,13 @@ from pathlib import Path
 
 import httpx
 from audio_stand import (
+    API_KEY,
     AUDIO_URL,
     BENCH_DIR,
     ROOT,
     TTS_MODEL,
     TTS_SAMPLE_RATE,
+    SpeechLanguageClient,
     flush_input,
     health,
     make_tts,
@@ -25,11 +27,21 @@ from audio_stand import (
 )
 from livekit import rtc
 from livekit.agents import APIError
+from livekit.plugins import openai
 
 TTS_DIR = BENCH_DIR / "tts"
 CORPUS = ROOT / "bench" / "corpus" / "tts_ru.txt"
 VARIANTS: dict[str, str | None] = {"default": None, "ru": "ru"}
 RENDER_HEADER = ["variant", "n", "chars", "ttfb_s", "total_s", "audio_s", "rtf"]
+NORM_CORPUS = ROOT / "bench" / "corpus" / "tts_ru_norm.txt"
+AB_DIR = TTS_DIR / "ab"
+AB_NUMBERS = [1, 2, 4]
+AB_VARIANTS: dict[str, tuple[str, str, int]] = {
+    "a": (TTS_MODEL, "F1", 8),
+    "b": ("tts-f16", "F1", 16),
+    "c": ("tts-f16", "M1", 16),
+    "d": ("tts-f16", "F4", 16),
+}
 
 
 def load_corpus() -> list[str]:
@@ -201,6 +213,111 @@ def cmd_listen(args: argparse.Namespace) -> int:
     return 0
 
 
+def make_ab_tts(base_url: str, model: str, voice: str, steps: int) -> openai.TTS:
+    return openai.TTS(
+        model=model,
+        voice=voice,
+        response_format="pcm",
+        sample_rate=TTS_SAMPLE_RATE,
+        client=SpeechLanguageClient(
+            speech_language="ru",
+            speech_options={"num_inference_steps": steps},
+            base_url=base_url,
+            api_key=API_KEY,
+            max_retries=0,
+        ),
+    )
+
+
+def parse_numbers(value: str) -> list[int]:
+    return [int(part) for part in value.split(",")]
+
+
+async def cmd_ab_render(args: argparse.Namespace) -> int:
+    corpus = NORM_CORPUS.read_text(encoding="utf-8").splitlines()
+    rows = []
+    for variant, (model, voice, steps) in AB_VARIANTS.items():
+        tts = make_ab_tts(args.base_url, model, voice, steps)
+        for number in parse_numbers(args.numbers):
+            text = corpus[number - 1]
+            frame, ttfb, total = await synthesize(tts, text)
+            write_wav(AB_DIR / variant / f"{number:02d}.wav", frame)
+            seconds = duration(frame)
+            print(
+                f"{variant} {model} {voice} {steps}\t{number:02d}\tTTFB {ttfb:.3f} с"
+                f"\tвсего {total:.3f} с\tаудио {seconds:.2f} с\tRTF {total / seconds:.3f}"
+            )
+            rows.append(
+                [
+                    variant,
+                    model,
+                    voice,
+                    str(steps),
+                    f"{number:02d}",
+                    f"{ttfb:.3f}",
+                    f"{total:.3f}",
+                    f"{seconds:.3f}",
+                    f"{total / seconds:.4f}",
+                ]
+            )
+        await tts.aclose()
+    write_tsv(
+        AB_DIR / "render.tsv",
+        [
+            "variant",
+            "model",
+            "voice",
+            "steps",
+            "n",
+            "ttfb_s",
+            "total_s",
+            "audio_s",
+            "rtf",
+        ],
+        rows,
+    )
+    for variant in AB_VARIANTS:
+        totals = [float(r[6]) for r in rows if r[0] == variant]
+        audio = [float(r[7]) for r in rows if r[0] == variant]
+        print(
+            f"{variant}: полное время p50 {percentile(totals, 50):.3f} p95"
+            f" {percentile(totals, 95):.3f}, RTF {sum(totals) / sum(audio):.3f}"
+        )
+    return 0
+
+
+def cmd_ab(args: argparse.Namespace) -> int:
+    corpus = NORM_CORPUS.read_text(encoding="utf-8").splitlines()
+    path = TTS_DIR / "ab.tsv"
+    answers = load_listening(path)
+    for number in parse_numbers(args.numbers):
+        text = corpus[number - 1]
+        print(f"\n{number:02d}. {text}")
+        for variant in AB_VARIANTS:
+            wav = AB_DIR / variant / f"{number:02d}.wav"
+            while True:
+                print(f"  {variant}")
+                play(wav)
+                answer = read_key(
+                    "  разборчиво, числа понятны? [y/n, p — повторить] ",
+                    ["y", "n", "p"],
+                )
+                if answer != "p":
+                    break
+            flush_input()
+            note = read_line("  заметка (Enter — пусто): ").strip()
+            key = (f"{number:02d}", variant)
+            answers.pop(key, None)
+            answers[key] = [answer, note, text]
+            save_listening(path, answers)
+    best = read_key("\nкакой вариант лучше? [a/b/c/d] ", list(AB_VARIANTS))
+    answers.pop(("summary", "best"), None)
+    answers[("summary", "best")] = [best, "", ""]
+    save_listening(path, answers)
+    print(f"ответы: {path}")
+    return 0
+
+
 def render_rates(variant: str) -> dict[int, float]:
     rates: dict[int, float] = {}
     path = TTS_DIR / "render.tsv"
@@ -290,11 +407,22 @@ def main() -> int:
     soak = sub.add_parser("soak")
     soak.add_argument("--variant", choices=list(VARIANTS), required=True)
     soak.add_argument("--count", type=int, default=200)
+    ab_render = sub.add_parser("ab-render")
+    ab_render.add_argument("--numbers", default="1,2,4")
+    ab = sub.add_parser("ab")
+    ab.add_argument("--numbers", default="1,2,4")
     args = parser.parse_args()
     if args.command == "listen":
         return cmd_listen(args)
+    if args.command == "ab":
+        return cmd_ab(args)
     health(args.base_url)
-    commands = {"check": cmd_check, "render": cmd_render, "soak": cmd_soak}
+    commands = {
+        "check": cmd_check,
+        "render": cmd_render,
+        "soak": cmd_soak,
+        "ab-render": cmd_ab_render,
+    }
     try:
         return asyncio.run(commands[args.command](args))
     except (APIError, httpx.HTTPError) as exc:
