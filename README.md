@@ -58,7 +58,11 @@ audiocpp_server on the CPU with Parakeet-TDT 0.6B v3 (speech recognition) and Su
 **Server config.** `scripts/server.json` is a template; `scripts/audiocpp.sh` renders it with `envsubst '${VOCA_MODELS_DIR}'` into `.local/server.json`, checks the binary, both model files and the port, then `exec`s `audiocpp_server --config .local/server.json --no-ui`. `envsubst` (gettext) and `jq` are required. The config: `127.0.0.1:8082`, `backend: cpu`, `threads: 6` (measured against llama-server decode in the report), `lazy_load: false`, `max_loaded_models: 2`, `ui: false`, two models:
 
 - `asr` — Parakeet, `mode: offline`: `openai.STT` posts each segment whole, without `stream=true`, and offline mode resamples any input rate;
-- `tts` — Supertonic, `mode: streaming`: `openai.TTS` always asks for `stream_format: "sse"`, which the server accepts only from a streaming model; `default_voice_preset` `F1`. Voices are `M1…M5`/`F1…F5`; the plugin default `ash` is rejected.
+- `tts` — Supertonic, `mode: streaming`: `openai.TTS` always asks for `stream_format: "sse"`, which the server accepts only from a streaming model; `default_voice_preset` `F4` (chosen in G2). Voices are `M1…M5`/`F1…F5`; the plugin default `ash` is rejected. Requests send `language: "ru"`; without it Supertonic reads the text as English.
+
+**Fallback quants.** `scripts/SHA256SUMS` also lists `Parakeet-TDT-0.6B-v3-GGUF/parakeet-tdt-0.6b-v3-f16.gguf` (sha256 `1720770887bbb6ae633b3375c6ce4b76b3eaff9cd4efd7b890db734cc0adfe80`) and `Supertonic-3-GGUF/supertonic-3-f16.gguf` (sha256 `7a44c47d1f387e4fb163e2eed9615b58470c77e26ac8b2b1a6be49dfb8670899`) from the same revision; the stand does not load them, the report compares them with q8_0.
+
+**Text before TTS.** Supertonic reads digits badly and does not decline numbers, so the reply text is prepared: the LLM writes numbers as words (one line in the system prompt) and ruaccent 1.5.8.3 (`agent/` dependency) places stress marks (U+0301). Its models are Hugging Face `ruaccent/accentuator` at revision `b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855`, 51 files placed by `scripts/fetch.sh` in `$VOCA_MODELS_DIR/ruaccent/accentuator-b78ae5e/`; `bench/tts_pipeline.py` loads them offline (`HF_HUB_OFFLINE=1`) and links their `koziev/` code into the installed `ruaccent` package, which otherwise downloads it unpinned.
 
 **Requirements.** x86_64 Linux; no GPU. Both models load before `/health` answers; `scripts/up.sh audio` waits up to 120 s.
 
@@ -84,9 +88,11 @@ uv run --project agent python bench/tts_ru.py check
 uv run --project agent python bench/tts_ru.py render
 uv run --project agent python bench/tts_ru.py soak --variant ru
 uv run --project agent python bench/audio_parallel.py
+uv run --project agent python bench/tts_pipeline.py accent
+uv run --project agent python bench/tts_pipeline.py run
 ```
 
-A person records the G1 phrases with `bench/stt_ru.py record` and listens to the G2 phrases with `bench/tts_ru.py listen`; recordings and synthesis stay in `.local/bench/`.
+`bench/tts_pipeline.py run` also needs `scripts/up.sh llm` (0.3). A person records the G1 phrases with `bench/stt_ru.py record` and listens with `bench/tts_ru.py listen`, `ab`, `ab2` and `bench/tts_pipeline.py listen`; recordings and synthesis stay in `.local/bench/`. `ab-render`, `ab`, `ab2-render` and `ab2` compare Supertonic q8_0 and f16 as two models of one server: `jq '.max_loaded_models = 3 | .models += [(.models[1] | .id = "tts-f16" | .path |= sub("q8_0"; "f16"))]' .local/server.json > .local/bench/server-ab.json` and start `$VOCA_AUDIOCPP_BIN --config .local/bench/server-ab.json --no-ui` instead of `scripts/up.sh audio`.
 
 **Variables** (`.env.example`): `VOCA_AUDIOCPP_BIN`, plus `VOCA_APPS_DIR` and `VOCA_MODELS_DIR` from 0.1.
 
