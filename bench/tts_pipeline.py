@@ -654,6 +654,38 @@ def cmd_listen(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_caps_listen(args: argparse.Namespace) -> int:
+    path = OUT_DIR / "caps-listening.tsv"
+    answers: dict[str, list[str]] = {}
+
+    def save() -> None:
+        write_tsv(
+            path,
+            ["clip", "clear", "note", "text"],
+            [[clip, *rest] for clip, rest in answers.items()],
+        )
+
+    for index, (lower, upper, tail) in enumerate(CAPS, start=1):
+        for kind, word in [("lower", lower), ("upper", upper)]:
+            clip = f"{index:02d}-{kind}"
+            text = f"{word} {tail}"
+            print(f"\n{clip}. {text}")
+            while True:
+                play(OUT_DIR / "caps" / f"{clip}.wav")
+                answer = read_key(
+                    "  ударение на первом слоге, разборчиво? [y/n, p — повторить] ",
+                    ["y", "n", "p"],
+                )
+                if answer != "p":
+                    break
+            flush_input()
+            note = read_line("  заметка (Enter — пусто): ").strip()
+            answers[clip] = [answer, note, text]
+            save()
+    print(f"ответы: {path}")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Сквозной тракт: ответ LLM → ударения → синтез"
@@ -671,12 +703,15 @@ def main() -> int:
     think.add_argument("--omograph", default="turbo3.1")
     sub.add_parser("poezd")
     sub.add_parser("caps")
+    sub.add_parser("caps-listen")
     sub.add_parser("listen")
     args = parser.parse_args()
     if args.command == "accent":
         return cmd_accent(args)
     if args.command == "listen":
         return cmd_listen(args)
+    if args.command == "caps-listen":
+        return cmd_caps_listen(args)
     health(args.base_url)
     commands = {
         "run": cmd_run,
