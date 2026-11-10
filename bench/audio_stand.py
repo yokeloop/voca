@@ -1,5 +1,9 @@
+import codecs
+import os
 import sys
+import termios
 import time
+import tty
 import wave
 from pathlib import Path
 from typing import Any
@@ -137,3 +141,33 @@ def read_line(prompt: str) -> str:
 
 def read_answer(prompt: str) -> str:
     return read_line(prompt).strip().lower().translate(RU_LAYOUT)
+
+
+def flush_input() -> None:
+    if sys.stdin.isatty():
+        termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
+
+
+def read_key(prompt: str, choices: list[str]) -> str:
+    if not sys.stdin.isatty():
+        while True:
+            answer = read_answer(prompt)
+            if answer in choices:
+                return answer
+    fd = sys.stdin.fileno()
+    saved = termios.tcgetattr(fd)
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+    flush_input()
+    print(prompt, end="", flush=True)
+    try:
+        tty.setcbreak(fd)
+        while True:
+            data = os.read(fd, 1)
+            if not data:
+                raise EOFError
+            key = decoder.decode(data).lower().translate(RU_LAYOUT)
+            if key in choices:
+                print(key)
+                return key
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, saved)

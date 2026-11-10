@@ -15,9 +15,10 @@ from audio_stand import (
     ROOT,
     TTS_MODEL,
     TTS_SAMPLE_RATE,
+    flush_input,
     health,
     make_tts,
-    read_answer,
+    read_key,
     read_line,
     synthesize,
     write_wav,
@@ -143,43 +144,59 @@ def play(path: Path) -> None:
     subprocess.run(["pw-play", str(path)], check=False)
 
 
-def ask(prompt: str, choices: list[str]) -> str:
-    while True:
-        answer = read_answer(prompt)
-        if answer in choices:
-            return answer
+def save_listening(path: Path, answers: dict[tuple[str, str], list[str]]) -> None:
+    write_tsv(
+        path,
+        ["n", "variant", "clear", "note", "text"],
+        [[n, variant, *rest] for (n, variant), rest in answers.items()],
+    )
+
+
+def load_listening(path: Path) -> dict[tuple[str, str], list[str]]:
+    answers: dict[tuple[str, str], list[str]] = {}
+    if path.exists():
+        with path.open(encoding="utf-8") as source:
+            for row in csv.DictReader(source, delimiter="\t"):
+                key = (row["n"], row["variant"])
+                answers.pop(key, None)
+                answers[key] = [row["clear"], row["note"], row["text"]]
+    return answers
 
 
 def cmd_listen(args: argparse.Namespace) -> int:
     path = TTS_DIR / "listening.tsv"
-    new = not path.exists()
+    answers = load_listening(path)
     start = int(args.start or 1)
-    with path.open("a", encoding="utf-8", newline="") as out:
-        writer = csv.writer(out, delimiter="\t", lineterminator="\n")
-        if new:
-            writer.writerow(["n", "variant", "clear", "note", "text"])
-        for number, text in enumerate(load_corpus(), start=1):
-            if number < start:
-                continue
-            print(f"\n{number:02d}. {text}")
-            for variant in VARIANTS:
-                wav = TTS_DIR / variant / f"{number:02d}.wav"
-                while True:
-                    print(f"  {variant}")
-                    play(wav)
-                    answer = ask(
-                        "  разборчиво без пропусков и повторов? [y/n, p — повторить] ",
-                        ["y", "n", "p"],
-                    )
-                    if answer != "p":
-                        break
-                note = read_line("  заметка (Enter — пусто): ").strip()
-                writer.writerow([f"{number:02d}", variant, answer, note, text])
-                out.flush()
-        difference = ask("\nразница default/ru слышна? [y/n] ", ["y", "n"])
-        better = ask("какой вариант лучше? [default/ru] ", ["default", "ru"])
-        writer.writerow(["summary", "difference", difference, "", ""])
-        writer.writerow(["summary", "better", better, "", ""])
+    for number, text in enumerate(load_corpus(), start=1):
+        if number < start:
+            continue
+        print(f"\n{number:02d}. {text}")
+        for variant in VARIANTS:
+            wav = TTS_DIR / variant / f"{number:02d}.wav"
+            while True:
+                print(f"  {variant}")
+                play(wav)
+                answer = read_key(
+                    "  разборчиво без пропусков и повторов? [y/n, p — повторить] ",
+                    ["y", "n", "p"],
+                )
+                if answer != "p":
+                    break
+            flush_input()
+            note = read_line("  заметка (Enter — пусто): ").strip()
+            key = (f"{number:02d}", variant)
+            answers.pop(key, None)
+            answers[key] = [answer, note, text]
+            save_listening(path, answers)
+    difference = read_key("\nразница default/ru слышна? [y/n] ", ["y", "n"])
+    better = read_key("какой вариант лучше? [d — default, r — ru] ", ["d", "r"])
+    for name, value in [
+        ("difference", difference),
+        ("better", "default" if better == "d" else "ru"),
+    ]:
+        answers.pop(("summary", name), None)
+        answers[("summary", name)] = [value, "", ""]
+    save_listening(path, answers)
     print(f"ответы: {path}")
     return 0
 
