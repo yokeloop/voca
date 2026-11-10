@@ -41,7 +41,11 @@ Scripts:
   numbers as words → stress → F4 synthesis, time to the first sound over
   `corpus/tts_pipeline.json`, needs `scripts/up.sh llm`), `poezd` (stress mark
   spellings of «поезд»), `chunks` (first sound when the first fragment is cut
-  at a comma or dash after at least 3 words), `listen` (for a person); needs
+  at a comma or dash after at least 3 words), `think [--modes
+  off,on,b128,b64]` (answer accuracy against the `answer`/`keys` of
+  `corpus/tts_pipeline.json` and first-sound delay without thinking, with it
+  and with `thinking_budget_tokens` 128 and 64), `caps` (stress on a capital
+  vowel at the start of a phrase), `listen` (for a person); needs
   `scripts/ruaccent-setup.sh` once per `agent/.venv`.
 - `audio_parallel.py` (VOCA-5) — «STT does not wait for TTS» and llama-server
   decode under audio load: `--skip-llm`, `--threads-label N`, `--llm-url`.
