@@ -20,7 +20,7 @@
       "path": "${VOCA_MODELS_DIR}/audio-cpp/Supertonic-3-GGUF/supertonic-3-q8_0.gguf",
       "task": "tts",
       "mode": "streaming",
-      "default_voice_preset": {"voice_id": "F1"}
+      "default_voice_preset": {"voice_id": "F4"}
     }
   ]
 }
