@@ -53,6 +53,7 @@ exports; it does not read `.env` itself.
 | `VOCA_APPS_DIR` | `$HOME/Apps` | Root of downloaded tools, `apps/` in `SHA256SUMS` |
 | `VOCA_MODELS_DIR` | `$HOME/models` | Root of downloaded models, `models/` in `SHA256SUMS` |
 | `VOCA_LIVEKIT_BIN` | `$VOCA_APPS_DIR/livekit/1.13.11/livekit-server` | livekit-server release binary |
+| `VOCA_AUDIOCPP_BIN` | `$VOCA_APPS_DIR/audio.cpp/0.9.4/audiocpp_server` | audio.cpp server release binary (CPU); its ggml libraries sit next to it |
 | `VOCA_LLAMA_BIN` | `$VOCA_APPS_DIR/llama.cpp/llama-b11869/llama-server` | llama-server of the llama.cpp CUDA release; its libraries sit next to it |
 | `VOCA_LIVEKIT_NODE_IP` | `127.0.0.1` | `--node-ip`: the address livekit-server announces for media |
 | `VOCA_LIVEKIT_API_KEY` | `devkey` | Key that signs tokens; the built-in key of `livekit-server --dev` |
@@ -80,9 +81,9 @@ by spaces, `#` starts a comment:
 - `<root>`: `apps` resolves to `$VOCA_APPS_DIR`, `models` to `$VOCA_MODELS_DIR`.
   The path is relative and has no `..`.
 - `<source>`: `https://…` downloads the file; `tar:<archive>` extracts `<file>`
-  from `<archive>`; `untar:<archive>` unpacks the whole `<archive>` without its
-  top-level directory. The archive is in the same directory, listed on an
-  earlier line.
+  from `<archive>`, where the member is `<file>` or `./<file>`;
+  `untar:<archive>` unpacks the whole `<archive>` without its top-level
+  directory. The archive is in the same directory, listed on an earlier line.
 
 `scripts/fetch.sh` walks the file in order. An existing file is verified and
 never overwritten: a mismatch stops with «удалите файл и повторите». A missing
@@ -106,9 +107,20 @@ plus a path variable with its default in `scripts/env.sh` and `.env.example`.
 named service first and starts nothing when a check fails: the binary or build
 exists, the service is not already running, its ports are free. It then starts
 them in order with logs in `.local/logs/<name>.log` and pids in
-`.local/run/<name>.pid`, and waits up to 20 s for each (120 s for `llm`). `scripts/down.sh [names…]`
-stops them in reverse order. `audio` is a placeholder until VOCA-5 (0.2) and
-always fails its check.
+`.local/run/<name>.pid`, and waits up to 20 s for each (120 s for `audio` and
+`llm`). `scripts/down.sh [names…]` stops them in reverse order.
+
+`scripts/audiocpp.sh [--check]` renders `scripts/server.json` into
+`.local/server.json` with `envsubst '${VOCA_MODELS_DIR}'`, then checks that
+`VOCA_AUDIOCPP_BIN` is executable, every model path in the rendered config exists
+and its port (8082) is free; with `--check` it stops there. Otherwise it `exec`s
+`audiocpp_server --config .local/server.json --no-ui` (README 0.2): Parakeet as
+`asr` in `mode: offline`, Supertonic as `tts` in `mode: streaming` with voice `F4`.
+
+`scripts/ruaccent-setup.sh` verifies the ruaccent `koziev/` files in
+`$VOCA_MODELS_DIR/ruaccent/accentuator-b78ae5e/` against `SHA256SUMS` and links
+them into the `ruaccent` package of `agent/.venv`; it is idempotent, and
+`bench/tts_pipeline.py` stops without the link.
 
 `scripts/llama.sh [--check]` checks that `VOCA_LLAMA_BIN` is executable, the
 model `$VOCA_MODELS_DIR/unsloth/NVIDIA-Nemotron-3.5-Bolt-E4B-UD-Q4_K_XL.gguf`
@@ -147,7 +159,7 @@ classes come from `livekit-api` in the `agent/` environment.
 | 7881 TCP | livekit-server media over TCP |
 | 7882 UDP | livekit-server media over UDP |
 | 8083 TCP | `voca web` (`VOCA_WEB_PORT`) |
-| 8082 TCP | audio.cpp server (0.2) |
+| 8082 TCP | audio.cpp server (127.0.0.1) |
 | 8081 TCP | llama-server (127.0.0.1) |
 
 Deviation from `derive:eb1id854:§1`: `voca web` listens on 8083, not 8090,

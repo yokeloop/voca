@@ -44,6 +44,63 @@ scripts/down.sh
 
 Check the route with `scripts/check-rtc.sh https://voca.priney.com`. The route holds no secrets. Host and Traefik details live in the owner's deployment documentation.
 
+### 0.2 Audio stand
+
+audiocpp_server on the CPU with Parakeet-TDT 0.6B v3 (speech recognition) and Supertonic 3 (speech synthesis); gates G1 and G2. The result is [bench/report_g1_g2.md](bench/report_g1_g2.md).
+
+**audio.cpp.** Release 0.9.4 (`git: f7ac446f 2026-11-04`, `backends: cpu`), build `ubuntu-x64-cpu-portable`: `https://github.com/0xShug0/audio.cpp/releases/download/v0.9.4/audio-v0.9.4-bin-ubuntu-x64-cpu-portable.tar.gz` — sha256 `02756c556d78ccca8040cab6fbc6c7bf57d4f6ed70fe534e8a9e846bab464687`. `scripts/fetch.sh` downloads the archive to `~/Apps/audio.cpp/0.9.4/` and extracts next to it `audiocpp_server` (sha256 `b4c3e9881165ded6fd63b05e8cefcbf7517bb4c364a518e783d51d2f1a29c6dd`), `libggml.so.0`, `libggml-base.so.0` and every `libggml-cpu-*.so` (ggml picks the variant for the CPU at start; the binary finds them through RUNPATH `$ORIGIN`); each file is a `tar:` line in `scripts/SHA256SUMS`. No build from source. `VOCA_AUDIOCPP_BIN` points at `audiocpp_server`.
+
+**Models.** Hugging Face `audio-cpp/audio.cpp-gguf`, revision `6f45df32f8fb283e4cfce3d3e1cb7688986fcbe6`, ready GGUF files (no `audiocpp_gguf` conversion), placed by `scripts/fetch.sh` in `$VOCA_MODELS_DIR/audio-cpp/`:
+
+- `Parakeet-TDT-0.6B-v3-GGUF/parakeet-tdt-0.6b-v3-q8_0.gguf` (915 735 760 bytes) — sha256 `6fa498f10f8cb606f041aa9512733cfee842a932359b00b0c45b9b723c4f4f4b`;
+- `Supertonic-3-GGUF/supertonic-3-q8_0.gguf` (454 076 228 bytes) — sha256 `9edd05cf92feab49c6b29721d14c86566459dca7f4a6eeb99306372cdce03697`.
+
+**Server config.** `scripts/server.json` is a template; `scripts/audiocpp.sh` renders it with `envsubst '${VOCA_MODELS_DIR}'` into `.local/server.json`, checks the binary, both model files and the port, then `exec`s `audiocpp_server --config .local/server.json --no-ui`. `envsubst` (gettext) and `jq` are required. The config: `127.0.0.1:8082`, `backend: cpu`, `threads: 6` (measured against llama-server decode in the report), `lazy_load: false`, `max_loaded_models: 2`, `ui: false`, two models:
+
+- `asr` — Parakeet, `mode: offline`: `openai.STT` posts each segment whole, without `stream=true`, and offline mode resamples any input rate;
+- `tts` — Supertonic, `mode: streaming`: `openai.TTS` always asks for `stream_format: "sse"`, which the server accepts only from a streaming model; `default_voice_preset` `F4` (chosen in G2). Voices are `M1…M5`/`F1…F5`; the plugin default `ash` is rejected. Requests send `language: "ru"`; without it Supertonic reads the text as English.
+
+**Fallback quants.** `scripts/SHA256SUMS` also lists `Parakeet-TDT-0.6B-v3-GGUF/parakeet-tdt-0.6b-v3-f16.gguf` (sha256 `1720770887bbb6ae633b3375c6ce4b76b3eaff9cd4efd7b890db734cc0adfe80`) and `Supertonic-3-GGUF/supertonic-3-f16.gguf` (sha256 `7a44c47d1f387e4fb163e2eed9615b58470c77e26ac8b2b1a6be49dfb8670899`) from the same revision; the stand does not load them, the report compares them with q8_0.
+
+**G2 result.** Voice `F4`, Supertonic q8_0, the server's 8 inference steps, `language: "ru"`; f16 and 16 steps sounded no different. G2 passes on condition that the text is prepared before TTS. The wiring for 1.1 (two LLM turns: A without thinking, facts or numbers; B with thinking and numbers as words, then stress marks; `tools` always passed) is in [bench/report_g1_g2.md](bench/report_g1_g2.md), section 6.
+
+**Text before TTS.** Supertonic reads digits badly and does not decline numbers, so the reply text is prepared: the LLM writes numbers as words (one line in the system prompt) and ruaccent 1.5.8.3 (`agent/` dependency, with `transformers` kept below 5: with 5 ruaccent fails on words outside its dictionary) places stress marks (U+0301). Its models are Hugging Face `ruaccent/accentuator` at revision `b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855`, 51 files placed by `scripts/fetch.sh` in `$VOCA_MODELS_DIR/ruaccent/accentuator-b78ae5e/`; `bench/tts_pipeline.py` loads them offline (`HF_HUB_OFFLINE=1`). ruaccent imports its rule engine code (`koziev/`) from its own package directory and otherwise downloads it unpinned, so `scripts/ruaccent-setup.sh` verifies the `koziev/` files of that set against `scripts/SHA256SUMS` and links them into the installed package in `agent/.venv`; it is idempotent and has to run again after `agent/.venv` is recreated.
+
+**Requirements.** x86_64 Linux; no GPU. Both models load before `/health` answers; `scripts/up.sh audio` waits up to 120 s.
+
+**Steps**, from the repository root:
+
+```sh
+cp .env.example .env
+scripts/fetch.sh
+scripts/fetch.sh --check
+(cd agent && uv sync --locked)
+scripts/ruaccent-setup.sh
+scripts/audiocpp.sh --check
+scripts/up.sh audio
+curl http://127.0.0.1:8082/health
+scripts/down.sh audio
+```
+
+**Benches** (server up), the gate details are in [bench/README.md](bench/README.md):
+
+```sh
+uv run --project agent python bench/stt_ru.py samples
+uv run --project agent python bench/stt_ru.py rtf5
+uv run --project agent python bench/tts_ru.py check
+uv run --project agent python bench/tts_ru.py render
+uv run --project agent python bench/tts_ru.py soak --variant ru
+uv run --project agent python bench/audio_parallel.py
+uv run --project agent python bench/tts_pipeline.py accent
+uv run --project agent python bench/tts_pipeline.py run
+uv run --project agent python bench/tts_pipeline.py chunks
+uv run --project agent python bench/tts_pipeline.py think
+```
+
+`bench/tts_pipeline.py run` also needs `scripts/up.sh llm` (0.3). A person records the G1 phrases with `bench/stt_ru.py record` and listens with `bench/tts_ru.py listen`, `ab`, `ab2` and `bench/tts_pipeline.py listen`; recordings and synthesis stay in `.local/bench/`. `ab-render`, `ab`, `ab2-render`, `ab2` and `voiceprobe` use Supertonic q8_0 and f16 as two models of one server: `jq '.max_loaded_models = 3 | .models += [(.models[1] | .id = "tts-f16" | .path |= sub("q8_0"; "f16"))]' .local/server.json > .local/bench/server-ab.json` and start `$VOCA_AUDIOCPP_BIN --config .local/bench/server-ab.json --no-ui` instead of `scripts/up.sh audio`.
+
+**Variables** (`.env.example`): `VOCA_AUDIOCPP_BIN`, plus `VOCA_APPS_DIR` and `VOCA_MODELS_DIR` from 0.1.
+
 ### 0.3 LLM stand
 
 llama-server with the Bolt-E4B model in profile B (the per-layer embeddings stay in RAM); gates G3 and G4. The result is [bench/report_g3_g4.md](bench/report_g3_g4.md).
