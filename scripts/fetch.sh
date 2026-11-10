@@ -77,7 +77,7 @@ while read -r sum path source rest || [ -n "${sum:-}" ]; do
     tar:*)
       archive="$dir/${source#tar:}"
       name="$(basename "$dest")"
-      member="$(tar -tzf "$archive" | grep -Fx -e "$name" -e "./$name" | head -n 1)"
+      member="$(tar -tzf "$archive" | grep -Fx -m 1 -e "$name" -e "./$name" || true)"
       if [ -z "$member" ]; then
         echo "SHA256SUMS:$number: в ${source#tar:} нет $name" >&2
         exit 1
