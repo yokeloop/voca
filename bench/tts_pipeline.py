@@ -412,11 +412,15 @@ class Thought:
 
 
 async def ask_thinking(
-    client: httpx.AsyncClient, user: str, thinking: bool, budget: int | None
+    client: httpx.AsyncClient,
+    user: str,
+    thinking: bool,
+    budget: int | None,
+    system: str,
 ) -> Thought:
     body: dict[str, object] = {
         "messages": [
-            {"role": "system", "content": SYSTEM},
+            {"role": "system", "content": system},
             {"role": "user", "content": user},
         ],
         "stream": True,
@@ -474,11 +478,15 @@ async def cmd_think(args: argparse.Namespace) -> int:
     tts = make_tts(args.base_url, VOICE, "ru")
     warm, _ = place(accent, "Прогревочная фраза номер один.")
     await synthesize(tts, warm)
+    system = SYSTEM_RU if args.digits else SYSTEM
+    suffix = "-digits" if args.digits else ""
     summary = []
     async with httpx.AsyncClient() as client:
         for mode in args.modes.split(","):
             thinking, budget = THINK_MODES[mode]
-            await ask_thinking(client, "Сколько будет два плюс два?", thinking, budget)
+            await ask_thinking(
+                client, "Сколько будет два плюс два?", thinking, budget, system
+            )
             rows = []
             stats: dict[str, list[float]] = {
                 "reasoning_tokens": [],
@@ -494,7 +502,9 @@ async def cmd_think(args: argparse.Namespace) -> int:
             leftovers = 0
             empty = 0
             for item in corpus:
-                reply = await ask_thinking(client, item["user"], thinking, budget)
+                reply = await ask_thinking(
+                    client, item["user"], thinking, budget, system
+                )
                 placed, accent_s = place(accent, reply.sentence.strip())
                 tts_ttfb = 0.0
                 if placed.strip():
@@ -538,7 +548,7 @@ async def cmd_think(args: argparse.Namespace) -> int:
                     ]
                 )
             write_tsv(
-                llm_dir() / f"think-{mode}.tsv",
+                llm_dir() / f"think-{mode}{suffix}.tsv",
                 [
                     "id",
                     "correct",
@@ -571,7 +581,7 @@ async def cmd_think(args: argparse.Namespace) -> int:
     header = ["mode", "correct", "leftover"]
     for name in stats:
         header += [f"{name}_p50", f"{name}_p95"]
-    write_tsv(llm_dir() / "think.tsv", header, summary)
+    write_tsv(llm_dir() / f"think{suffix}.tsv", header, summary)
     for line in summary:
         print("\t".join(line))
     return 0
@@ -710,6 +720,11 @@ def main() -> int:
     think = sub.add_parser("think")
     think.add_argument("--modes", default="off,on,b128,b64")
     think.add_argument("--omograph", default="turbo3.1")
+    think.add_argument(
+        "--digits",
+        action="store_true",
+        help="drop the numbers-as-words line from the system prompt",
+    )
     sub.add_parser("poezd")
     sub.add_parser("caps")
     sub.add_parser("caps-listen")
