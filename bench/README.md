@@ -64,13 +64,20 @@ Scripts:
   setup, `SpeechLanguageClient` (adds `language` to `/audio/speech`), WAV
   helpers, the server health check.
 
+`scripts/up.sh llm` starts the default profile `lfm2.5-2.6b`, the agent's
+model (VOCA-9). The G3/G4 baselines of `report_g3_g4.md` were measured on
+`bolt-e4b`; to repeat them, start `VOCA_LLM_PROFILE=bolt-e4b scripts/up.sh llm`
+(README 0.3).
+
 The `llm_*` scripts need `scripts/up.sh llm`; their corpora are
 `bench/corpus/llm_*.json` and their logs go to `.local/bench/llm/`.
 
 The scripts take the model name from `GET /v1/models` (`--alias`, the
 `VOCA_LLM_PROFILE` of the running server). The outputs of a model other than
-`bolt-e4b` go to `.local/bench/llm/<model>/` and `.local/bench/pipeline/<model>/`
-(`tts_pipeline.py` `run`, `chunks`, `think`); the audio-only outputs stay shared.
+`bolt-e4b` (the model of the VOCA-4/5 measurements, `ROOT_OUTPUT_MODEL` in
+`llm_common.py`; not the stand default) go to `.local/bench/llm/<model>/` and
+`.local/bench/pipeline/<model>/` (`tts_pipeline.py` `run`, `chunks`, `think`);
+the audio-only outputs stay shared.
 Sampling comes from the server profile; the client sends none.
 
 The audio scripts need `scripts/up.sh audio`; their corpora are

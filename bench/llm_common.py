@@ -11,7 +11,8 @@ from livekit.plugins import openai
 
 BASE_URL = "http://127.0.0.1:8081/v1"
 SERVER = BASE_URL.removesuffix("/v1")
-DEFAULT_MODEL = "bolt-e4b"
+# Outputs of this model stay at the root output paths the VOCA-4/5 reports cite; not the stand default (VOCA_LLM_PROFILE, scripts/env.sh).
+ROOT_OUTPUT_MODEL = "bolt-e4b"
 ROOT = Path(__file__).resolve().parents[1]
 OUT_DIR = ROOT / ".local" / "bench" / "llm"
 KWARGS = {"enable_thinking": False, "conversational_mode": True}
@@ -30,7 +31,7 @@ def model_id() -> str:
 
 
 def model_dir(base: Path) -> Path:
-    return base if model_id() == DEFAULT_MODEL else base / model_id()
+    return base if model_id() == ROOT_OUTPUT_MODEL else base / model_id()
 
 
 @function_tool
