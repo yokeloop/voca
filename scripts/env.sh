@@ -1,0 +1,24 @@
+VOCA_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+export VOCA_ROOT
+
+if [ -f "$VOCA_ROOT/.env" ]; then
+  set -a
+  . "$VOCA_ROOT/.env"
+  set +a
+fi
+
+: "${VOCA_APPS_DIR:=$HOME/Apps}"
+: "${VOCA_MODELS_DIR:=$HOME/models}"
+: "${VOCA_LIVEKIT_BIN:=$VOCA_APPS_DIR/livekit/1.13.11/livekit-server}"
+: "${VOCA_AUDIOCPP_BIN:=$VOCA_APPS_DIR/audio.cpp/0.9.4/audiocpp_server}"
+: "${VOCA_LLAMA_BIN:=$VOCA_APPS_DIR/llama.cpp/llama-b12167/llama-server}"
+: "${VOCA_LLM_PROFILE:=lfm2.5-2.6b}"
+: "${VOCA_LIVEKIT_NODE_IP:=127.0.0.1}"
+: "${VOCA_LIVEKIT_API_KEY:=devkey}"
+: "${VOCA_LIVEKIT_API_SECRET:=secret}"
+: "${VOCA_WEB_HOST:=127.0.0.1}"
+: "${VOCA_WEB_PORT:=8083}"
+: "${VOCA_PUBLIC_LIVEKIT_URL:=ws://127.0.0.1:7880}"
+export VOCA_APPS_DIR VOCA_MODELS_DIR VOCA_LIVEKIT_BIN VOCA_AUDIOCPP_BIN VOCA_LLAMA_BIN VOCA_LLM_PROFILE
+export VOCA_LIVEKIT_NODE_IP VOCA_LIVEKIT_API_KEY VOCA_LIVEKIT_API_SECRET
+export VOCA_WEB_HOST VOCA_WEB_PORT VOCA_PUBLIC_LIVEKIT_URL
