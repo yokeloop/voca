@@ -103,7 +103,7 @@ uv run --project agent python bench/tts_pipeline.py think
 
 ### 0.3 LLM stand
 
-llama-server with the Bolt-E4B model in profile B (the per-layer embeddings stay in RAM); gates G3 and G4. The result is [bench/report_g3_g4.md](bench/report_g3_g4.md).
+llama-server with the agent's model LFM2.5-2.6B (profile `lfm2.5-2.6b`, the default since VOCA-9, 0.3.1). Gates G3 and G4 were measured on Bolt-E4B in profile B (the per-layer embeddings stay in RAM) on b11869: [bench/report_g3_g4.md](bench/report_g3_g4.md). LFM2.5-2.6B on the E0 cases: [bench/report_lfm2_5_2_6b.md](bench/report_lfm2_5_2_6b.md).
 
 **llama.cpp.** CUDA release `b12167` (`build 12167, commit 240d68fcf`), build `ubuntu-cuda-13.4-x64`, two archives:
 
@@ -114,9 +114,9 @@ llama-server with the Bolt-E4B model in profile B (the per-layer embeddings stay
 
 `b11869` (`build 11869, commit d327bf1f0`; `llama-b11869-bin-ubuntu-cuda-13.4-x64.tar.gz` sha256 `554f4006f4e2456c4dcc0482a207230602758d3f5a700f55c8754c58f4088a29`, `cudart-llama-b11869-bin-ubuntu-cuda-13.4-x64.tar.gz` sha256 `d879e8e8070bcfcfd4f8bc01664e52787b2253409b5be4c3dd6cfd7e1409f385`, `llama-server` sha256 `ad9fa5d2ace5684e506288a3b3e117a9bf0ebcf320e1e0bdeb3bd04da82a628a`, same release URLs with `b11869`) is the build of the VOCA-4/5 measurements; it stays in `scripts/SHA256SUMS`, the stand no longer runs it.
 
-**Model.** Hugging Face `unsloth/NVIDIA-Nemotron-3.5-Bolt-E4B-GGUF`, revision `b738967d6da3441a7d1c71fcec15e49e32e16ecd`, file `NVIDIA-Nemotron-3.5-Bolt-E4B-UD-Q4_K_XL.gguf` (5.06 GB, sha256 `84ff34f5834b929043f5ae74799e8d562d4056998f6a5923ceb44831e8ad84d6`), placed by `scripts/fetch.sh` in `$VOCA_MODELS_DIR/unsloth/`.
+**Model.** Hugging Face `LiquidAI/LFM2.5-2.6B-GGUF`, revision `e7caca5d835a3901a8e0d63e94009429bafafdfc`, file `LFM2.5-2.6B-Q4_K_M.gguf` (1 674 455 040 bytes, sha256 `02a8b7e17487d326e46d68ce0ba24211e1b80a14c4cd0597fa73c1cd697f52ed`), placed by `scripts/fetch.sh` in `$VOCA_MODELS_DIR/LiquidAI/`. `scripts/fetch.sh` also places the models of the alternative profiles `bolt-e4b` and `lfm3-1.7b` (0.3.1).
 
-**Requirements.** x86_64 Linux, an NVIDIA GPU and a driver with CUDA 13.4 (the stand: RTX 4070 12 GB, driver 615.78.08). llama-server takes about 3.8 GB VRAM and 2.6–5 GB RAM (measured in the report). No nvcc or CUDA toolkit: the CUDA libraries come from the cudart archive.
+**Requirements.** x86_64 Linux, an NVIDIA GPU and a driver with CUDA 13.4 (the stand: RTX 4070 12 GB, driver 615.78.08). llama-server with LFM2.5-2.6B takes about 2.0 GB VRAM and 1.2–1.6 GB RAM ([bench/report_lfm2_5_2_6b.md](bench/report_lfm2_5_2_6b.md), section 7). Bolt-E4B, if started, takes about 3.8 GB VRAM and 2.6–5 GB RAM ([bench/report_g3_g4.md](bench/report_g3_g4.md)). No nvcc or CUDA toolkit: the CUDA libraries come from the cudart archive.
 
 **Steps**, from the repository root:
 
@@ -127,23 +127,31 @@ scripts/fetch.sh --check
 (cd agent && uv sync --locked)
 scripts/up.sh llm
 curl http://127.0.0.1:8081/health
+curl -fsS http://127.0.0.1:8081/v1/models   # "id": "lfm2.5-2.6b"
+```
+
+These measurements belong to `bolt-e4b`; the LFM2.5-2.6B runs and their commands are in [bench/report_lfm2_5_2_6b.md](bench/report_lfm2_5_2_6b.md). Repeating G3/G4 of [bench/report_g3_g4.md](bench/report_g3_g4.md) on `bolt-e4b`:
+
+```sh
+scripts/down.sh llm
+VOCA_LLM_PROFILE=bolt-e4b scripts/up.sh llm
 uv run --project agent python bench/llm_template.py
 uv run --project agent python bench/llm_ru_tools.py
 uv run --project agent python bench/llm_speed.py
 scripts/down.sh llm
 ```
 
-`scripts/up.sh llm` runs `scripts/llama.sh`, which loads the profile `VOCA_LLM_PROFILE` (0.3.1), checks the binary, the model and port 8081, then starts; for the default profile `bolt-e4b`:
+`scripts/up.sh llm` runs `scripts/llama.sh`, which loads the profile `VOCA_LLM_PROFILE` (0.3.1), checks the binary, the model and port 8081, then starts; for the default profile `lfm2.5-2.6b`:
 
 ```sh
-~/Apps/llama.cpp/llama-b12167/llama-server -m ~/models/unsloth/NVIDIA-Nemotron-3.5-Bolt-E4B-UD-Q4_K_XL.gguf --alias bolt-e4b \
+~/Apps/llama.cpp/llama-b12167/llama-server -m ~/models/LiquidAI/LFM2.5-2.6B-Q4_K_M.gguf --alias lfm2.5-2.6b \
   --jinja --host 127.0.0.1 --port 8081 \
   -c 16384 -fa on -ctk q8_0 -ctv q8_0 \
   --parallel 1 -t 2 -ngl 99 \
-  --cache-reuse 256 --override-tensor 'per_layer.*=CPU' --temp 1.0 --top-p 0.95
+  --temp 0.1 --top-k 50 --repeat-penalty 1.1
 ```
 
-It waits up to 120 s for `/health`. Port 8081 listens on `127.0.0.1` only. The chat template kwargs `enable_thinking=false` and `conversational_mode=true` are sent by the client (`openai.LLM(extra_body={"chat_template_kwargs": …})`); the server sets none. Sampling comes from the profile on the server; the client sends none.
+It waits up to 120 s for `/health`. Port 8081 listens on `127.0.0.1` only. The chat template kwargs `enable_thinking=false` and `conversational_mode=true` are sent by the client (`openai.LLM(extra_body={"chat_template_kwargs": …})`); the server sets none. Sampling comes from the profile on the server; the client sends none. LFM2.5-2.6B always thinks: its template opens `<think>` and does not read `enable_thinking` ([bench/report_lfm2_5_2_6b.md](bench/report_lfm2_5_2_6b.md)).
 
 **Variables** (`.env.example`): `VOCA_LLAMA_BIN`, `VOCA_LLM_PROFILE`, plus `VOCA_APPS_DIR` and `VOCA_MODELS_DIR` from 0.1.
 
