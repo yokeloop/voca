@@ -239,7 +239,7 @@ scripts/down.sh
 
 `scripts/ruaccent-setup.sh` is needed once per `agent/.venv`: the agent loads ruaccent in prewarm. `scripts/up.sh` without arguments starts `livekit audio llm web agent` in that order; `agent` is up when `http://127.0.0.1:8084/` answers `200` (503 until the worker has registered with livekit-server). `scripts/down.sh` stops `agent` first.
 
-**Talking.** Open `http://127.0.0.1:8083/?device=host`, press «Подключиться» and allow the microphone. The page publishes the microphone with echo cancellation, noise suppression and auto gain, plays the agent, shows the transcript (`вы`/`агент`) and the state («слушает», «думает», «говорит»). «Отключиться» leaves the room; the agent stays and answers the next connection.
+**Talking.** Open `http://127.0.0.1:8083/?device=host`, press «Подключиться» and allow the microphone. The page publishes the microphone with echo cancellation, noise suppression and auto gain, plays the agent, shows the transcript (`вы`/`агент`) and the state («слушает», «думает», «говорит»). «Отключиться» leaves the room and ends the agent's job; the next «Подключиться» gets the agent again, in a new job with a new session.
 
 **Port.** 8084 TCP, the worker's health endpoint (127.0.0.1, `VOCA_AGENT_PORT`).
 
