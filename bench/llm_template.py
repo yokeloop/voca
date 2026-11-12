@@ -11,6 +11,7 @@ from llm_common import (
     BASE_URL,
     KWARGS,
     MARKERS,
+    OUT_DIR,
     SYSTEM_RU,
     TOOL_SCHEMAS,
     ChatResult,
@@ -317,7 +318,14 @@ async def run(names: list[str]) -> int:
         log[name] = entry
         failed = failed or not ok
         print(f"{entry['status']} {name} {detail}", flush=True)
-    write_json("template", log)
+    agent_log = log.pop("agent-body", None)
+    if agent_log is not None:
+        OUT_DIR.mkdir(parents=True, exist_ok=True)
+        (OUT_DIR / "agent-body.json").write_text(
+            json.dumps(agent_log, ensure_ascii=False, indent=2) + "\n"
+        )
+    if log:
+        write_json("template", log)
     return 1 if failed else 0
 
 
