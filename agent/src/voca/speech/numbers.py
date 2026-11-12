@@ -27,6 +27,11 @@ DATE = re.compile(rf"(?<![\w])(\d{{1,2}})\s({MONTHS})(?![\w])")
 YEAR = re.compile(rf"(?<![\w])({NUM})\s(год|года|году|годом|годах)(?![\w])")
 TIME = re.compile(r"(?<![\w:])(\d{1,2}):(\d{2})(?![\w:])")
 DECIMAL = re.compile(rf"(?<![\w,])({NUM}),(\d+)(?![\w])")
+DECIMAL_SUFFIX_UNIT = re.compile(rf"(?<![\w,])({NUM}),(\d+)\s?([%$€₽])")
+DECIMAL_PREFIX_UNIT = re.compile(
+    rf"([$€])({NUM}),(\d+)(?![\w])"
+    r"(?:\s(?:(млн|млрд|тыс)\.?(?![\w])|(миллион\w*|миллиард\w*|тысяч\w*)))?"
+)
 SUFFIX_UNIT = re.compile(rf"(?<![\w])(?:({NUM})[–-])?({NUM})\s?([%$€₽])")
 PREFIX_UNIT = re.compile(rf"([$€])({NUM})(?:[–-]({NUM}))?")
 RANGE = re.compile(rf"(?<![\w])({NUM})[–-]({NUM})")
@@ -55,6 +60,11 @@ UNITS: dict[str, dict[str, tuple[str, ...]]] = {
         "d": ("рублю", "рублям"),
         "p": ("рубле", "рублях"),
     },
+}
+SCALES = {
+    "млн": ("миллион", "миллиона", "миллионов"),
+    "млрд": ("миллиард", "миллиарда", "миллиардов"),
+    "тыс": ("тысяча", "тысячи", "тысяч"),
 }
 UNIT_GENDER = {"%": "m", "$": "m", "€": "n", "₽": "m"}
 FRACTIONS = (
@@ -102,15 +112,25 @@ def is_one(n: int) -> bool:
     return n % 10 == 1 and n % 100 != 11
 
 
+def count_form(forms: tuple[str, ...], n: int) -> str:
+    if is_one(n):
+        return forms[0]
+    if n % 10 in (2, 3, 4) and n % 100 not in (12, 13, 14):
+        return forms[1]
+    return forms[2]
+
+
 def unit_form(symbol: str, n: int, case: str) -> str:
     forms = UNITS[symbol][case]
     if case == "n":
-        if is_one(n):
-            return forms[0]
-        if n % 10 in (2, 3, 4) and n % 100 not in (12, 13, 14):
-            return forms[1]
-        return forms[2]
+        return count_form(forms, n)
     return forms[0] if is_one(n) else forms[1]
+
+
+def decimal_count(forms: tuple[str, ...], whole: int, fraction: str) -> str:
+    if fraction == "5" and not is_one(whole):
+        return count_form(forms, whole)
+    return forms[1]
 
 
 def phone(match: re.Match[str]) -> str:
@@ -160,14 +180,11 @@ def clock(match: re.Match[str]) -> str:
     return f"{hours} {cardinal(int(minutes))}"
 
 
-def decimal(match: re.Match[str]) -> str:
-    whole = value(match.group(1))
-    fraction = match.group(2)
-    case = case_before(match.string, match.start())
+def decimal_words(whole: int, fraction: str, case: str) -> str | None:
     if fraction == "5":
         return f"{cardinal(whole, case)} с половиной"
     if len(fraction) > len(FRACTIONS):
-        return match.group(0)
+        return None
     part = int(fraction)
     whole_word = "целая" if is_one(whole) else "целых"
     fraction_word = FRACTIONS[len(fraction) - 1][0 if is_one(part) else 1]
@@ -175,6 +192,35 @@ def decimal(match: re.Match[str]) -> str:
         f"{cardinal(whole, case, 'f')} {whole_word} "
         f"{cardinal(part, case, 'f')} {fraction_word}"
     )
+
+
+def decimal(match: re.Match[str]) -> str:
+    case = case_before(match.string, match.start())
+    words = decimal_words(value(match.group(1)), match.group(2), case)
+    return match.group(0) if words is None else words
+
+
+def decimal_amount(
+    match: re.Match[str], symbol: str, digits: str, fraction: str, scale: str | None
+) -> str:
+    whole = value(digits)
+    words = decimal_words(whole, fraction, case_before(match.string, match.start()))
+    if words is None:
+        return match.group(0)
+    if scale is None:
+        return f"{words} {decimal_count(UNITS[symbol]['n'], whole, fraction)}"
+    if scale in SCALES:
+        scale = decimal_count(SCALES[scale], whole, fraction)
+    return f"{words} {scale} {UNITS[symbol]['g'][1]}"
+
+
+def decimal_suffix_unit(match: re.Match[str]) -> str:
+    return decimal_amount(match, match.group(3), match.group(1), match.group(2), None)
+
+
+def decimal_prefix_unit(match: re.Match[str]) -> str:
+    scale = match.group(4) or match.group(5)
+    return decimal_amount(match, match.group(1), match.group(2), match.group(3), scale)
 
 
 def amount(first: str | None, last: str, symbol: str, case: str) -> str:
@@ -224,6 +270,8 @@ def normalize_numbers(text: str) -> str:
     text = DATE.sub(date, text)
     text = YEAR.sub(year, text)
     text = TIME.sub(clock, text)
+    text = DECIMAL_SUFFIX_UNIT.sub(decimal_suffix_unit, text)
+    text = DECIMAL_PREFIX_UNIT.sub(decimal_prefix_unit, text)
     text = DECIMAL.sub(decimal, text)
     text = SUFFIX_UNIT.sub(suffix_unit, text)
     text = PREFIX_UNIT.sub(prefix_unit, text)
