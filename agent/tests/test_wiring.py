@@ -1,4 +1,5 @@
 import asyncio
+import math
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
@@ -9,6 +10,7 @@ from livekit.agents import tts
 from livekit.plugins import silero
 
 from voca.app.wiring import TTS_TEXT_TRANSFORMS, build_session, make_tts
+from voca.app.worker import server_options
 from voca.config import Settings
 from voca.speech.prepare import Prepared
 
@@ -87,3 +89,14 @@ def test_prepared_tts_body() -> None:
     assert not any(char.isdigit() for char in body["input"])
     assert len(calls) == 1
     assert calls[0][1].leftover_digits == 0
+
+
+def test_server_options() -> None:
+    options = server_options(Settings())
+    assert options.port == 8084
+    assert options.host == "127.0.0.1"
+    assert options.num_idle_processes == 1
+    assert options.load_threshold == math.inf
+    assert options.ws_url == "ws://127.0.0.1:7880"
+    assert options.initialize_process_timeout == 60.0
+    assert options.drain_timeout == 5
