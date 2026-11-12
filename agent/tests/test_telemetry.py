@@ -4,9 +4,10 @@ from pathlib import Path
 import pytest
 from livekit.agents.llm import ChatMessage
 from livekit.agents.metrics import LLMMetrics
+from livekit.agents.voice import UserStateChangedEvent
 
 from voca.speech.prepare import Prepared
-from voca.telemetry.jsonl import Fragments, JsonlLog, turn_row
+from voca.telemetry.jsonl import Fragments, JsonlLog, TurnTracker, turn_row
 
 
 def llm_metrics() -> LLMMetrics:
@@ -36,7 +37,13 @@ def test_turn_row(cold: bool) -> None:
         role="assistant",
         content=["**Сейчас** 5 минут."],
         interrupted=True,
-        metrics={"e2e_latency": 2.1, "llm_node_ttft": 0.8, "tts_node_ttfb": 0.4},
+        metrics={
+            "e2e_latency": 2.1,
+            "llm_node_ttft": 0.8,
+            "tts_node_ttfb": 0.4,
+            "started_speaking_at": 100.0,
+            "stopped_speaking_at": 104.5,
+        },
     )
     fragments = Fragments()
     fragments.add("Сейчас 5 минут.", Prepared("Сейчас пять минут.", 0), 12.5)
@@ -60,6 +67,8 @@ def test_turn_row(cold: bool) -> None:
     assert row["cached_tokens"] == 850
     assert row["cache_hit"] is True
     assert row["interrupted"] is True
+    assert row["started_speaking_at"] == 100.0
+    assert row["stopped_speaking_at"] == 104.5
     assert row["markdown_removed"] == 2
     assert row["leftover_digits"] == 0
     assert row["first_fragment"] == "Сейчас пять минут."
@@ -84,6 +93,23 @@ def test_turn_row_without_metrics() -> None:
     assert row["cache_hit"] is None
     assert row["first_fragment"] is None
     assert row["user_text"] is None
+    assert row["started_speaking_at"] is None
+    assert row["stopped_speaking_at"] is None
+
+
+def test_tracker_user_state(tmp_path: Path) -> None:
+    path = tmp_path / "events.jsonl"
+    log = JsonlLog(path, session="job-1")
+    TurnTracker(log).on_user_state(
+        UserStateChangedEvent(old_state="listening", new_state="speaking")
+    )
+    log.close()
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    row = json.loads(lines[0])
+    assert row["kind"] == "user_state"
+    assert row["old"] == "listening"
+    assert row["new"] == "speaking"
 
 
 def test_jsonl_log(tmp_path: Path) -> None:

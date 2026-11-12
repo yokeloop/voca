@@ -85,7 +85,9 @@ The agent's pipeline settings (`VOCA_TTS_VOICE`, `VOCA_LLM_THINKING_BUDGET`,
 `VOCA_INTERRUPTION_MIN_WORDS`, `VOCA_AEC_WARMUP`, `VOCA_ENDPOINTING_MIN_DELAY`,
 `VOCA_PREEMPTIVE_GENERATION`) have their defaults in `Settings`
 (`agent/src/voca/config.py`); `scripts/env.sh` does not set them, and
-`.env.example` lists them commented out.
+`.env.example` lists them commented out. `VOCA_AEC_WARMUP` covers only the
+first N seconds from the start of the session's first agent reply; later
+replies are interruptible at once.
 
 Everything downloaded lives outside the clone, in the machine's shared
 directories `~/Apps/<tool>/<version>/` and `~/models/`; a variable with that

@@ -71,6 +71,14 @@ Scripts:
   `scripts/ruaccent-setup.sh` once per `agent/.venv`.
 - `audio_parallel.py` (VOCA-5) — «STT does not wait for TTS» and llama-server
   decode under audio load: `--skip-llm`, `--threads-label N`, `--llm-url`.
+- `barge_in.py` (VOCA-14) — G5, barge-in on speakers:
+  `record --run NAME [--mic SOURCE] [--speaker SINK]` (one two-channel PipeWire
+  recording: FL — the microphone, FR — the speakers' monitor;
+  `.local/g5/<run>/audio.wav` and `audio.json` with the clocks and the agent's
+  `VOCA_*` values), `analyze` (the delay «onset → the old sound stops» per
+  interruption), `false --mode speech|silence` (false interruptions from the
+  JSONL), `history` (the cut history against what was heard, through STT);
+  needs `scripts/up.sh` (all five) and the speakers as the default output.
 - `audio_stand.py` — what the audio scripts share: `openai.STT`/`openai.TTS`
   setup, `SpeechLanguageClient` (adds `language` to `/audio/speech`; the class
   lives in `voca.app.wiring`, `audio_stand.py` re-exports it), WAV helpers, the
@@ -105,6 +113,7 @@ Reports, one per measurement task:
 - `report_lfm3_1_7b.md` (VOCA-7)
 - `report_lfm2_5_2_6b.md` (VOCA-8)
 - `report_tts_prepare.md` (VOCA-12)
+- `report_g5.md` (VOCA-14)
 
 Corpora are plain text or JSON in `bench/corpus/`. Voice recordings stay out of the
 repository, in `.local/bench/`; each report names the recordings it used with
