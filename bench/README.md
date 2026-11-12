@@ -13,7 +13,11 @@ Scripts:
   `resume`, `conflict`, `session`, `all` (the default: those five in order),
   `delegate`, `restart --phase start|verify`, `backend-down`.
 - `llm_template.py` (VOCA-4) — the first-hour checks of the LLM stand:
-  `kwargs-body`, `kwargs-live`, `tool-stream`, `tool-cycle`, `all` (the default).
+  `kwargs-body`, `kwargs-live`, `tool-stream`, `tool-cycle`, `all` (the default);
+  `agent-body` (VOCA-13) — the agent's request body (`voca.app.wiring.make_llm`
+  and the `VocaAgent` tools) sent to a fake server on loopback:
+  `thinking_budget_tokens`, `tools` with `delegate`, no `chat_template_kwargs`;
+  no llama-server needed.
 - `llm_ru_tools.py` (VOCA-4) — G3: `dialogs`, `delegate`, `all` (the default),
   `dialogs-thinking` (the twenty dialogs with thinking on, VOCA-7),
   `delegate-thinking` (the ten scenarios with thinking on).
