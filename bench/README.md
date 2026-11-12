@@ -58,6 +58,13 @@ Scripts:
   vowel at the start of a phrase), `listen` and `caps-listen` (for a person);
   needs
   `scripts/ruaccent-setup.sh` once per `agent/.venv`.
+- `tts_prepare.py` (VOCA-12) — the text path of the agent before TTS: `norm`
+  (numbers normalizer against `corpus/tts_ru.txt` → `tts_ru_norm.txt`, no
+  models), `run [--omograph turbo3.1]` (`corpus/tts_pipeline.json` and
+  `corpus/tts_prepare.json` through markup filters, first fragment, numbers
+  and stress; leftover digits and markup, `prepare` p50/p95), `render` (5
+  phrases with F4, needs `scripts/up.sh audio`), `listen` (for a person); needs
+  `scripts/ruaccent-setup.sh` once per `agent/.venv`.
 - `audio_parallel.py` (VOCA-5) — «STT does not wait for TTS» and llama-server
   decode under audio load: `--skip-llm`, `--threads-label N`, `--llm-url`.
 - `audio_stand.py` — what the audio scripts share: `openai.STT`/`openai.TTS`
@@ -82,8 +89,8 @@ Sampling comes from the server profile; the client sends none.
 
 The audio scripts need `scripts/up.sh audio`; their corpora are
 `bench/corpus/stt_ru.tsv`, `bench/corpus/tts_ru.txt`, `tts_ru_norm.txt`,
-`tts_ru_stress.tsv` and `tts_pipeline.json`; their recordings, synthesis and
-tables go to `.local/bench/{stt,tts,parallel,pipeline}/`.
+`tts_ru_stress.tsv`, `tts_pipeline.json` and `tts_prepare.json`; their recordings, synthesis and
+tables go to `.local/bench/{stt,tts,parallel,pipeline,prepare}/`.
 
 Reports, one per measurement task:
 
@@ -92,6 +99,7 @@ Reports, one per measurement task:
 - `report_g1_g2.md` (VOCA-5)
 - `report_lfm3_1_7b.md` (VOCA-7)
 - `report_lfm2_5_2_6b.md` (VOCA-8)
+- `report_tts_prepare.md` (VOCA-12)
 
 Corpora are plain text or JSON in `bench/corpus/`. Voice recordings stay out of the
 repository, in `.local/bench/`; each report names the recordings it used with
