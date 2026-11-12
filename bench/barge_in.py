@@ -212,9 +212,7 @@ def load_events(
     return rows
 
 
-def speaking_intervals(
-    rows: list[dict[str, Any]], until: float | None = None
-) -> list[tuple[str, float, float]]:
+def speaking_intervals(rows: list[dict[str, Any]]) -> list[tuple[str, float, float]]:
     intervals = []
     open_at: dict[str, float] = {}
     for row in rows:
@@ -225,7 +223,7 @@ def speaking_intervals(
             intervals.append((session, open_at.pop(session), row["ts"]))
         if row["new"] == "speaking":
             open_at[session] = row["ts"]
-    end = until if until is not None else max((row["ts"] for row in rows), default=0.0)
+    end = max((row["ts"] for row in rows), default=0.0)
     for session, start in open_at.items():
         intervals.append((session, start, max(end, start)))
     return intervals
