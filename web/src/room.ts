@@ -83,6 +83,12 @@ export async function connect(
         text += chunk;
         handlers.transcript({ segment, who, text, final });
       }
+      handlers.transcript({
+        segment,
+        who,
+        text,
+        final: reader.info.attributes?.["lk.transcription_final"] === "true",
+      });
     },
   );
   room.on(RoomEvent.TrackSubscribed, (track) => {
