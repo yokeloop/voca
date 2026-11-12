@@ -3,7 +3,7 @@ set -euo pipefail
 . "$(dirname "$0")/env.sh"
 
 if [ "$#" -eq 0 ]; then
-  set -- livekit audio llm web
+  set -- livekit audio llm web agent
 fi
 
 run_dir="$VOCA_ROOT/.local/run"
@@ -24,8 +24,8 @@ udp_busy() {
 
 for name in "$@"; do
   case "$name" in
-    livekit | audio | llm | web) ;;
-    *) fail "неизвестный сервис $name: livekit audio llm web" ;;
+    livekit | audio | llm | web | agent) ;;
+    *) fail "неизвестный сервис $name: livekit audio llm web agent" ;;
   esac
   pid_file="$run_dir/$name.pid"
   if [ -f "$pid_file" ] && kill -0 "$(cat "$pid_file")" 2>/dev/null; then
@@ -50,6 +50,13 @@ for name in "$@"; do
         fail "порт $VOCA_WEB_PORT (VOCA_WEB_PORT) занят"
       fi
       ;;
+    agent)
+      [ -x "$VOCA_ROOT/agent/.venv/bin/voca" ] || fail "нет agent/.venv/bin/voca: (cd agent && uv sync --locked)"
+      [ -e "$VOCA_ROOT/agent/.venv/lib/python3.13/site-packages/ruaccent/koziev" ] || fail "нет ruaccent/koziev: scripts/ruaccent-setup.sh"
+      if tcp_busy "$VOCA_AGENT_PORT"; then
+        fail "порт $VOCA_AGENT_PORT (VOCA_AGENT_PORT) занят"
+      fi
+      ;;
     audio) "$VOCA_ROOT/scripts/audiocpp.sh" --check || exit 1 ;;
     llm) "$VOCA_ROOT/scripts/llama.sh" --check || exit 1 ;;
   esac
@@ -69,6 +76,11 @@ for name in "$@"; do
       command=("$VOCA_ROOT/agent/.venv/bin/voca" web)
       ready="http://$VOCA_WEB_HOST:$VOCA_WEB_PORT/healthz"
       wait_s=20
+      ;;
+    agent)
+      command=("$VOCA_ROOT/agent/.venv/bin/voca" agent start)
+      ready="http://127.0.0.1:$VOCA_AGENT_PORT/"
+      wait_s=60
       ;;
     audio)
       command=("$VOCA_ROOT/scripts/audiocpp.sh")
