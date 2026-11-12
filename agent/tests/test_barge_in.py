@@ -81,3 +81,87 @@ def test_measure_silent_monitor() -> None:
     repeat = barge_in.measure(mic, monitor, 590, 5.900, 0.5)
     assert not repeat.valid
     assert repeat.note == "monitor молчал до onset"
+
+
+def row(
+    ts: float, kind: str, session: str = "s1", **fields: object
+) -> dict[str, object]:
+    return {"ts": ts, "session": session, "kind": kind, **fields}
+
+
+def state(ts: float, old: str, new: str, session: str = "s1") -> dict[str, object]:
+    return row(ts, "agent_state", session, old=old, new=new)
+
+
+def test_pause_moments() -> None:
+    rows = [
+        state(1.0, "thinking", "speaking"),
+        row(3.99, "turn", interrupted=False),
+        state(4.0, "speaking", "listening"),
+        state(5.0, "thinking", "speaking"),
+        state(6.0, "speaking", "listening"),
+        row(6.5, "turn", interrupted=True),
+    ]
+    pauses = barge_in.pause_moments(rows)
+    assert [pause["ts"] for pause in pauses] == [6.0]
+
+
+def test_false_counts_speech() -> None:
+    rows = [
+        row(0.5, "user_input_transcribed", text="до"),
+        state(1.0, "thinking", "speaking"),
+        row(2.0, "user_input_transcribed", text="эхо"),
+        row(2.5, "false_interruption", resumed=True),
+        state(3.0, "speaking", "listening"),
+        row(3.5, "turn", interrupted=True),
+        row(4.0, "false_interruption", resumed=True),
+        state(10.0, "thinking", "speaking", session="s2"),
+        row(13.0, "turn", session="s2", interrupted=False),
+        state(13.01, "speaking", "listening", session="s2"),
+    ]
+    counts = barge_in.false_counts(rows, "speech")
+    assert counts["speaking_s"] == pytest.approx(5.01)
+    assert counts["counts"] == {
+        "false_interruption": 2,
+        "pause": 1,
+        "interrupted_turn": 1,
+        "transcribed_while_speaking": 1,
+    }
+    assert counts["sessions"]["s2"]["speaking_s"] == pytest.approx(3.01)
+    assert counts["sessions"]["s2"]["counts"]["pause"] == 0
+    assert counts["sessions"]["s1"]["counts"]["pause"] == 1
+    assert counts["clean"] is False
+    clean = barge_in.false_counts(rows[7:], "speech")
+    assert clean["clean"] is True
+
+
+def test_false_counts_silence() -> None:
+    rows = [
+        row(1.0, "user_state", old="listening", new="speaking"),
+        row(1.5, "user_state", old="speaking", new="listening"),
+    ]
+    quiet = barge_in.false_counts(rows, "silence")
+    assert quiet["counts"] == {"user_input_transcribed": 0, "turn": 0, "thinking": 0}
+    assert quiet["vad_speaking"] == 1
+    assert quiet["clean"] is True
+    rows += [
+        row(2.0, "user_input_transcribed", text="шум"),
+        state(2.1, "listening", "thinking"),
+        row(3.0, "turn", interrupted=False),
+    ]
+    noisy = barge_in.false_counts(rows, "silence")
+    assert noisy["counts"] == {"user_input_transcribed": 1, "turn": 1, "thinking": 1}
+    assert noisy["clean"] is False
+
+
+def test_tail_match() -> None:
+    history = "Поезд прибывает в 5 часов, а затем"
+    ok, extra_history, extra_heard = barge_in.tail_match(
+        history, "поезд прибывает в пять часов а"
+    )
+    assert ok
+    assert extra_history == ["затем"]
+    assert extra_heard == []
+    ok, extra_history, _ = barge_in.tail_match(history, "поезд прибывает")
+    assert not ok
+    assert len(extra_history) == 5

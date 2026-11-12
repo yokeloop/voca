@@ -1,10 +1,16 @@
 import array
+import difflib
+import json
 import math
+import re
 import statistics
 import wave
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
+
+from voca.speech.numbers import normalize_numbers
 
 ROOT = Path(__file__).resolve().parents[1]
 G5_DIR = ROOT / ".local" / "g5"
@@ -20,6 +26,8 @@ MAX_LAG_S = 0.5
 TAIL_WORDS = 2
 FLOOR_DB = -120.0
 SILENT_BEFORE_FRAMES = 10
+TURN_BEFORE_S = 0.1
+PUNCT = re.compile(r"[^\w\s]|_")
 
 
 @dataclass
@@ -169,3 +177,147 @@ def measure(
     if delay_ms < min_duration * 1000:
         note = "раньше min_duration — проверить по записи"
     return Repeat(pause_ts, onset_s, stop_s, delay_ms, lag_ms, True, note)
+
+
+def load_events(
+    path: Path, since: float | None, until: float | None
+) -> list[dict[str, Any]]:
+    rows = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        row: dict[str, Any] = json.loads(line)
+        if since is not None and row["ts"] < since:
+            continue
+        if until is not None and row["ts"] > until:
+            continue
+        rows.append(row)
+    return rows
+
+
+def speaking_intervals(
+    rows: list[dict[str, Any]], until: float | None = None
+) -> list[tuple[str, float, float]]:
+    intervals = []
+    open_at: dict[str, float] = {}
+    for row in rows:
+        if row["kind"] != "agent_state":
+            continue
+        session = row["session"]
+        if row["old"] == "speaking" and session in open_at:
+            intervals.append((session, open_at.pop(session), row["ts"]))
+        if row["new"] == "speaking":
+            open_at[session] = row["ts"]
+    end = until if until is not None else max((row["ts"] for row in rows), default=0.0)
+    for session, start in open_at.items():
+        intervals.append((session, start, max(end, start)))
+    return intervals
+
+
+def pause_moments(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    turns = [row for row in rows if row["kind"] == "turn"]
+    return [
+        row
+        for row in rows
+        if row["kind"] == "agent_state"
+        and row["old"] == "speaking"
+        and row["new"] == "listening"
+        and not any(
+            turn["session"] == row["session"]
+            and row["ts"] - TURN_BEFORE_S <= turn["ts"] <= row["ts"]
+            for turn in turns
+        )
+    ]
+
+
+def speech_counts(
+    rows: list[dict[str, Any]], intervals: list[tuple[str, float, float]]
+) -> dict[str, int]:
+    return {
+        "false_interruption": sum(row["kind"] == "false_interruption" for row in rows),
+        "pause": len(pause_moments(rows)),
+        "interrupted_turn": sum(
+            row["kind"] == "turn" and row.get("interrupted") is True for row in rows
+        ),
+        "transcribed_while_speaking": sum(
+            row["kind"] == "user_input_transcribed"
+            and any(
+                session == row["session"] and start <= row["ts"] <= end
+                for session, start, end in intervals
+            )
+            for row in rows
+        ),
+    }
+
+
+def silence_counts(rows: list[dict[str, Any]]) -> dict[str, int]:
+    return {
+        "user_input_transcribed": sum(
+            row["kind"] == "user_input_transcribed" for row in rows
+        ),
+        "turn": sum(row["kind"] == "turn" for row in rows),
+        "thinking": sum(
+            row["kind"] == "agent_state" and row["new"] == "thinking" for row in rows
+        ),
+    }
+
+
+def false_counts(rows: list[dict[str, Any]], mode: str) -> dict[str, Any]:
+    sessions = sorted({row["session"] for row in rows})
+    if mode == "speech":
+        intervals = speaking_intervals(rows)
+        per_session = {}
+        for session in sessions:
+            own = [row for row in rows if row["session"] == session]
+            own_intervals = [item for item in intervals if item[0] == session]
+            per_session[session] = {
+                "speaking_s": sum(end - start for _, start, end in own_intervals),
+                "counts": speech_counts(own, own_intervals),
+            }
+        counts = speech_counts(rows, intervals)
+        return {
+            "mode": mode,
+            "speaking_s": sum(end - start for _, start, end in intervals),
+            "counts": counts,
+            "sessions": per_session,
+            "clean": not any(counts.values()),
+        }
+    if mode == "silence":
+        counts = silence_counts(rows)
+        return {
+            "mode": mode,
+            "counts": counts,
+            "vad_speaking": sum(
+                row["kind"] == "user_state" and row["new"] == "speaking" for row in rows
+            ),
+            "sessions": {
+                session: {
+                    "counts": silence_counts(
+                        [row for row in rows if row["session"] == session]
+                    )
+                }
+                for session in sessions
+            },
+            "clean": not any(counts.values()),
+        }
+    raise ValueError(f"неизвестный режим {mode}")
+
+
+def norm_words(text: str) -> list[str]:
+    text = normalize_numbers(text).lower().replace("ё", "е")
+    return PUNCT.sub(" ", text).split()
+
+
+def tail_match(history: str, heard: str) -> tuple[bool, list[str], list[str]]:
+    history_words = norm_words(history)
+    heard_words = norm_words(heard)
+    matcher = difflib.SequenceMatcher(a=history_words, b=heard_words, autojunk=False)
+    i_end = j_end = 0
+    for block in matcher.get_matching_blocks():
+        if block.size:
+            i_end = block.a + block.size
+            j_end = block.b + block.size
+    extra_history = history_words[i_end:]
+    extra_heard = heard_words[j_end:]
+    ok = len(extra_history) <= TAIL_WORDS and len(extra_heard) <= TAIL_WORDS
+    return ok, extra_history, extra_heard
