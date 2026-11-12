@@ -25,6 +25,7 @@ if (app) {
       connection = state;
       if (state === ConnectionState.Disconnected) {
         agent = undefined;
+        room = undefined;
       }
       setConnected(state !== ConnectionState.Disconnected);
       update();
