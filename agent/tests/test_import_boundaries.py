@@ -10,6 +10,7 @@ PURE_MODULES = (
     "conversation/instructions",
     "speech/markup",
     "speech/numbers",
+    "speech/prepare",
 )
 FORBIDDEN = frozenset({"livekit", "httpx", "aiosqlite"})
 
