@@ -68,8 +68,9 @@ Scripts:
 - `audio_parallel.py` (VOCA-5) — «STT does not wait for TTS» and llama-server
   decode under audio load: `--skip-llm`, `--threads-label N`, `--llm-url`.
 - `audio_stand.py` — what the audio scripts share: `openai.STT`/`openai.TTS`
-  setup, `SpeechLanguageClient` (adds `language` to `/audio/speech`), WAV
-  helpers, the server health check.
+  setup, `SpeechLanguageClient` (adds `language` to `/audio/speech`; the class
+  lives in `voca.app.wiring`, `audio_stand.py` re-exports it), WAV helpers, the
+  server health check.
 
 `scripts/up.sh llm` starts the default profile `lfm2.5-2.6b`, the agent's
 model (VOCA-9). The G3/G4 baselines of `report_g3_g4.md` were measured on
