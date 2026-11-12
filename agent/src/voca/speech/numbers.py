@@ -24,7 +24,9 @@ TIMES = re.compile(r"\s*×\s*|(?<=\d)\s*\*\s*(?=\d)")
 EQUALS = re.compile(r"\s*=\s*")
 APPROX = re.compile(r"≈\s*")
 DATE = re.compile(rf"(?<![\w])(\d{{1,2}})\s({MONTHS})(?![\w])")
-YEAR = re.compile(rf"(?<![\w])({NUM})\s(год|года|году|годом|годах)(?![\w])")
+YEAR = re.compile(
+    rf"(?<![\w])(?:({NUM})[–-])?({NUM})\s(год|года|году|годом|годах)(?![\w])"
+)
 TIME = re.compile(r"(?<![\w:])(\d{1,2}):(\d{2})(?![\w:])")
 DECIMAL = re.compile(rf"(?<![\w,])({NUM}),(\d+)(?![\w])")
 DECIMAL_SUFFIX_UNIT = re.compile(rf"(?<![\w,])({NUM}),(\d+)\s?([%$€₽])")
@@ -158,7 +160,7 @@ def date(match: re.Match[str]) -> str:
 
 
 def year(match: re.Match[str]) -> str:
-    noun = match.group(2)
+    noun = match.group(3)
     if noun == "года":
         case = "g"
     elif noun == "году":
@@ -167,7 +169,10 @@ def year(match: re.Match[str]) -> str:
         case = "p"
     else:
         case = "n"
-    return f"{ordinal(value(match.group(1)), case, 'm')} {noun}"
+    words = ordinal(value(match.group(2)), case, "m")
+    if match.group(1) is not None:
+        words = f"{ordinal(value(match.group(1)), case, 'm')} — {words}"
+    return f"{words} {noun}"
 
 
 def clock(match: re.Match[str]) -> str:
