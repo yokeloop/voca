@@ -1,5 +1,5 @@
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterable, AsyncIterator
 from typing import Any
 
 import pytest
@@ -28,7 +28,8 @@ def collect(
 
     async def main() -> list[llm.ChatChunk | str]:
         node = VocaAgent().llm_node(llm.ChatContext.empty(), [], ModelSettings())
-        return [item async for item in node]  # type: ignore[union-attr]
+        assert isinstance(node, AsyncIterable)
+        return [item async for item in node]
 
     return asyncio.run(main())
 
