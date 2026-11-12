@@ -11,7 +11,15 @@ def main() -> None:
     parser = argparse.ArgumentParser(prog="voca")
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("web", help="serve the page and the token endpoint")
-    parser.parse_args()
+    agent = commands.add_parser("agent", help="run the LiveKit agent worker")
+    agent.add_argument("mode", choices=["dev", "start", "console"])
+    agent.add_argument("rest", nargs=argparse.REMAINDER)
+    args = parser.parse_args()
+    if args.command == "agent":
+        from voca.app.worker import run
+
+        run(args.mode, args.rest)
+        return
     settings = Settings()
     try:
         app = create_app(settings, default_dist_dir())

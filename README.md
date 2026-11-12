@@ -4,7 +4,7 @@
 
 ## Layout
 
-`agent/` is the Python package `voca` (`voca web`), `web/` the page, `bench/` the stand measurements, `scripts/` the stand itself. The full layout, the checks, the stand variables and the download format are in [AGENTS.md](AGENTS.md).
+`agent/` is the Python package `voca` (`voca web`, `voca agent`), `web/` the page, `bench/` the stand measurements, `scripts/` the stand itself. The full layout, the checks, the stand variables and the download format are in [AGENTS.md](AGENTS.md).
 
 ## Воспроизведение с нуля
 
@@ -220,6 +220,32 @@ These subcommands change state outside the repository and need the owner's permi
 - `backend-down [--deadline 600]` — needs a temporary provider `voca-unreachable` in the profile's `config.yaml`, removed afterwards.
 
 Phase logs (requests without keys, responses, SSE events) go to `.local/bench/hermes/`. Host, Hermes profile and Traefik details live in the owner's deployment documentation.
+
+### 1.1 Agent
+
+The `agent` service is the voice agent: a LiveKit worker (`voca agent start`) that joins the room `voca` when a participant enters and talks in Russian — Silero VAD, STT on audio.cpp, the LLM on llama-server with the `delegate` tool (a stub for now), text preparation (numbers, stress, the first short fragment) and Supertonic TTS with voice F4. It needs the whole stand: LiveKit, audio.cpp ([0.2](#02-audio-stand)), llama-server ([0.3](#03-llm-stand)) and the page ([0.1](#01-repository-and-launch)).
+
+**Steps**, from the repository root:
+
+```sh
+(cd agent && uv sync --locked)
+scripts/ruaccent-setup.sh
+pnpm --dir web install --frozen-lockfile
+pnpm --dir web build
+scripts/up.sh
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8084/
+scripts/down.sh
+```
+
+`scripts/ruaccent-setup.sh` is needed once per `agent/.venv`: the agent loads ruaccent in prewarm. `scripts/up.sh` without arguments starts `livekit audio llm web agent` in that order; `agent` is up when `http://127.0.0.1:8084/` answers `200` (503 until the worker has registered with livekit-server). `scripts/down.sh` stops `agent` first.
+
+**Talking.** Open `http://127.0.0.1:8083/?device=host`, press «Подключиться» and allow the microphone. The page publishes the microphone with echo cancellation, noise suppression and auto gain, plays the agent, shows the transcript (`вы`/`агент`) and the state («слушает», «думает», «говорит»). «Отключиться» leaves the room and ends the agent's job; the next «Подключиться» gets the agent again, in a new job with a new session.
+
+**Port.** 8084 TCP, the worker's health endpoint (127.0.0.1, `VOCA_AGENT_PORT`).
+
+**Variables** (`.env.example`, defaults in [AGENTS.md](AGENTS.md#stand-variables)): `VOCA_LIVEKIT_URL`, `VOCA_AUDIO_URL`, `VOCA_LLM_URL`, `VOCA_AGENT_PORT`, `VOCA_STATE_DIR`; the agent's tuning (`VOCA_TTS_VOICE` … `VOCA_PREEMPTIVE_GENERATION`) is commented out in `.env.example`, its defaults live in `Settings`.
+
+**Events.** The agent appends to `.local/events.jsonl` (`VOCA_STATE_DIR`), one JSON object per line with `ts`, `session` (the job id), `turn` (the user's turn number), `device` and `kind`: `user_input_transcribed`, `agent_state`, `metrics`, `false_interruption`, `interruption`, `error`, `close` and one `turn` row per agent reply. A `turn` row carries `user_text`, `text`, `e2e_latency_ms`, `first_audio_ms`, `end_of_turn_delay_ms`, `transcription_delay_ms`, `stt_ms`, `llm_ttft_ms`, `first_sentence_ms`, `tts_ttfb_ms`, `tokens_in`, `ctx_size`, `cached_tokens`, `cache_hit`, `first_fragment`, `first_fragment_chars`, `prepare_ms`, `leftover_digits`, `markdown_removed`, `interrupted` and `cold`. The worker log is `.local/logs/agent.log`.
 
 ## Contributing
 

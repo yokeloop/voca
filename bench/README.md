@@ -13,7 +13,11 @@ Scripts:
   `resume`, `conflict`, `session`, `all` (the default: those five in order),
   `delegate`, `restart --phase start|verify`, `backend-down`.
 - `llm_template.py` (VOCA-4) — the first-hour checks of the LLM stand:
-  `kwargs-body`, `kwargs-live`, `tool-stream`, `tool-cycle`, `all` (the default).
+  `kwargs-body`, `kwargs-live`, `tool-stream`, `tool-cycle`, `all` (the default);
+  `agent-body` (VOCA-13) — the agent's request body (`voca.app.wiring.make_llm`
+  and the `VocaAgent` tools) sent to a fake server on loopback:
+  `thinking_budget_tokens`, `tools` with `delegate`, no `chat_template_kwargs`;
+  no llama-server needed.
 - `llm_ru_tools.py` (VOCA-4) — G3: `dialogs`, `delegate`, `all` (the default),
   `dialogs-thinking` (the twenty dialogs with thinking on, VOCA-7),
   `delegate-thinking` (the ten scenarios with thinking on).
@@ -68,8 +72,9 @@ Scripts:
 - `audio_parallel.py` (VOCA-5) — «STT does not wait for TTS» and llama-server
   decode under audio load: `--skip-llm`, `--threads-label N`, `--llm-url`.
 - `audio_stand.py` — what the audio scripts share: `openai.STT`/`openai.TTS`
-  setup, `SpeechLanguageClient` (adds `language` to `/audio/speech`), WAV
-  helpers, the server health check.
+  setup, `SpeechLanguageClient` (adds `language` to `/audio/speech`; the class
+  lives in `voca.app.wiring`, `audio_stand.py` re-exports it), WAV helpers, the
+  server health check.
 
 `scripts/up.sh llm` starts the default profile `lfm2.5-2.6b`, the agent's
 model (VOCA-9). The G3/G4 baselines of `report_g3_g4.md` were measured on

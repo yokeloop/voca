@@ -11,6 +11,7 @@ from llm_common import (
     BASE_URL,
     KWARGS,
     MARKERS,
+    OUT_DIR,
     SYSTEM_RU,
     TOOL_SCHEMAS,
     ChatResult,
@@ -21,6 +22,10 @@ from llm_common import (
     run_chat,
     write_json,
 )
+
+from voca.app.wiring import make_llm as make_agent_llm
+from voca.config import Settings
+from voca.conversation.agent import VocaAgent
 
 USER_PLAIN = "Привет! Как дела?"
 USER_TASK = "Исследуй структуру проекта mypi и пришли сводку"
@@ -129,6 +134,73 @@ async def kwargs_body(log: dict[str, Any]) -> tuple[bool, str]:
     )
 
 
+async def agent_body(log: dict[str, Any]) -> tuple[bool, str]:
+    bodies: list[dict[str, Any]] = []
+    profile = Settings().llm_profile
+
+    async def completions(request: web.Request) -> web.StreamResponse:
+        bodies.append(await request.json())
+        resp = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
+        await resp.prepare(request)
+        chunk = {
+            "id": "stub",
+            "object": "chat.completion.chunk",
+            "created": 0,
+            "model": profile,
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"role": "assistant", "content": "ок"},
+                    "finish_reason": "stop",
+                }
+            ],
+        }
+        await resp.write(f"data: {json.dumps(chunk)}\n\n".encode())
+        await resp.write(b"data: [DONE]\n\n")
+        await resp.write_eof()
+        return resp
+
+    async def models(request: web.Request) -> web.Response:
+        return web.json_response({"data": [{"id": profile}]})
+
+    app = web.Application()
+    app.router.add_post("/v1/chat/completions", completions)
+    app.router.add_get("/v1/models", models)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    port = runner.addresses[0][1]
+    try:
+        ctx = llm.ChatContext.empty()
+        ctx.add_message(role="user", content=USER_PLAIN)
+        result = await run_chat(
+            make_agent_llm(Settings(llm_url=f"http://127.0.0.1:{port}/v1")),
+            ctx,
+            VocaAgent().tools,
+        )
+    finally:
+        await runner.cleanup()
+    log["bodies"] = bodies
+    log["result"] = result_dict(result)
+    if len(bodies) != 1:
+        return False, f"{len(bodies)} запросов"
+    body = bodies[0]
+    tools = [t.get("function", {}).get("name") for t in body.get("tools") or []]
+    ok = (
+        body.get("thinking_budget_tokens") == 128
+        and "delegate" in tools
+        and "chat_template_kwargs" not in body
+        and body.get("stream") is True
+    )
+    detail = (
+        f"thinking_budget_tokens={body.get('thinking_budget_tokens')} tools={tools} "
+        f"chat_template_kwargs={'chat_template_kwargs' in body} "
+        f"stream={body.get('stream')}"
+    )
+    return ok, detail
+
+
 async def kwargs_live(log: dict[str, Any]) -> tuple[bool, str]:
     variants = {
         "base": KWARGS,
@@ -225,6 +297,7 @@ async def tool_cycle(log: dict[str, Any]) -> tuple[bool, str]:
 
 CHECKS: dict[str, Check] = {
     "kwargs-body": kwargs_body,
+    "agent-body": agent_body,
     "kwargs-live": kwargs_live,
     "tool-stream": tool_stream,
     "tool-cycle": tool_cycle,
@@ -245,7 +318,14 @@ async def run(names: list[str]) -> int:
         log[name] = entry
         failed = failed or not ok
         print(f"{entry['status']} {name} {detail}", flush=True)
-    write_json("template", log)
+    agent_log = log.pop("agent-body", None)
+    if agent_log is not None:
+        OUT_DIR.mkdir(parents=True, exist_ok=True)
+        (OUT_DIR / "agent-body.json").write_text(
+            json.dumps(agent_log, ensure_ascii=False, indent=2) + "\n"
+        )
+    if log:
+        write_json("template", log)
     return 1 if failed else 0
 
 
