@@ -8,6 +8,10 @@ Hermes. This file is the working contract for agents and contributors.
 
 - `agent/` — the Python package `voca` (uv project, Python 3.13). `voca web`
   serves the page, `GET /healthz` and `POST /api/token`.
+  `agent/src/voca/speech/` prepares text before TTS: the tool-call markup
+  filter, LaTeX and tables, numbers as words, stress and the first fragment.
+  `markup`, `numbers` and `prepare` are pure modules, which
+  `tests/test_import_boundaries.py` checks.
 - `web/` — the page (Vite + TypeScript, `livekit-client`); `pnpm --dir web build`
   writes `web/dist/`, which `voca web` serves.
 - `bench/` — stand scripts and their reports; they run in the `agent/`
