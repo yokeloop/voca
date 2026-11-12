@@ -16,6 +16,7 @@ from livekit.agents.voice import (
     ErrorEvent,
     MetricsCollectedEvent,
     UserInputTranscribedEvent,
+    UserStateChangedEvent,
 )
 
 from voca.speech.prepare import Prepared
@@ -118,6 +119,8 @@ def turn_row(
         "leftover_digits": fragments.leftover_digits,
         "text": text,
         "interrupted": assistant.interrupted,
+        "started_speaking_at": reply.get("started_speaking_at"),
+        "stopped_speaking_at": reply.get("stopped_speaking_at"),
         "markdown_removed": markdown_markers(text),
         "cold": cold,
     }
@@ -135,6 +138,7 @@ class TurnTracker:
         session.on("user_input_transcribed", self.on_transcribed)
         session.on("conversation_item_added", self.on_item)
         session.on("agent_state_changed", self.on_state)
+        session.on("user_state_changed", self.on_user_state)
         session.on("agent_false_interruption", self.on_false_interruption)
         session.on("metrics_collected", self.on_metrics)
         session.on("error", self.on_error)
@@ -173,6 +177,9 @@ class TurnTracker:
 
     def on_state(self, ev: AgentStateChangedEvent) -> None:
         self.log.write("agent_state", old=ev.old_state, new=ev.new_state)
+
+    def on_user_state(self, ev: UserStateChangedEvent) -> None:
+        self.log.write("user_state", old=ev.old_state, new=ev.new_state)
 
     def on_false_interruption(self, ev: AgentFalseInterruptionEvent) -> None:
         self.log.write("false_interruption", resumed=ev.resumed)
