@@ -4,7 +4,6 @@ import sys
 from aiohttp import web
 
 from voca.app.web import create_app, default_dist_dir
-from voca.app.worker import run
 from voca.config import Settings
 
 
@@ -17,6 +16,8 @@ def main() -> None:
     agent.add_argument("rest", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     if args.command == "agent":
+        from voca.app.worker import run
+
         run(args.mode, args.rest)
         return
     settings = Settings()
