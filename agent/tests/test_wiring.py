@@ -11,7 +11,12 @@ from aiohttp.test_utils import TestServer
 from livekit.agents import tts
 from livekit.plugins import silero
 
-from voca.app.wiring import TTS_TEXT_TRANSFORMS, build_session, make_tts
+from voca.app.wiring import (
+    MAX_UNRECOVERABLE_ERRORS,
+    TTS_TEXT_TRANSFORMS,
+    build_session,
+    make_tts,
+)
 from voca.app.worker import server_options
 from voca.config import Settings
 from voca.speech.prepare import Prepared
@@ -66,6 +71,14 @@ def test_build_session_options() -> None:
             assert session.tts is not None
             assert session.tts.capabilities.streaming is True
             assert isinstance(session.tts, tts.StreamAdapter)
+            conn = session.conn_options
+            assert conn.llm_conn_options.max_retry == 0
+            assert conn.stt_conn_options.max_retry == 1
+            assert conn.tts_conn_options.max_retry == 1
+            assert conn.llm_conn_options.timeout == 5.0
+            assert conn.stt_conn_options.timeout == 5.0
+            assert conn.tts_conn_options.timeout == 5.0
+            assert conn.max_unrecoverable_errors == MAX_UNRECOVERABLE_ERRORS
             await session.aclose()
 
     asyncio.run(main())
