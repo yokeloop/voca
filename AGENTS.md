@@ -12,11 +12,17 @@ Hermes. This file is the working contract for agents and contributors.
   (prewarm, entrypoint, `WorkerOptions`), `app/wiring.py` (the plugins,
   `PreparedTTS`, `build_session`, `SpeechLanguageClient`), `conversation/`
   (`VocaAgent`: the tool-call markup filter in `llm_node`, the `delegate`
-  stub, the constant instructions), `telemetry/` (`.local/events.jsonl`).
+  stub, instructions and context trim in `on_user_turn_completed`, failures
+  spoken aloud; `instructions.py`: `InstructionLoader` with the last valid
+  set; `context.py`: `trim_chat_ctx`), `clientio/` (the `voca.cards`
+  channel), `telemetry/` (`.local/events.jsonl`).
   `agent/src/voca/speech/` prepares text before TTS: the tool-call markup
   filter, LaTeX and tables, numbers as words, stress and the first fragment.
-  `markup`, `numbers` and `prepare` are pure modules, which
+  `markup`, `numbers`, `prepare`, `conversation/context` and
+  `conversation/instructions` are pure modules, which
   `tests/test_import_boundaries.py` checks.
+- `instructions.example/` — a sample `SOUL.md`, `user.md` and `agent.md`; the
+  real files live outside the repository, in `VOCA_INSTRUCTIONS_DIR`.
 - `web/` — the page (Vite + TypeScript, `livekit-client`); `pnpm --dir web build`
   writes `web/dist/`, which `voca web` serves.
 - `bench/` — stand scripts and their reports; they run in the `agent/`
@@ -83,9 +89,12 @@ stand's downloads; it is a stand check, not a CI check.
 The agent's pipeline settings (`VOCA_TTS_VOICE`, `VOCA_LLM_THINKING_BUDGET`,
 `VOCA_VAD_MIN_SILENCE`, `VOCA_INTERRUPTION_MIN_DURATION`,
 `VOCA_INTERRUPTION_MIN_WORDS`, `VOCA_AEC_WARMUP`, `VOCA_ENDPOINTING_MIN_DELAY`,
-`VOCA_PREEMPTIVE_GENERATION`) have their defaults in `Settings`
-(`agent/src/voca/config.py`); `scripts/env.sh` does not set them, and
-`.env.example` lists them commented out. `VOCA_AEC_WARMUP` covers only the
+`VOCA_PREEMPTIVE_GENERATION`, `VOCA_INSTRUCTIONS_DIR` — default
+`~/.voca/instructions`, `VOCA_CTX_TRIM_HIGH` — 0.60, `VOCA_CTX_TRIM_LOW` —
+0.40) have their defaults in `Settings` (`agent/src/voca/config.py`);
+`scripts/env.sh` does not set them, and `.env.example` lists them commented
+out. The two trim values are shares of `-c 16384` (`LLM_CONTEXT_TOKENS` in
+`config.py`), estimated as `len(text) // 3`, with `LOW < HIGH`. `VOCA_AEC_WARMUP` covers only the
 first N seconds from the start of the session's first agent reply; later
 replies are interruptible at once.
 
@@ -183,6 +192,19 @@ builds it in `createJoinRequestConnectionParams`: a `livekit.JoinRequest` with
 `livekit.WrappedJoinRequest` (`compression` GZIP), URL-safe base64. The protobuf
 classes come from `livekit-api` in the `agent/` environment.
 
+## Client channel
+
+- The agent sends a JSON `state` message on the text stream topic
+  `voca.cards`: `{"type": "state", "instructions_sha256",
+  "instructions_source": "fresh"|"last_valid", "instructions_error":
+  string|null, "components": {"stt", "llm", "tts": "ok"|"down"}}`.
+- The message goes out at the start of the session, when a participant
+  connects and on every change.
+- A component is `down` after an unrecoverable error and `ok` after the first
+  metric of that stage.
+- `hermes` is not sent in E1; `instructions_error` is an addition to
+  `derive:eb1id854:§5`.
+
 ## Ports
 
 | Port | Service |
@@ -206,6 +228,7 @@ Further deviations from `derive:eb1id854` (E1 research, VOCA-11):
   `LIVEKIT_*`; `ws_url` is passed to the worker explicitly.
 - О7: the agent has a `delegate` stub that raises
   `ToolError("Делегирование сейчас недоступно")`, not «1.1 without delegate».
+- О11: a reconnecting client sees only new replies, as in derive:eb1id854:§6.6, not the current transcript of derive:8kki4ynb:§7.
 
 ## References
 
