@@ -1,7 +1,9 @@
 import argparse
 import asyncio
 import json
+import tempfile
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -24,8 +26,11 @@ from llm_common import (
 )
 
 from voca.app.wiring import make_llm as make_agent_llm
+from voca.clientio.cards import CardState
 from voca.config import Settings
 from voca.conversation.agent import VocaAgent
+from voca.conversation.instructions import InstructionLoader
+from voca.telemetry.jsonl import JsonlLog
 
 USER_PLAIN = "Привет! Как дела?"
 USER_TASK = "Исследуй структуру проекта mypi и пришли сводку"
@@ -174,11 +179,26 @@ async def agent_body(log: dict[str, Any]) -> tuple[bool, str]:
     try:
         ctx = llm.ChatContext.empty()
         ctx.add_message(role="user", content=USER_PLAIN)
-        result = await run_chat(
-            make_agent_llm(Settings(llm_url=f"http://127.0.0.1:{port}/v1")),
-            ctx,
-            VocaAgent().tools,
+        loader = InstructionLoader(
+            Path(__file__).resolve().parents[1] / "instructions.example"
         )
+        instructions = loader.load()
+        with tempfile.TemporaryDirectory() as state:
+            events = JsonlLog(Path(state) / "events.jsonl", session="bench")
+            agent = VocaAgent(
+                loader=loader,
+                instructions=instructions,
+                log=events,
+                cards=CardState(instructions),
+                ctx_high=9830,
+                ctx_low=6553,
+            )
+            result = await run_chat(
+                make_agent_llm(Settings(llm_url=f"http://127.0.0.1:{port}/v1")),
+                ctx,
+                agent.tools,
+            )
+            events.close()
     finally:
         await runner.cleanup()
     log["bodies"] = bodies

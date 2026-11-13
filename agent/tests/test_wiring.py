@@ -17,7 +17,7 @@ from voca.app.wiring import (
     build_session,
     make_tts,
 )
-from voca.app.worker import server_options
+from voca.app.worker import run, server_options
 from voca.config import Settings
 from voca.speech.prepare import Prepared
 
@@ -128,3 +128,20 @@ def test_server_options() -> None:
     assert options.ws_url == "ws://127.0.0.1:7880"
     assert options.initialize_process_timeout == 60.0
     assert options.drain_timeout == 5
+
+
+def test_run_stops_without_instructions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def run_app(options: Any) -> None:
+        raise AssertionError("run_app called")
+
+    monkeypatch.setenv("VOCA_INSTRUCTIONS_DIR", str(tmp_path))
+    monkeypatch.setattr("voca.app.worker.cli.run_app", run_app)
+    monkeypatch.setattr("sys.argv", ["voca"])
+    with pytest.raises(SystemExit) as stopped:
+        run("start", [])
+    assert stopped.value.code == 1
+    err = capsys.readouterr().err
+    assert "инструкции не загружены" in err
+    assert str(tmp_path / "SOUL.md") in err
