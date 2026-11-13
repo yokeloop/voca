@@ -10,6 +10,7 @@ from livekit.plugins import silero
 
 from voca.app.wiring import build_session
 from voca.clientio.cards import CardState
+from voca.clientio.metrics import bind_metrics
 from voca.config import Settings
 from voca.conversation.agent import VocaAgent
 from voca.conversation.instructions import InstructionError, InstructionLoader
@@ -38,6 +39,7 @@ async def entrypoint(ctx: JobContext) -> None:
     )
     cards = CardState(instructions)
     cards.bind(ctx.room)
+    bind_metrics(ctx.room, log.write)
     agent = VocaAgent(
         loader=loader,
         instructions=instructions,
