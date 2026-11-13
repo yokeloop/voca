@@ -143,3 +143,28 @@ def test_render() -> None:
     lines = table.splitlines()
     assert any(line.startswith("| base | host | warm | 3 |") for line in lines)
     assert "—" in table
+
+
+def test_calibrate() -> None:
+    mic = [-80.0] * 1000
+    for i in range(100, 300):
+        mic[i] = -20.0
+    monitor = [-120.0] * 420 + [-20.0] * 580
+    [item] = report.calibrate(mic, monitor, [(10.0, 400, 900.0)])
+    assert item.turn_ts == 10.0
+    assert item.mic_end_s == pytest.approx(3.00, abs=0.010)
+    assert item.audio_start_s == pytest.approx(4.20, abs=0.010)
+    assert item.client_ms == pytest.approx(1200, abs=10)
+    assert item.e2e_ms == 900.0
+    assert item.transport_ms == pytest.approx(300, abs=10)
+    assert item.valid
+
+
+def test_calibrate_no_monitor() -> None:
+    mic = [-80.0] * 1000
+    for i in range(100, 300):
+        mic[i] = -20.0
+    monitor = [-120.0] * 1000
+    [item] = report.calibrate(mic, monitor, [(10.0, 400, 900.0)])
+    assert not item.valid
+    assert item.note == "нет звука monitor"

@@ -1,6 +1,7 @@
 import json
 import math
 import statistics
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,14 @@ LINKS = (
 )
 DECOMPOSITION = ("end_of_turn_delay_ms", "llm_ttft_ms", "tts_ttfb_ms")
 PHASES = ("cold", "warm", "all")
+FRAME_S = 0.010
+MONITOR_SILENCE_DB = -60.0
+RUN_FRAMES = 3
+MIC_MARGIN_DB = 20.0
+MIC_FLOOR_PERCENTILE = 0.10
+ANCHOR_BEFORE_S = 0.5
+ANCHOR_AFTER_S = 1.5
+SPEECH_BACK_S = 10.0
 HEADER = (
     "вариант",
     "устройство",
@@ -42,6 +51,18 @@ HEADER = (
     "медиана, симв.",
     "leftover_digits",
 )
+
+
+@dataclass
+class Calib:
+    turn_ts: float
+    mic_end_s: float | None
+    audio_start_s: float | None
+    client_ms: float | None
+    e2e_ms: float | None
+    transport_ms: float | None
+    valid: bool
+    note: str
 
 
 def load_rows(
@@ -165,3 +186,101 @@ def render(groups: list[dict[str, Any]]) -> str:
         ]
         lines.append("| " + " | ".join(cells) + " |")
     return "\n".join(lines)
+
+
+def first_sound(monitor: list[float], start: int, end: int) -> int | None:
+    run = 0
+    for i in range(max(start, 0), min(end, len(monitor))):
+        if monitor[i] > MONITOR_SILENCE_DB:
+            run += 1
+            if run == RUN_FRAMES:
+                return i - RUN_FRAMES + 1
+        else:
+            run = 0
+    return None
+
+
+def speech_end(
+    mic: list[float], floor_db: float, before: int, start: int
+) -> int | None:
+    end = None
+    run = 0
+    for i in range(max(start, 0), min(before, len(mic))):
+        if mic[i] > floor_db + MIC_MARGIN_DB:
+            run += 1
+            continue
+        if run >= RUN_FRAMES:
+            end = i
+        run = 0
+    if run >= RUN_FRAMES:
+        end = min(before, len(mic))
+    return end
+
+
+def calibrate(
+    mic: list[float],
+    monitor: list[float],
+    anchors: list[tuple[float, int, float | None]],
+) -> list[Calib]:
+    floor_db = percentile(mic, MIC_FLOOR_PERCENTILE)
+    before = round(ANCHOR_BEFORE_S / FRAME_S)
+    after = round(ANCHOR_AFTER_S / FRAME_S)
+    back = round(SPEECH_BACK_S / FRAME_S)
+    items = []
+    for turn_ts, anchor, e2e_ms in anchors:
+        audio_start = first_sound(monitor, anchor - before, anchor + after)
+        if audio_start is None:
+            items.append(
+                Calib(
+                    turn_ts, None, None, None, e2e_ms, None, False, "нет звука monitor"
+                )
+            )
+            continue
+        audio_start_s = audio_start * FRAME_S
+        mic_end = (
+            None
+            if floor_db is None
+            else speech_end(mic, floor_db, audio_start, audio_start - back)
+        )
+        if mic_end is None:
+            items.append(
+                Calib(
+                    turn_ts,
+                    None,
+                    audio_start_s,
+                    None,
+                    e2e_ms,
+                    None,
+                    False,
+                    "нет речи на микрофоне",
+                )
+            )
+            continue
+        client_ms = (audio_start - mic_end) * FRAME_S * 1000
+        if e2e_ms is None:
+            items.append(
+                Calib(
+                    turn_ts,
+                    mic_end * FRAME_S,
+                    audio_start_s,
+                    client_ms,
+                    None,
+                    None,
+                    False,
+                    "нет e2e",
+                )
+            )
+            continue
+        items.append(
+            Calib(
+                turn_ts,
+                mic_end * FRAME_S,
+                audio_start_s,
+                client_ms,
+                e2e_ms,
+                client_ms - e2e_ms,
+                True,
+                "",
+            )
+        )
+    return items
