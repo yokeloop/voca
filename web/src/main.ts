@@ -2,6 +2,7 @@ import { ConnectionState, type Room } from "livekit-client";
 import { connect, deviceName, disconnect, type Handlers } from "./room";
 import {
   render,
+  setCards,
   setConnected,
   setState,
   stateLabel,
@@ -17,6 +18,7 @@ if (app) {
   const update = () => setState(stateLabel(connection, agent));
   const handlers: Handlers = {
     transcript: upsertSegment,
+    cards: setCards,
     agentState(state) {
       agent = state;
       update();
