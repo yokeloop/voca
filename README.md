@@ -232,6 +232,7 @@ The `agent` service is the voice agent: a LiveKit worker (`voca agent start`) th
 scripts/ruaccent-setup.sh
 pnpm --dir web install --frozen-lockfile
 pnpm --dir web build
+mkdir -p ~/.voca/instructions && cp instructions.example/*.md ~/.voca/instructions/
 scripts/up.sh
 curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8084/
 scripts/down.sh
@@ -239,15 +240,34 @@ scripts/down.sh
 
 `scripts/ruaccent-setup.sh` is needed once per `agent/.venv`: the agent loads ruaccent in prewarm. `scripts/up.sh` without arguments starts `livekit audio llm web agent` in that order; `agent` is up when `http://127.0.0.1:8084/` answers `200` (503 until the worker has registered with livekit-server). `scripts/down.sh` stops `agent` first.
 
-**Talking.** Open `http://127.0.0.1:8083/?device=host`, press «Подключиться» and allow the microphone. The page publishes the microphone with echo cancellation, noise suppression and auto gain, plays the agent, shows the transcript (`вы`/`агент`) and the state («слушает», «думает», «говорит»). «Отключиться» leaves the room and ends the agent's job; the next «Подключиться» gets the agent again, in a new job with a new session.
+**Talking.** Open `http://127.0.0.1:8083/?device=host`, press «Подключиться» and allow the microphone. The page publishes the microphone with echo cancellation, noise suppression and auto gain, plays the agent, shows the transcript (`вы`/`агент`) and the state («слушает», «думает», «говорит»). «Отключиться» leaves the room. The agent stays in it until livekit-server closes the empty room (`departure_timeout`, 20 s): «Подключиться» within that window returns to the same job and conversation and shows only new replies; later the room closes and the next «Подключиться» gets a new job with a new session.
 
 **Port.** 8084 TCP, the worker's health endpoint (127.0.0.1, `VOCA_AGENT_PORT`).
 
 **Variables** (`.env.example`, defaults in [AGENTS.md](AGENTS.md#stand-variables)): `VOCA_LIVEKIT_URL`, `VOCA_AUDIO_URL`, `VOCA_LLM_URL`, `VOCA_AGENT_PORT`, `VOCA_STATE_DIR`; the agent's tuning (`VOCA_TTS_VOICE` … `VOCA_PREEMPTIVE_GENERATION`) is commented out in `.env.example`, its defaults live in `Settings`.
 
-**Events.** The agent appends to `.local/events.jsonl` (`VOCA_STATE_DIR`), one JSON object per line with `ts`, `session` (the job id), `turn` (the user's turn number), `device` and `kind`: `user_input_transcribed`, `agent_state`, `user_state`, `metrics`, `false_interruption`, `interruption`, `error`, `close` and one `turn` row per agent reply. A `turn` row carries `user_text`, `text`, `e2e_latency_ms`, `first_audio_ms`, `end_of_turn_delay_ms`, `transcription_delay_ms`, `stt_ms`, `llm_ttft_ms`, `first_sentence_ms`, `tts_ttfb_ms`, `tokens_in`, `ctx_size`, `cached_tokens`, `cache_hit`, `first_fragment`, `first_fragment_chars`, `prepare_ms`, `leftover_digits`, `markdown_removed`, `interrupted`, `started_speaking_at`, `stopped_speaking_at` and `cold`. The worker log is `.local/logs/agent.log`.
+**Events.** The agent appends to `.local/events.jsonl` (`VOCA_STATE_DIR`), one JSON object per line with `ts`, `session` (the job id), `turn` (the user's turn number), `device` and `kind`: `user_input_transcribed`, `agent_state`, `user_state`, `metrics`, `false_interruption`, `interruption`, `error` (`component`, `recoverable`, `message`), `instructions`, `context_trimmed`, `close` and one `turn` row per agent reply. A `turn` row carries `user_text`, `text`, `e2e_latency_ms`, `first_audio_ms`, `end_of_turn_delay_ms`, `transcription_delay_ms`, `stt_ms`, `llm_ttft_ms`, `first_sentence_ms`, `tts_ttfb_ms`, `tokens_in`, `ctx_size`, `cached_tokens`, `cache_hit`, `first_fragment`, `first_fragment_chars`, `prepare_ms`, `leftover_digits`, `markdown_removed`, `interrupted`, `started_speaking_at`, `stopped_speaking_at` and `cold`. The worker log is `.local/logs/agent.log`.
 
 **G5 (barge-in on speakers).** Needs the speakers as the default output, the host's microphone and PipeWire with `pw-record`, `pw-link` and `pactl`. Per variant: `scripts/down.sh agent`, `VOCA_INTERRUPTION_MIN_DURATION=<x> VOCA_AEC_WARMUP=<y> scripts/up.sh agent`, then «Отключиться» and «Подключиться» on the page; `uv run --project agent python bench/barge_in.py record --run <run>` runs for the whole run, then `analyze`, `false` and `history` (`bench/README.md`). G5 is prepared but not run: the stand has no speakers, only a headset (the engineer's decision of 2026-11-13: «Отложить G5 до колонок»); the thresholds stay the `Settings` defaults (`VOCA_INTERRUPTION_MIN_DURATION` 0.5, `VOCA_INTERRUPTION_MIN_WORDS` 0, `VOCA_AEC_WARMUP` 3.0). The status, the method and the runbook for the future run are in [bench/report_g5.md](bench/report_g5.md).
+
+### 1.2 Product pipeline
+
+**Instructions.** The agent reads `SOUL.md`, `user.md` and `agent.md` from `VOCA_INSTRUCTIONS_DIR` (default `~/.voca/instructions`, a copy of `instructions.example/`) and joins them with an empty line. The set is read at start and before every turn. A set is invalid when a file is missing, is not UTF-8 or is empty. At start an invalid set stops the agent (`scripts/up.sh agent` prints the line `инструкции не загружены`). Later the agent keeps the last valid set: an `instructions` row with `source` `last_valid` and `error` in JSONL, «инструкции: прошлый рабочий набор — …» on the page. There is no length limit.
+
+**Context.** Above `VOCA_CTX_TRIM_HIGH · 16384` estimated tokens (`len // 3`) the oldest turns are dropped until `VOCA_CTX_TRIM_LOW · 16384` remain; the system message, call–result pairs and the newest turn are kept; a `context_trimmed` row (`removed`, `estimate_before`, `after`) is written; the next turn pays a full prefill once.
+
+**Failures.** What the user hears and sees:
+
+- STT — «не расслышал»; LLM — «не могу ответить сейчас»; TTS — no sound, only the indicator `TTS: down`; while TTS is `down` no phrases are spoken;
+- a JSONL `error` row (`component`, `recoverable`, `message`);
+- retries: STT and TTS 1, LLM 0, connection timeout 5 s;
+- a component returns to `ok` after its first successful call;
+- a series of failures does not close the session;
+- audio.cpp serves both STT and TTS, so `scripts/down.sh audio` takes both down.
+
+**Page.** The indicator `STT · LLM · TTS · инструкции`, the error line, the `voca.cards` channel ([AGENTS.md](AGENTS.md#client-channel)). After a disconnect the user did not ask for (a livekit restart, the network) the page reconnects by itself: after 1, 2, 4, 8, then every 15 s, until «Отключиться» is pressed. On load the page waits for «Подключиться».
+
+**Events.** New `kind`s: `instructions`, `context_trimmed`; new fields of `error`.
 
 ## Contributing
 
