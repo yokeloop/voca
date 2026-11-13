@@ -85,9 +85,11 @@ Scripts:
   environment), `summary --run NAME … [--limit N]` (p50/p95 of
   `e2e_latency_ms` and of the links by variant × device × cold/warm, the
   decomposition `eou + llm_ttft + tts_ttfb`, the Markdown share, the median
-  reply length, `leftover_digits`), `calibrate --audio-run NAME` (end of
-  speech on the microphone → first sound on the monitor, from a `barge_in.py
-  record` recording); the corpus is `bench/corpus/g6_turns.txt`.
+  reply length, `leftover_digits`, and `client_e2e_ms` from the `client`
+  rows), `calibrate --audio-run NAME` (end of speech on the microphone →
+  first sound on the monitor, from a `barge_in.py record` recording; not used
+  by G6; the page measures `client_e2e_ms`); the corpus is
+  `bench/corpus/g6_turns.txt`.
 - `audio_stand.py` — what the audio scripts share: `openai.STT`/`openai.TTS`
   setup, `SpeechLanguageClient` (adds `language` to `/audio/speech`; the class
   lives in `voca.app.wiring`, `audio_stand.py` re-exports it), WAV helpers, the

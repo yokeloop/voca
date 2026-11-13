@@ -204,6 +204,15 @@ classes come from `livekit-api` in the `agent/` environment.
   metric of that stage.
 - `hermes` is not sent in E1; `instructions_error` is an addition to
   `derive:eb1id854:§5`.
+- The page sends the agent JSON on the text stream topic `voca.metrics`:
+  `{"type": "client_e2e", "seq", "client_e2e_ms", "speech_ms"}`, one message
+  per pair «end of speech → first agent sound».
+- End of speech is taken from the microphone track level: 15 dB above the
+  noise floor (the 10th percentile over 3 s), at least 150 ms long, followed by
+  300 ms of silence. The first sound is the agent's remote track above
+  −50 dBFS for two 10 ms ticks after at least 300 ms of silence.
+- The agent writes a JSONL `client` row; an invalid message only logs a
+  warning.
 
 ## Ports
 
