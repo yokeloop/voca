@@ -2,9 +2,10 @@ import json
 from pathlib import Path
 
 import pytest
-from livekit.agents.llm import ChatMessage
+from livekit.agents import APIConnectionError
+from livekit.agents.llm import ChatMessage, LLMError
 from livekit.agents.metrics import LLMMetrics
-from livekit.agents.voice import UserStateChangedEvent
+from livekit.agents.voice import ErrorEvent, UserStateChangedEvent
 
 from voca.speech.prepare import Prepared
 from voca.telemetry.jsonl import Fragments, JsonlLog, TurnTracker, turn_row
@@ -110,6 +111,23 @@ def test_tracker_user_state(tmp_path: Path) -> None:
     assert row["kind"] == "user_state"
     assert row["old"] == "listening"
     assert row["new"] == "speaking"
+
+
+def test_tracker_error(tmp_path: Path) -> None:
+    path = tmp_path / "events.jsonl"
+    log = JsonlLog(path, session="job-1")
+    error = LLMError(
+        timestamp=0.0, label="llm", error=APIConnectionError(), recoverable=False
+    )
+    TurnTracker(log).on_error(ErrorEvent(error=error, source=None))
+    log.close()
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    row = json.loads(lines[0])
+    assert row["kind"] == "error"
+    assert row["component"] == "llm"
+    assert row["recoverable"] is False
+    assert row["message"]
 
 
 def test_jsonl_log(tmp_path: Path) -> None:

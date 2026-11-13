@@ -1,6 +1,7 @@
 import {
   type ConnectionState,
   createLocalAudioTrack,
+  type DisconnectReason,
   type Participant,
   Room,
   RoomEvent,
@@ -18,10 +19,23 @@ export interface Transcript {
   final: boolean;
 }
 
+export interface CardsState {
+  instructions_sha256: string;
+  instructions_source: "fresh" | "last_valid";
+  instructions_error: string | null;
+  components: {
+    stt: "ok" | "down";
+    llm: "ok" | "down";
+    tts: "ok" | "down";
+  };
+}
+
 export interface Handlers {
   transcript(transcript: Transcript): void;
+  cards(state: CardsState): void;
   agentState(state: string | undefined): void;
   connection(state: ConnectionState): void;
+  disconnected(reason: DisconnectReason | undefined): void;
 }
 
 function randomDevice(): string {
@@ -91,6 +105,16 @@ export async function connect(
       });
     },
   );
+  room.registerTextStreamHandler("voca.cards", async (reader) => {
+    try {
+      const message = JSON.parse(await reader.readAll());
+      if (message.type === "state") {
+        handlers.cards(message as CardsState);
+      }
+    } catch (error) {
+      console.warn("voca.cards", error);
+    }
+  });
   room.on(RoomEvent.TrackSubscribed, (track) => {
     if (track.kind === Track.Kind.Audio) {
       document.body.append(track.attach());
@@ -104,6 +128,9 @@ export async function connect(
   });
   room.on(RoomEvent.ConnectionStateChanged, (state) => {
     handlers.connection(state);
+  });
+  room.on(RoomEvent.Disconnected, (reason) => {
+    handlers.disconnected(reason);
   });
   await room.connect(url, token);
   try {

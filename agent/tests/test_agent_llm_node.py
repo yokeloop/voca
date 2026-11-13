@@ -1,14 +1,32 @@
 import asyncio
 from collections.abc import AsyncIterable, AsyncIterator
+from pathlib import Path
 from typing import Any
 
 import pytest
 from livekit.agents import ToolError, llm
 from livekit.agents.voice import Agent, ModelSettings
 
+from voca.clientio.cards import CardState
 from voca.conversation.agent import VocaAgent
+from voca.conversation.instructions import InstructionLoader
+from voca.telemetry.jsonl import JsonlLog
 
+EXAMPLE = Path(__file__).resolve().parents[2] / "instructions.example"
 USAGE = llm.CompletionUsage(completion_tokens=3, prompt_tokens=900, total_tokens=903)
+
+
+def make_agent(tmp_path: Path) -> VocaAgent:
+    loader = InstructionLoader(EXAMPLE)
+    instructions = loader.load()
+    return VocaAgent(
+        loader=loader,
+        instructions=instructions,
+        log=JsonlLog(tmp_path / "events.jsonl", session="t"),
+        cards=CardState(instructions),
+        ctx_high=9830,
+        ctx_low=6553,
+    )
 
 
 def content_chunk(text: str) -> llm.ChatChunk:
@@ -16,7 +34,9 @@ def content_chunk(text: str) -> llm.ChatChunk:
 
 
 def collect(
-    monkeypatch: pytest.MonkeyPatch, items: list[llm.ChatChunk | str]
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    items: list[llm.ChatChunk | str],
 ) -> list[llm.ChatChunk | str]:
     async def fake(
         agent: Agent, chat_ctx: Any, tools: Any, model_settings: Any
@@ -27,7 +47,9 @@ def collect(
     monkeypatch.setattr(Agent.default, "llm_node", fake)
 
     async def main() -> list[llm.ChatChunk | str]:
-        node = VocaAgent().llm_node(llm.ChatContext.empty(), [], ModelSettings())
+        node = make_agent(tmp_path).llm_node(
+            llm.ChatContext.empty(), [], ModelSettings()
+        )
         assert isinstance(node, AsyncIterable)
         return [item async for item in node]
 
@@ -44,10 +66,13 @@ def text_of(items: list[Any]) -> str:
     return "".join(parts)
 
 
-def test_tool_call_markup_is_removed(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_tool_call_markup_is_removed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     usage_chunk = llm.ChatChunk(id="c", usage=USAGE)
     out = collect(
         monkeypatch,
+        tmp_path,
         [
             content_chunk("Сейчас <|tool_ca"),
             content_chunk('ll_start|>[delegate(task="x")]<|tool_call_'),
@@ -60,17 +85,19 @@ def test_tool_call_markup_is_removed(monkeypatch: pytest.MonkeyPatch) -> None:
     assert out[-1] is usage_chunk
 
 
-def test_cut_stream_tail(monkeypatch: pytest.MonkeyPatch) -> None:
-    out = collect(monkeypatch, [content_chunk("Готово <|tool_c")])
+def test_cut_stream_tail(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    out = collect(monkeypatch, tmp_path, [content_chunk("Готово <|tool_c")])
     assert text_of(out) == "Готово <|tool_c"
     out = collect(
-        monkeypatch, [content_chunk("Готово <|tool_call_start|>[delegate(task=")]
+        monkeypatch,
+        tmp_path,
+        [content_chunk("Готово <|tool_call_start|>[delegate(task=")],
     )
     assert text_of(out) == "Готово "
 
 
-def test_delegate_tool_raises() -> None:
-    agent = VocaAgent()
+def test_delegate_tool_raises(tmp_path: Path) -> None:
+    agent = make_agent(tmp_path)
     names = [tool.id for tool in agent.tools if isinstance(tool, llm.FunctionTool)]
     assert "delegate" in names
     with pytest.raises(ToolError, match="Делегирование сейчас недоступно"):

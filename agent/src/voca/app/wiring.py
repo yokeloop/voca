@@ -13,7 +13,7 @@ from livekit.agents import (
     utils,
     vad,
 )
-from livekit.agents.voice import AgentSession
+from livekit.agents.voice import AgentSession, SessionConnectOptions
 from livekit.agents.voice.transcription.text_transforms import TextTransforms
 from livekit.plugins import openai
 from openai._models import FinalRequestOptions
@@ -25,6 +25,9 @@ from voca.speech.prepare import Prepared, prepare
 from voca.speech.stress import Stress
 
 OnPrepared = Callable[[str, Prepared, float], None]
+
+# the framework closes the session after this many consecutive component failures
+MAX_UNRECOVERABLE_ERRORS = 1_000_000
 
 TTS_TEXT_TRANSFORMS: list[TextTransforms] = [
     "filter_markdown",
@@ -171,6 +174,12 @@ def build_session(
         llm=make_llm(settings),
         tts=make_tts(settings, stress, executor, on_prepared),
         tts_text_transforms=TTS_TEXT_TRANSFORMS,
+        conn_options=SessionConnectOptions(
+            stt_conn_options=APIConnectOptions(max_retry=1, timeout=5.0),
+            llm_conn_options=APIConnectOptions(max_retry=0, timeout=5.0),
+            tts_conn_options=APIConnectOptions(max_retry=1, timeout=5.0),
+            max_unrecoverable_errors=MAX_UNRECOVERABLE_ERRORS,
+        ),
         aec_warmup_duration=settings.aec_warmup,
         turn_handling={
             "turn_detection": "vad",

@@ -1,7 +1,11 @@
 from pathlib import Path
+from typing import Self
 
-from pydantic import Field
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# equal to -c in scripts/llama.sh
+LLM_CONTEXT_TOKENS = 16384
 
 
 def default_state_dir() -> Path:
@@ -30,3 +34,23 @@ class Settings(BaseSettings):
     preemptive_generation: bool = False
     agent_port: int = 8084
     state_dir: Path = Field(default_factory=default_state_dir)
+    instructions_dir: Path = Path("~/.voca/instructions")
+    ctx_trim_high: float = 0.60
+    ctx_trim_low: float = 0.40
+
+    @field_validator("instructions_dir")
+    @classmethod
+    def expand_instructions_dir(cls, value: Path) -> Path:
+        return value.expanduser()
+
+    @model_validator(mode="after")
+    def check_trim(self) -> Self:
+        if not 0 < self.ctx_trim_low < self.ctx_trim_high < 1:
+            raise ValueError("VOCA_CTX_TRIM_LOW < VOCA_CTX_TRIM_HIGH, both in (0, 1)")
+        return self
+
+    def ctx_high_tokens(self) -> int:
+        return int(self.ctx_trim_high * LLM_CONTEXT_TOKENS)
+
+    def ctx_low_tokens(self) -> int:
+        return int(self.ctx_trim_low * LLM_CONTEXT_TOKENS)
