@@ -7,10 +7,12 @@ import {
   RoomEvent,
   Track,
 } from "livekit-client";
+import { ClientTiming } from "./timing";
 
 const DEVICE_RE = /^[a-z0-9-]{1,32}$/;
 const DEVICE_KEY = "voca-device";
 const AGENT_STATE = "lk.agent.state";
+const METRICS_TOPIC = "voca.metrics";
 
 export interface Transcript {
   segment: string;
@@ -61,17 +63,21 @@ export function deviceName(): string {
   return device;
 }
 
-function reportAgent(participant: Participant, handlers: Handlers): void {
+function reportAgent(
+  participant: Participant,
+  handlers: Handlers,
+  onState: (state: string) => void,
+): void {
   const state = participant.attributes[AGENT_STATE];
   if (state !== undefined) {
     handlers.agentState(state);
+    onState(state);
   }
 }
 
-export async function connect(
+async function requestToken(
   device: string,
-  handlers: Handlers,
-): Promise<Room> {
+): Promise<{ token: string; url: string }> {
   const response = await fetch("/api/token", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -80,10 +86,53 @@ export async function connect(
   if (!response.ok) {
     throw new Error(`/api/token: ${response.status}`);
   }
-  const { token, url } = (await response.json()) as {
-    token: string;
-    url: string;
+  return (await response.json()) as { token: string; url: string };
+}
+
+export async function connect(
+  device: string,
+  handlers: Handlers,
+): Promise<Room> {
+  let timing: ClientTiming | null = null;
+  const measure = (action: (t: ClientTiming) => void): void => {
+    const current = timing;
+    if (current === null) {
+      return;
+    }
+    try {
+      action(current);
+    } catch (error) {
+      console.warn(METRICS_TOPIC, error);
+      timing = null;
+      try {
+        current.stop();
+      } catch (stopError) {
+        console.warn(METRICS_TOPIC, stopError);
+      }
+    }
   };
+  const onState = (state: string): void => {
+    measure((t) => t.agentState(state));
+  };
+  try {
+    timing = new ClientTiming((m) => {
+      room.localParticipant
+        .sendText(JSON.stringify({ type: "client_e2e", ...m }), {
+          topic: METRICS_TOPIC,
+        })
+        .catch((error) => console.warn(METRICS_TOPIC, error));
+    });
+  } catch (error) {
+    console.warn(METRICS_TOPIC, error);
+  }
+  let credentials: { token: string; url: string };
+  try {
+    credentials = await requestToken(device);
+  } catch (error) {
+    measure((t) => t.stop());
+    throw error;
+  }
+  const { token, url } = credentials;
   const room = new Room();
   room.registerTextStreamHandler(
     "lk.transcription",
@@ -118,24 +167,31 @@ export async function connect(
   room.on(RoomEvent.TrackSubscribed, (track) => {
     if (track.kind === Track.Kind.Audio) {
       document.body.append(track.attach());
+      measure((t) => t.addAgent(track.mediaStreamTrack));
     }
   });
   room.on(RoomEvent.ParticipantAttributesChanged, (_changed, participant) => {
-    reportAgent(participant, handlers);
+    reportAgent(participant, handlers, onState);
   });
   room.on(RoomEvent.ParticipantConnected, (participant) => {
-    reportAgent(participant, handlers);
+    reportAgent(participant, handlers, onState);
   });
   room.on(RoomEvent.ConnectionStateChanged, (state) => {
     handlers.connection(state);
   });
   room.on(RoomEvent.Disconnected, (reason) => {
+    measure((t) => t.stop());
     handlers.disconnected(reason);
   });
-  await room.connect(url, token);
+  try {
+    await room.connect(url, token);
+  } catch (error) {
+    measure((t) => t.stop());
+    throw error;
+  }
   try {
     for (const participant of room.remoteParticipants.values()) {
-      reportAgent(participant, handlers);
+      reportAgent(participant, handlers, onState);
     }
     const track = await createLocalAudioTrack({
       echoCancellation: true,
@@ -143,7 +199,9 @@ export async function connect(
       autoGainControl: true,
     });
     await room.localParticipant.publishTrack(track);
+    measure((t) => t.start(track.mediaStreamTrack));
   } catch (error) {
+    measure((t) => t.stop());
     await room.disconnect();
     throw error;
   }

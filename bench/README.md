@@ -79,6 +79,17 @@ Scripts:
   interruption), `false --mode speech|silence` (false interruptions from the
   JSONL), `history` (the cut history against what was heard, through STT);
   needs `scripts/up.sh` (all five) and the speakers as the default output.
+- `report.py` (VOCA-16) — G6, end-to-end latency: `start --run NAME` and
+  `stop --run NAME` (the run window and a snapshot of the JSONL in
+  `.local/g6/<run>/`, with the lever variant read from the agent's
+  environment), `summary --run NAME … [--limit N]` (p50/p95 of
+  `e2e_latency_ms` and of the links by variant × device × cold/warm, the
+  decomposition `eou + llm_ttft + tts_ttfb`, the Markdown share, the median
+  reply length, `leftover_digits`, and `client_e2e_ms` from the `client`
+  rows), `calibrate --audio-run NAME` (end of speech on the microphone →
+  first sound on the monitor, from a `barge_in.py record` recording; not used
+  by G6; the page measures `client_e2e_ms`); the corpus is
+  `bench/corpus/g6_turns.txt`.
 - `audio_stand.py` — what the audio scripts share: `openai.STT`/`openai.TTS`
   setup, `SpeechLanguageClient` (adds `language` to `/audio/speech`; the class
   lives in `voca.app.wiring`, `audio_stand.py` re-exports it), WAV helpers, the
@@ -104,6 +115,8 @@ The audio scripts need `scripts/up.sh audio`; their corpora are
 `bench/corpus/stt_ru.tsv`, `bench/corpus/tts_ru.txt`, `tts_ru_norm.txt`,
 `tts_ru_stress.tsv`, `tts_pipeline.json` and `tts_prepare.json`; their recordings, synthesis and
 tables go to `.local/bench/{stt,tts,parallel,pipeline,prepare}/`.
+The G6 corpus `bench/corpus/g6_turns.txt` is read aloud by a person; the
+runs of `report.py` go to `.local/g6/`.
 
 Reports, one per measurement task:
 
@@ -114,6 +127,7 @@ Reports, one per measurement task:
 - `report_lfm2_5_2_6b.md` (VOCA-8)
 - `report_tts_prepare.md` (VOCA-12)
 - `report_g5.md` (VOCA-14)
+- `report_g6.md` (VOCA-16)
 
 Corpora are plain text or JSON in `bench/corpus/`. Voice recordings stay out of the
 repository, in `.local/bench/`; each report names the recordings it used with
