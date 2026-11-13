@@ -207,10 +207,14 @@ classes come from `livekit-api` in the `agent/` environment.
 - The page sends the agent JSON on the text stream topic `voca.metrics`:
   `{"type": "client_e2e", "seq", "client_e2e_ms", "speech_ms"}`, one message
   per pair «end of speech → first agent sound».
-- End of speech is taken from the microphone track level: 15 dB above the
-  noise floor (the 10th percentile over 3 s), at least 150 ms long, followed by
-  300 ms of silence. The first sound is the agent's remote track above
-  −50 dBFS for two 10 ms ticks after at least 300 ms of silence.
+- A pair opens when the agent's `lk.agent.state` turns `thinking`, or
+  `speaking` straight from `listening`; one pair per transition, none while
+  the agent is `speaking`. End of speech is the last microphone frame before
+  that transition above both the noise floor (the 10th percentile over 3 s)
+  + 15 dB and the utterance's peak − 20 dB, the utterance at least 150 ms
+  long; the microphone is ignored while the agent is `speaking`. The first
+  sound is the first frame after the transition where the agent's remote
+  track stays above −50 dBFS for two 10 ms ticks.
 - The agent writes a JSONL `client` row; an invalid message only logs a
   warning.
 

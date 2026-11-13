@@ -3,11 +3,10 @@ export const FFT_SIZE = 1024;
 export const FLOOR_WINDOW_MS = 3000;
 export const FLOOR_PERCENTILE = 0.1;
 export const SPEECH_MARGIN_DB = 15;
+export const PEAK_MARGIN_DB = 20;
 export const MIN_SPEECH_MS = 150;
-export const HANGOVER_MS = 300;
 export const AGENT_AUDIBLE_DB = -50;
 export const AGENT_ONSET_TICKS = 2;
-export const AGENT_QUIET_MS = 300;
 export const MAX_CLIENT_MS = 30000;
 
 const SILENT_DB = -120;
@@ -22,6 +21,11 @@ interface Probe {
   source: MediaStreamAudioSourceNode;
   analyser: AnalyserNode;
   buffer: Float32Array<ArrayBuffer>;
+}
+
+interface Frame {
+  at: number;
+  level: number;
 }
 
 export function levelDb(
@@ -51,16 +55,13 @@ export class ClientTiming {
   private stopped = false;
   private seq = 0;
   private ring: number[] = [];
-  private speechStart: number | null = null;
-  private lastLoud = 0;
-  private agentAtLastLoud = false;
+  private utterance: Frame[] = [];
+  private state = "";
   private speechEnd: number | null = null;
   private speechMs = 0;
+  private armedAt: number | null = null;
   private agentRun = 0;
   private agentRunStart = 0;
-  private agentQuietBefore = Number.POSITIVE_INFINITY;
-  private agentLastHeard = Number.NEGATIVE_INFINITY;
-  private agentAudible = false;
 
   constructor(onMeasure: (m: ClientMeasure) => void) {
     this.onMeasure = onMeasure;
@@ -81,6 +82,27 @@ export class ClientTiming {
     }
     this.agent?.source.disconnect();
     this.agent = this.probe(track);
+  }
+
+  agentState(state: string): void {
+    const previous = this.state;
+    this.state = state;
+    if (state === previous) {
+      return;
+    }
+    if (
+      state === "thinking" ||
+      (state === "speaking" && previous !== "thinking")
+    ) {
+      this.arm(performance.now(), state === "speaking");
+    }
+    if (state === "listening") {
+      this.armedAt = null;
+      this.speechEnd = null;
+    }
+    if (state === "speaking" || state === "listening") {
+      this.utterance = [];
+    }
   }
 
   stop(): void {
@@ -104,62 +126,71 @@ export class ClientTiming {
     return { source, analyser, buffer: new Float32Array(FFT_SIZE) };
   }
 
-  private tick(): void {
-    const now = performance.now();
-    if (this.agent !== null) {
-      this.tickAgent(now, levelDb(this.agent.analyser, this.agent.buffer));
+  private arm(now: number, speaking: boolean): void {
+    this.armedAt = null;
+    this.speechEnd = null;
+    if (this.utterance.length > 0) {
+      const floor = percentile(this.ring, FLOOR_PERCENTILE) + SPEECH_MARGIN_DB;
+      const peak = Math.max(...this.utterance.map((frame) => frame.level));
+      const threshold = Math.max(floor, peak - PEAK_MARGIN_DB);
+      const loud = this.utterance.filter((frame) => frame.level > threshold);
+      if (loud.length > 0) {
+        const first = loud[0].at;
+        const last = loud[loud.length - 1].at;
+        if (last - first >= MIN_SPEECH_MS) {
+          this.speechEnd = last;
+          this.speechMs = last - first;
+          this.armedAt = now;
+        }
+      }
     }
-    if (this.mic !== null) {
-      this.tickMic(now, levelDb(this.mic.analyser, this.mic.buffer));
+    this.utterance = [];
+    if (
+      speaking &&
+      this.armedAt !== null &&
+      this.agentRun >= AGENT_ONSET_TICKS
+    ) {
+      this.onset(this.agentRunStart);
     }
   }
 
-  private tickMic(now: number, level: number): void {
-    this.ring.push(level);
-    if (this.ring.length > FLOOR_WINDOW_MS / TICK_MS) {
-      this.ring.shift();
-    }
-    const floor = percentile(this.ring, FLOOR_PERCENTILE);
-    if (level > floor + SPEECH_MARGIN_DB) {
-      if (this.speechStart === null) {
-        this.speechStart = now;
+  private tick(): void {
+    const now = performance.now();
+    if (this.mic !== null) {
+      const level = levelDb(this.mic.analyser, this.mic.buffer);
+      this.ring.push(level);
+      if (this.ring.length > FLOOR_WINDOW_MS / TICK_MS) {
+        this.ring.shift();
       }
-      this.lastLoud = now;
-      this.agentAtLastLoud = this.agentAudible;
-      return;
+      if (this.state !== "speaking") {
+        this.utterance.push({ at: now, level });
+        if (this.utterance.length > MAX_CLIENT_MS / TICK_MS) {
+          this.utterance.shift();
+        }
+      }
     }
-    if (this.speechStart === null || now - this.lastLoud < HANGOVER_MS) {
-      return;
+    if (this.agent !== null) {
+      this.tickAgent(now, levelDb(this.agent.analyser, this.agent.buffer));
     }
-    if (
-      this.lastLoud - this.speechStart >= MIN_SPEECH_MS &&
-      !this.agentAtLastLoud
-    ) {
-      this.speechEnd = this.lastLoud;
-      this.speechMs = this.lastLoud - this.speechStart;
-    }
-    this.speechStart = null;
   }
 
   private tickAgent(now: number, level: number): void {
     if (level <= AGENT_AUDIBLE_DB) {
       this.agentRun = 0;
-      this.agentAudible = false;
       return;
     }
     if (this.agentRun === 0) {
       this.agentRunStart = now;
-      this.agentQuietBefore = now - this.agentLastHeard;
     }
     this.agentRun += 1;
-    this.agentLastHeard = now;
-    if (this.agentRun !== AGENT_ONSET_TICKS) {
+    if (
+      this.agentRun < AGENT_ONSET_TICKS ||
+      this.armedAt === null ||
+      this.agentRunStart < this.armedAt
+    ) {
       return;
     }
-    this.agentAudible = true;
-    if (this.agentQuietBefore >= AGENT_QUIET_MS) {
-      this.onset(this.agentRunStart);
-    }
+    this.onset(this.agentRunStart);
   }
 
   private onset(onset: number): void {
@@ -177,5 +208,6 @@ export class ClientTiming {
       });
     }
     this.speechEnd = null;
+    this.armedAt = null;
   }
 }

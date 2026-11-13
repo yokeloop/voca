@@ -63,9 +63,14 @@ export function deviceName(): string {
   return device;
 }
 
-function reportAgent(participant: Participant, handlers: Handlers): void {
+function reportAgent(
+  participant: Participant,
+  handlers: Handlers,
+  timing: ClientTiming,
+): void {
   const state = participant.attributes[AGENT_STATE];
   if (state !== undefined) {
+    timing.agentState(state);
     handlers.agentState(state);
   }
 }
@@ -132,10 +137,10 @@ export async function connect(
     }
   });
   room.on(RoomEvent.ParticipantAttributesChanged, (_changed, participant) => {
-    reportAgent(participant, handlers);
+    reportAgent(participant, handlers, timing);
   });
   room.on(RoomEvent.ParticipantConnected, (participant) => {
-    reportAgent(participant, handlers);
+    reportAgent(participant, handlers, timing);
   });
   room.on(RoomEvent.ConnectionStateChanged, (state) => {
     handlers.connection(state);
@@ -152,7 +157,7 @@ export async function connect(
   }
   try {
     for (const participant of room.remoteParticipants.values()) {
-      reportAgent(participant, handlers);
+      reportAgent(participant, handlers, timing);
     }
     const track = await createLocalAudioTrack({
       echoCancellation: true,
