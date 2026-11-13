@@ -1,8 +1,10 @@
 import asyncio
 import math
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Any
 
+import pydantic
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestServer
@@ -20,8 +22,21 @@ def test_settings_defaults_and_env(monkeypatch: pytest.MonkeyPatch) -> None:
     assert settings.agent_port == 8084
     assert settings.llm_thinking_budget == 128
     assert settings.state_dir.name == ".local"
+    assert settings.instructions_dir == Path.home() / ".voca" / "instructions"
+    assert settings.ctx_high_tokens() == 9830
+    assert settings.ctx_low_tokens() == 6553
     monkeypatch.setenv("VOCA_AGENT_PORT", "9999")
     assert Settings().agent_port == 9999
+    monkeypatch.setenv("VOCA_INSTRUCTIONS_DIR", "~/x")
+    assert Settings().instructions_dir == Path.home() / "x"
+
+
+def test_settings_trim_thresholds() -> None:
+    with pytest.raises(pydantic.ValidationError):
+        Settings(ctx_trim_high=0.4, ctx_trim_low=0.6)
+    with pytest.raises(pydantic.ValidationError):
+        Settings(ctx_trim_low=0)
+    Settings(ctx_trim_high=0.08, ctx_trim_low=0.05)
 
 
 def test_build_session_options() -> None:
