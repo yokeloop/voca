@@ -96,6 +96,7 @@ def test_summarize() -> None:
             tts_ttfb_ms=600.0,
             markdown_removed=2,
             leftover_digits=1,
+            client_e2e_ms=1200.0,
         ),
         turn(
             "host",
@@ -104,6 +105,7 @@ def test_summarize() -> None:
             text="в" * 30,
             end_of_turn_delay_ms=400.0,
             llm_ttft_ms=700.0,
+            client_e2e_ms=1600.0,
         ),
         turn("host", False, None, text="г" * 40, interrupted=True),
         turn("phone", False, 900.0, text="д" * 5),
@@ -126,11 +128,40 @@ def test_summarize() -> None:
     assert warm["links"]["tts_ttfb_ms"]["n"] == 1
     assert warm["decomposition"]["p50"] == pytest.approx(1900)
     assert warm["decomposition"]["n"] == 1
+    assert warm["client_e2e"]["p50"] == pytest.approx(1400)
+    assert warm["client_e2e"]["n"] == 2
+    assert warm["client_null"] == 1
     every = groups[2]
     assert every["n"] == 4
     assert every["markdown_share"] == pytest.approx(0.25)
     assert every["leftover_digits"] == 1
     assert every["median_chars"] == statistics.median([10, 20, 30, 40])
+
+
+def test_attach_client() -> None:
+    rows = [
+        {"ts": 1.0, "kind": "turn", "session": "s1", "turn": 1},
+        {
+            "ts": 1.1,
+            "kind": "client",
+            "session": "s1",
+            "turn": 1,
+            "client_e2e_ms": 1300,
+        },
+        {
+            "ts": 1.2,
+            "kind": "client",
+            "session": "s1",
+            "turn": 1,
+            "client_e2e_ms": 9999,
+        },
+        {"ts": 2.0, "kind": "turn", "session": "s1", "turn": 2},
+        {"ts": 3.1, "kind": "client", "session": "s1", "turn": 3, "client_e2e_ms": 800},
+        {"ts": 3.2, "kind": "client", "session": "s2", "turn": 2, "client_e2e_ms": 700},
+    ]
+    turns, unpaired = report.attach_client(report.turn_rows(rows), rows)
+    assert [row["client_e2e_ms"] for row in turns] == [1300, None]
+    assert unpaired == 2
 
 
 def test_render() -> None:

@@ -43,6 +43,9 @@ HEADER = (
     "перебито",
     "e2e p50",
     "e2e p95",
+    "client p50",
+    "client p95",
+    "client null",
     "eou p50/p95",
     "stt p50/p95",
     "llm_ttft p50/p95",
@@ -123,6 +126,14 @@ def group(
         "e2e_null": len(rows) - len(timed),
         "interrupted": sum(row.get("interrupted") is True for row in rows),
         "e2e": stats([row["e2e_latency_ms"] for row in timed]),
+        "client_e2e": stats(
+            [
+                row["client_e2e_ms"]
+                for row in rows
+                if row.get("client_e2e_ms") is not None
+            ]
+        ),
+        "client_null": sum(row.get("client_e2e_ms") is None for row in rows),
         "links": {
             name: stats([row[name] for row in rows if row.get(name) is not None])
             for name in LINKS
@@ -139,6 +150,24 @@ def group(
         "median_chars": statistics.median(len(row.get("text") or "") for row in rows),
         "leftover_digits": sum(row.get("leftover_digits") or 0 for row in rows),
     }
+
+
+def attach_client(
+    turns: list[dict[str, Any]], rows: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], int]:
+    client_rows = sorted(
+        (row for row in rows if row["kind"] == "client"), key=lambda r: r["ts"]
+    )
+    clients: dict[tuple[Any, Any], float] = {}
+    for row in client_rows:
+        clients.setdefault((row["session"], row["turn"]), row["client_e2e_ms"])
+    keys = {(row["session"], row["turn"]) for row in turns}
+    attached = [
+        {**row, "client_e2e_ms": clients.get((row["session"], row["turn"]))}
+        for row in turns
+    ]
+    unpaired = sum((row["session"], row["turn"]) not in keys for row in client_rows)
+    return attached, unpaired
 
 
 def summarize(turns: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -181,6 +210,9 @@ def render(groups: list[dict[str, Any]]) -> str:
             str(item["interrupted"]),
             fmt_ms(item["e2e"]["p50"]),
             fmt_ms(item["e2e"]["p95"]),
+            fmt_ms(item["client_e2e"]["p50"]),
+            fmt_ms(item["client_e2e"]["p95"]),
+            str(item["client_null"]),
             *(pair(item["links"][name]) for name in LINKS),
             pair(item["decomposition"]),
             str(round(item["markdown_share"] * 100)),
@@ -346,10 +378,11 @@ def cmd_stop(args: argparse.Namespace) -> int:
     meta["rows"] = len(rows)
     meta["turns"] = len(turns)
     meta["sessions"] = len({row["session"] for row in turns})
+    meta["clients"] = sum(row["kind"] == "client" for row in rows)
     meta["sha256"] = hashlib.sha256(snapshot.read_bytes()).hexdigest()
     write_json(run_json(args.run), meta)
     print(f"stopped_at {meta['stopped_at']:.3f}")
-    for name in ("rows", "turns", "sessions", "sha256"):
+    for name in ("rows", "turns", "sessions", "clients", "sha256"):
         print(f"{name} {meta[name]}")
     print(f"devices {sorted({row['device'] for row in turns})}")
     return 0
@@ -360,15 +393,20 @@ def cmd_summary(args: argparse.Namespace) -> int:
 
     turns = []
     metas = []
+    unpaired = []
     for name in args.run:
         meta = read_json(run_json(name))
-        own = turn_rows(load_rows(G6_DIR / name / "events.jsonl"))
+        snapshot = load_rows(G6_DIR / name / "events.jsonl")
+        own, lost = attach_client(turn_rows(snapshot), snapshot)
+        unpaired.append((name, lost))
         if args.limit is not None:
             own = own[: args.limit]
         turns.extend({**row, "variant": meta["variant"]} for row in own)
         metas.append(meta)
     groups = summarize(turns)
     print(render(groups))
+    for name, lost in unpaired:
+        print(f"client без пары: {name} {lost}")
     print()
     print("run | variant | started_at | stopped_at | turns | sessions | sha256")
     for meta in metas:
