@@ -94,9 +94,9 @@ The agent's pipeline settings (`VOCA_TTS_VOICE`, `VOCA_LLM_THINKING_BUDGET`,
 0.40) have their defaults in `Settings` (`agent/src/voca/config.py`);
 `scripts/env.sh` does not set them, and `.env.example` lists them commented
 out. The two trim values are shares of `-c 16384` (`LLM_CONTEXT_TOKENS` in
-`config.py`), estimated as `len(text) // 3`, with `LOW < HIGH`. `VOCA_AEC_WARMUP` covers only the
-first N seconds from the start of the session's first agent reply; later
-replies are interruptible at once.
+`config.py`), estimated as `len(text) // 3`, with `LOW < HIGH`.
+`VOCA_AEC_WARMUP` covers only the first N seconds from the start of the
+session's first agent reply; later replies are interruptible at once.
 
 Everything downloaded lives outside the clone, in the machine's shared
 directories `~/Apps/<tool>/<version>/` and `~/models/`; a variable with that
