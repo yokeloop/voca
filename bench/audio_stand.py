@@ -9,10 +9,10 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-import openai as openai_sdk
 from livekit import rtc
 from livekit.plugins import openai
-from openai._models import FinalRequestOptions
+
+from voca.app.wiring import SpeechLanguageClient
 
 ROOT = Path(__file__).resolve().parents[1]
 BENCH_DIR = ROOT / ".local" / "bench"
@@ -25,31 +25,6 @@ RU_LAYOUT = str.maketrans(
     "йцукенгшщзхъфывапролджэячсмитьбю",
     "qwertyuiop[]asdfghjkl;'zxcvbnm,.",
 )
-
-
-class SpeechLanguageClient(openai_sdk.AsyncOpenAI):
-    def __init__(
-        self,
-        *,
-        speech_language: str,
-        speech_options: dict[str, Any] | None = None,
-        **kwargs: Any,
-    ) -> None:
-        self._speech_language = speech_language
-        self._speech_options = speech_options or {}
-        super().__init__(**kwargs)
-
-    async def _prepare_options(
-        self, options: FinalRequestOptions
-    ) -> FinalRequestOptions:
-        options = await super()._prepare_options(options)
-        if options.url == "/audio/speech" and isinstance(options.json_data, dict):
-            options.json_data = {
-                **options.json_data,
-                **self._speech_options,
-                "language": self._speech_language,
-            }
-        return options
 
 
 def make_stt(base_url: str) -> openai.STT:

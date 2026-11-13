@@ -3,7 +3,7 @@ set -euo pipefail
 . "$(dirname "$0")/env.sh"
 
 if [ "$#" -eq 0 ]; then
-  set -- web llm audio livekit
+  set -- agent web llm audio livekit
 fi
 
 run_dir="$VOCA_ROOT/.local/run"

@@ -8,6 +8,21 @@ Hermes. This file is the working contract for agents and contributors.
 
 - `agent/` — the Python package `voca` (uv project, Python 3.13). `voca web`
   serves the page, `GET /healthz` and `POST /api/token`.
+  `voca agent {dev|start|console}` runs the LiveKit worker: `app/worker.py`
+  (prewarm, entrypoint, `WorkerOptions`), `app/wiring.py` (the plugins,
+  `PreparedTTS`, `build_session`, `SpeechLanguageClient`), `conversation/`
+  (`VocaAgent`: the tool-call markup filter in `llm_node`, the `delegate`
+  stub, instructions and context trim in `on_user_turn_completed`, failures
+  spoken aloud; `instructions.py`: `InstructionLoader` with the last valid
+  set; `context.py`: `trim_chat_ctx`), `clientio/` (the `voca.cards`
+  channel), `telemetry/` (`.local/events.jsonl`).
+  `agent/src/voca/speech/` prepares text before TTS: the tool-call markup
+  filter, LaTeX and tables, numbers as words, stress and the first fragment.
+  `markup`, `numbers`, `prepare`, `conversation/context` and
+  `conversation/instructions` are pure modules, which
+  `tests/test_import_boundaries.py` checks.
+- `instructions.example/` — a sample `SOUL.md`, `user.md` and `agent.md`; the
+  real files live outside the repository, in `VOCA_INSTRUCTIONS_DIR`.
 - `web/` — the page (Vite + TypeScript, `livekit-client`); `pnpm --dir web build`
   writes `web/dist/`, which `voca web` serves.
 - `bench/` — stand scripts and their reports; they run in the `agent/`
@@ -46,8 +61,8 @@ stand's downloads; it is a stand check, not a CI check.
 `scripts/env.sh` is the only place of defaults; every script sources it. It reads
 `.env` from the repository root when present. `.env` is a bash file (copy
 `.env.example`), and a value already set in the environment wins over it.
-`voca web` reads the `VOCA_*` variables from the environment that `scripts/env.sh`
-exports; it does not read `.env` itself.
+`voca web` and `voca agent` read the `VOCA_*` variables from the environment that
+`scripts/env.sh` exports; they do not read `.env` themselves.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
@@ -63,8 +78,25 @@ exports; it does not read `.env` itself.
 | `VOCA_WEB_HOST` | `127.0.0.1` | Address `voca web` listens on |
 | `VOCA_WEB_PORT` | `8083` | Port `voca web` listens on |
 | `VOCA_PUBLIC_LIVEKIT_URL` | `ws://127.0.0.1:7880` | LiveKit URL returned with each token |
+| `VOCA_LIVEKIT_URL` | `ws://127.0.0.1:7880` | LiveKit URL the agent worker connects to |
+| `VOCA_AUDIO_URL` | `http://127.0.0.1:8082/v1` | audio.cpp API of the agent's STT and TTS |
+| `VOCA_LLM_URL` | `http://127.0.0.1:8081/v1` | llama-server API of the agent's LLM |
+| `VOCA_AGENT_PORT` | `8084` | Health port of the agent worker (127.0.0.1) |
+| `VOCA_STATE_DIR` | `$VOCA_ROOT/.local` | Directory of the agent's `events.jsonl` |
 | `VOCA_HERMES_URL` | empty | Hermes API server URL for `bench/hermes_runs.py`; `https://hermes.priney.com` on the stand |
 | `VOCA_HERMES_KEY` | empty | `API_SERVER_KEY` of the Hermes profile; a secret, only in `.env` |
+
+The agent's pipeline settings (`VOCA_TTS_VOICE`, `VOCA_LLM_THINKING_BUDGET`,
+`VOCA_VAD_MIN_SILENCE`, `VOCA_INTERRUPTION_MIN_DURATION`,
+`VOCA_INTERRUPTION_MIN_WORDS`, `VOCA_AEC_WARMUP`, `VOCA_ENDPOINTING_MIN_DELAY`,
+`VOCA_PREEMPTIVE_GENERATION`, `VOCA_INSTRUCTIONS_DIR` — default
+`~/.voca/instructions`, `VOCA_CTX_TRIM_HIGH` — 0.60, `VOCA_CTX_TRIM_LOW` —
+0.40) have their defaults in `Settings` (`agent/src/voca/config.py`);
+`scripts/env.sh` does not set them, and `.env.example` lists them commented
+out. The two trim values are shares of `-c 16384` (`LLM_CONTEXT_TOKENS` in
+`config.py`), estimated as `len(text) // 3`, with `LOW < HIGH`.
+`VOCA_AEC_WARMUP` covers only the first N seconds from the start of the
+session's first agent reply; later replies are interruptible at once.
 
 Everything downloaded lives outside the clone, in the machine's shared
 directories `~/Apps/<tool>/<version>/` and `~/models/`; a variable with that
@@ -105,12 +137,17 @@ plus a path variable with its default in `scripts/env.sh` and `.env.example`.
 
 ## Stand
 
-`scripts/up.sh [livekit|audio|llm|web …]` (no arguments: all four) checks every
-named service first and starts nothing when a check fails: the binary or build
-exists, the service is not already running, its ports are free. It then starts
-them in order with logs in `.local/logs/<name>.log` and pids in
+`scripts/up.sh [livekit|audio|llm|web|agent …]` (no arguments: all five) checks
+every named service first and starts nothing when a check fails: the binary or
+build exists, the service is not already running, its ports are free; for
+`agent` — `agent/.venv/bin/voca`, the ruaccent `koziev` link
+(`scripts/ruaccent-setup.sh`) and `VOCA_AGENT_PORT`. It then starts them in
+order with logs in `.local/logs/<name>.log` and pids in
 `.local/run/<name>.pid`, and waits up to 20 s for each (120 s for `audio` and
-`llm`). `scripts/down.sh [names…]` stops them in reverse order.
+`llm`, 60 s for `agent`). `agent` runs `voca agent start`; it is ready when
+`http://127.0.0.1:$VOCA_AGENT_PORT/` answers 200 (503 until the worker has
+registered with livekit-server). `scripts/down.sh [names…]` stops them in
+reverse order, `agent` first.
 
 `scripts/audiocpp.sh [--check]` renders `scripts/server.json` into
 `.local/server.json` with `envsubst '${VOCA_MODELS_DIR}'`, then checks that
@@ -155,6 +192,32 @@ builds it in `createJoinRequestConnectionParams`: a `livekit.JoinRequest` with
 `livekit.WrappedJoinRequest` (`compression` GZIP), URL-safe base64. The protobuf
 classes come from `livekit-api` in the `agent/` environment.
 
+## Client channel
+
+- The agent sends a JSON `state` message on the text stream topic
+  `voca.cards`: `{"type": "state", "instructions_sha256",
+  "instructions_source": "fresh"|"last_valid", "instructions_error":
+  string|null, "components": {"stt", "llm", "tts": "ok"|"down"}}`.
+- The message goes out at the start of the session, when a participant
+  connects and on every change.
+- A component is `down` after an unrecoverable error and `ok` after the first
+  metric of that stage.
+- `hermes` is not sent in E1; `instructions_error` is an addition to
+  `derive:eb1id854:§5`.
+- The page sends the agent JSON on the text stream topic `voca.metrics`:
+  `{"type": "client_e2e", "seq", "client_e2e_ms", "speech_ms"}`, one message
+  per pair «end of speech → first agent sound».
+- A pair opens when the agent's `lk.agent.state` turns `thinking`, or
+  `speaking` straight from `listening`; one pair per transition, none while
+  the agent is `speaking`. End of speech is the last microphone frame before
+  that transition above both the noise floor (the 10th percentile over 3 s)
+  + 15 dB and the utterance's peak − 20 dB, the utterance at least 150 ms
+  long; the microphone is ignored while the agent is `speaking`. The first
+  sound is the first frame after the transition where the agent's remote
+  track stays above −50 dBFS for two 10 ms ticks.
+- The agent writes a JSONL `client` row; an invalid message only logs a
+  warning.
+
 ## Ports
 
 | Port | Service |
@@ -165,9 +228,20 @@ classes come from `livekit-api` in the `agent/` environment.
 | 8083 TCP | `voca web` (`VOCA_WEB_PORT`) |
 | 8082 TCP | audio.cpp server (127.0.0.1) |
 | 8081 TCP | llama-server (127.0.0.1) |
+| 8084 TCP | voca agent health (127.0.0.1, `VOCA_AGENT_PORT`) |
 
 Deviation from `derive:eb1id854:§1`: `voca web` listens on 8083, not 8090,
 because 8090 is taken on the stand host (hyperhdr).
+
+Further deviations from `derive:eb1id854` (E1 research, VOCA-11):
+
+- О4: the stand runs `voca agent start` and waits for its HTTP health
+  endpoint, not `dev` and a log line.
+- О5: the worker reads `VOCA_LIVEKIT_URL` and `VOCA_LIVEKIT_API_*`, not
+  `LIVEKIT_*`; `ws_url` is passed to the worker explicitly.
+- О7: the agent has a `delegate` stub that raises
+  `ToolError("Делегирование сейчас недоступно")`, not «1.1 without delegate».
+- О11: a reconnecting client sees only new replies, as in derive:eb1id854:§6.6, not the current transcript of derive:8kki4ynb:§7.
 
 ## References
 

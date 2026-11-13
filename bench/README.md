@@ -13,7 +13,11 @@ Scripts:
   `resume`, `conflict`, `session`, `all` (the default: those five in order),
   `delegate`, `restart --phase start|verify`, `backend-down`.
 - `llm_template.py` (VOCA-4) — the first-hour checks of the LLM stand:
-  `kwargs-body`, `kwargs-live`, `tool-stream`, `tool-cycle`, `all` (the default).
+  `kwargs-body`, `kwargs-live`, `tool-stream`, `tool-cycle`, `all` (the default);
+  `agent-body` (VOCA-13) — the agent's request body (`voca.app.wiring.make_llm`
+  and the `VocaAgent` tools) sent to a fake server on loopback:
+  `thinking_budget_tokens`, `tools` with `delegate`, no `chat_template_kwargs`;
+  no llama-server needed.
 - `llm_ru_tools.py` (VOCA-4) — G3: `dialogs`, `delegate`, `all` (the default),
   `dialogs-thinking` (the twenty dialogs with thinking on, VOCA-7),
   `delegate-thinking` (the ten scenarios with thinking on).
@@ -58,11 +62,38 @@ Scripts:
   vowel at the start of a phrase), `listen` and `caps-listen` (for a person);
   needs
   `scripts/ruaccent-setup.sh` once per `agent/.venv`.
+- `tts_prepare.py` (VOCA-12) — the text path of the agent before TTS: `norm`
+  (numbers normalizer against `corpus/tts_ru.txt` → `tts_ru_norm.txt`, no
+  models), `run [--omograph turbo3.1]` (`corpus/tts_pipeline.json` and
+  `corpus/tts_prepare.json` through markup filters, first fragment, numbers
+  and stress; leftover digits and markup, `prepare` p50/p95), `render` (5
+  phrases with F4, needs `scripts/up.sh audio`), `listen` (for a person); needs
+  `scripts/ruaccent-setup.sh` once per `agent/.venv`.
 - `audio_parallel.py` (VOCA-5) — «STT does not wait for TTS» and llama-server
   decode under audio load: `--skip-llm`, `--threads-label N`, `--llm-url`.
+- `barge_in.py` (VOCA-14) — G5, barge-in on speakers:
+  `record --run NAME [--mic SOURCE] [--speaker SINK]` (one two-channel PipeWire
+  recording: FL — the microphone, FR — the speakers' monitor;
+  `.local/g5/<run>/audio.wav` and `audio.json` with the clocks and the agent's
+  `VOCA_*` values), `analyze` (the delay «onset → the old sound stops» per
+  interruption), `false --mode speech|silence` (false interruptions from the
+  JSONL), `history` (the cut history against what was heard, through STT);
+  needs `scripts/up.sh` (all five) and the speakers as the default output.
+- `report.py` (VOCA-16) — G6, end-to-end latency: `start --run NAME` and
+  `stop --run NAME` (the run window and a snapshot of the JSONL in
+  `.local/g6/<run>/`, with the lever variant read from the agent's
+  environment), `summary --run NAME … [--limit N]` (p50/p95 of
+  `e2e_latency_ms` and of the links by variant × device × cold/warm, the
+  decomposition `eou + llm_ttft + tts_ttfb`, the Markdown share, the median
+  reply length, `leftover_digits`, and `client_e2e_ms` from the `client`
+  rows), `calibrate --audio-run NAME` (end of speech on the microphone →
+  first sound on the monitor, from a `barge_in.py record` recording; not used
+  by G6; the page measures `client_e2e_ms`); the corpus is
+  `bench/corpus/g6_turns.txt`.
 - `audio_stand.py` — what the audio scripts share: `openai.STT`/`openai.TTS`
-  setup, `SpeechLanguageClient` (adds `language` to `/audio/speech`), WAV
-  helpers, the server health check.
+  setup, `SpeechLanguageClient` (adds `language` to `/audio/speech`; the class
+  lives in `voca.app.wiring`, `audio_stand.py` re-exports it), WAV helpers, the
+  server health check.
 
 `scripts/up.sh llm` starts the default profile `lfm2.5-2.6b`, the agent's
 model (VOCA-9). The G3/G4 baselines of `report_g3_g4.md` were measured on
@@ -82,8 +113,10 @@ Sampling comes from the server profile; the client sends none.
 
 The audio scripts need `scripts/up.sh audio`; their corpora are
 `bench/corpus/stt_ru.tsv`, `bench/corpus/tts_ru.txt`, `tts_ru_norm.txt`,
-`tts_ru_stress.tsv` and `tts_pipeline.json`; their recordings, synthesis and
-tables go to `.local/bench/{stt,tts,parallel,pipeline}/`.
+`tts_ru_stress.tsv`, `tts_pipeline.json` and `tts_prepare.json`; their recordings, synthesis and
+tables go to `.local/bench/{stt,tts,parallel,pipeline,prepare}/`.
+The G6 corpus `bench/corpus/g6_turns.txt` is read aloud by a person; the
+runs of `report.py` go to `.local/g6/`.
 
 Reports, one per measurement task:
 
@@ -92,6 +125,9 @@ Reports, one per measurement task:
 - `report_g1_g2.md` (VOCA-5)
 - `report_lfm3_1_7b.md` (VOCA-7)
 - `report_lfm2_5_2_6b.md` (VOCA-8)
+- `report_tts_prepare.md` (VOCA-12)
+- `report_g5.md` (VOCA-14)
+- `report_g6.md` (VOCA-16)
 
 Corpora are plain text or JSON in `bench/corpus/`. Voice recordings stay out of the
 repository, in `.local/bench/`; each report names the recordings it used with
