@@ -331,7 +331,12 @@ def cmd_stop(args: argparse.Namespace) -> int:
 
     meta = read_json(run_json(args.run))
     meta["stopped_at"] = time.time()
-    rows = load_rows(events_path(args.events), meta["started_at"], meta["stopped_at"])
+    events = events_path(args.events)
+    rows = (
+        load_rows(events, meta["started_at"], meta["stopped_at"])
+        if events.exists()
+        else []
+    )
     snapshot = G6_DIR / args.run / "events.jsonl"
     snapshot.write_text(
         "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows),
@@ -369,7 +374,7 @@ def cmd_summary(args: argparse.Namespace) -> int:
     for meta in metas:
         print(
             f"{meta['run']} | {meta['variant']} | {meta['started_at']:.3f}"
-            f" | {meta.get('stopped_at', '—')} | {meta.get('turns', '—')}"
+            f" | {fmt(meta.get('stopped_at'), 3)} | {meta.get('turns', '—')}"
             f" | {meta.get('sessions', '—')} | {meta.get('sha256', '—')}"
         )
     out = args.out or G6_DIR / "summary.json"
