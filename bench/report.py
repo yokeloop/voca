@@ -1,7 +1,10 @@
+import argparse
+import hashlib
 import json
 import math
 import statistics
-from dataclasses import dataclass
+import time
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
@@ -284,3 +287,207 @@ def calibrate(
             )
         )
     return items
+
+
+def run_json(name: str) -> Path:
+    return G6_DIR / name / "run.json"
+
+
+def agent_env() -> dict[str, str]:
+    try:
+        pid = AGENT_PID.read_text(encoding="utf-8").strip()
+        raw = Path(f"/proc/{pid}/environ").read_bytes()
+    except OSError:
+        raise SystemExit(f"агент не запущен ({AGENT_PID}): scripts/up.sh agent")
+    environ = dict(
+        item.split("=", 1) for item in raw.decode().split("\0") if "=" in item
+    )
+    return {name: environ[name] for name in LEVER_VARS if name in environ}
+
+
+def cmd_start(args: argparse.Namespace) -> int:
+    from barge_in import write_json
+
+    directory = G6_DIR / args.run
+    directory.mkdir(parents=True, exist_ok=True)
+    if run_json(args.run).exists():
+        raise SystemExit(f"прогон {args.run} уже есть")
+    env = agent_env()
+    meta = {
+        "run": args.run,
+        "started_at": time.time(),
+        "env": env,
+        "variant": variant_label(env),
+    }
+    write_json(run_json(args.run), meta)
+    print(f"run {meta['run']}")
+    print(f"variant {meta['variant']}")
+    print(f"started_at {meta['started_at']:.3f}")
+    return 0
+
+
+def cmd_stop(args: argparse.Namespace) -> int:
+    from barge_in import events_path, read_json, write_json
+
+    meta = read_json(run_json(args.run))
+    meta["stopped_at"] = time.time()
+    rows = load_rows(events_path(args.events), meta["started_at"], meta["stopped_at"])
+    snapshot = G6_DIR / args.run / "events.jsonl"
+    snapshot.write_text(
+        "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows),
+        encoding="utf-8",
+    )
+    turns = turn_rows(rows)
+    meta["rows"] = len(rows)
+    meta["turns"] = len(turns)
+    meta["sessions"] = len({row["session"] for row in turns})
+    meta["sha256"] = hashlib.sha256(snapshot.read_bytes()).hexdigest()
+    write_json(run_json(args.run), meta)
+    print(f"stopped_at {meta['stopped_at']:.3f}")
+    for name in ("rows", "turns", "sessions", "sha256"):
+        print(f"{name} {meta[name]}")
+    print(f"devices {sorted({row['device'] for row in turns})}")
+    return 0
+
+
+def cmd_summary(args: argparse.Namespace) -> int:
+    from barge_in import read_json, write_json
+
+    turns = []
+    metas = []
+    for name in args.run:
+        meta = read_json(run_json(name))
+        own = turn_rows(load_rows(G6_DIR / name / "events.jsonl"))
+        if args.limit is not None:
+            own = own[: args.limit]
+        turns.extend({**row, "variant": meta["variant"]} for row in own)
+        metas.append(meta)
+    groups = summarize(turns)
+    print(render(groups))
+    print()
+    print("run | variant | started_at | stopped_at | turns | sessions | sha256")
+    for meta in metas:
+        print(
+            f"{meta['run']} | {meta['variant']} | {meta['started_at']:.3f}"
+            f" | {meta.get('stopped_at', '—')} | {meta.get('turns', '—')}"
+            f" | {meta.get('sessions', '—')} | {meta.get('sha256', '—')}"
+        )
+    out = args.out or G6_DIR / "summary.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    write_json(out, groups)
+    return 0
+
+
+def fmt(value: float | None, digits: int) -> str:
+    return "—" if value is None else f"{value:.{digits}f}"
+
+
+def cmd_calibrate(args: argparse.Namespace) -> int:
+    from barge_in import (
+        G5_DIR,
+        envelope_db,
+        events_path,
+        read_json,
+        read_stereo,
+        write_json,
+    )
+
+    directory = G5_DIR / args.audio_run
+    meta = read_json(directory / "audio.json")
+    rate, left, right = read_stereo(directory / "audio.wav")
+    mic = envelope_db(left, rate)
+    monitor = envelope_db(right, rate)
+    turns = turn_rows(
+        load_rows(events_path(args.events), meta["started_at"], meta["stopped_at"])
+    )
+    anchors = [
+        (
+            row["ts"],
+            round((row["started_speaking_at"] - meta["started_at"]) / FRAME_S),
+            row.get("e2e_latency_ms"),
+        )
+        for row in turns
+        if row.get("started_speaking_at") is not None
+    ]
+    measured = iter(calibrate(mic, monitor, anchors))
+    items = [
+        next(measured)
+        if row.get("started_speaking_at") is not None
+        else Calib(
+            row["ts"],
+            None,
+            None,
+            None,
+            row.get("e2e_latency_ms"),
+            None,
+            False,
+            "нет started_speaking_at",
+        )
+        for row in turns
+    ]
+    print(
+        "№ | turn ts | конец речи, с | первый звук, с | клиент, мс | e2e, мс"
+        " | доставка, мс | valid | note"
+    )
+    for number, item in enumerate(items, 1):
+        print(
+            f"{number} | {item.turn_ts:.3f} | {fmt(item.mic_end_s, 2)}"
+            f" | {fmt(item.audio_start_s, 2)} | {fmt(item.client_ms, 0)}"
+            f" | {fmt(item.e2e_ms, 0)} | {fmt(item.transport_ms, 0)}"
+            f" | {item.valid} | {item.note}"
+        )
+    valid = [item for item in items if item.valid]
+    client = (
+        statistics.median(i.client_ms for i in valid if i.client_ms is not None)
+        if valid
+        else None
+    )
+    transport = (
+        statistics.median(i.transport_ms for i in valid if i.transport_ms is not None)
+        if valid
+        else None
+    )
+    print(f"медиана клиентской задержки по valid: {fmt(client, 0)} мс")
+    print(f"медиана доставки по valid: {fmt(transport, 0)} мс")
+    G6_DIR.mkdir(parents=True, exist_ok=True)
+    write_json(
+        G6_DIR / "calibration.json",
+        {
+            "audio_run": args.audio_run,
+            "items": [asdict(item) for item in items],
+            "client_ms_median": client,
+            "transport_ms_median": transport,
+        },
+    )
+    return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="G6: сквозная латентность по JSONL (окна прогонов, сводка, калибровка)"
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+    start = sub.add_parser("start")
+    start.add_argument("--run", required=True)
+    stop = sub.add_parser("stop")
+    stop.add_argument("--run", required=True)
+    stop.add_argument("--events", type=Path)
+    summary = sub.add_parser("summary")
+    summary.add_argument("--run", required=True, action="append")
+    summary.add_argument("--limit", type=int)
+    summary.add_argument("--out", type=Path)
+    calib = sub.add_parser("calibrate")
+    calib.add_argument("--audio-run", required=True)
+    calib.add_argument("--events", type=Path)
+    args = parser.parse_args()
+    commands = {
+        "start": cmd_start,
+        "stop": cmd_stop,
+        "summary": cmd_summary,
+        "calibrate": cmd_calibrate,
+    }
+    return commands[args.command](args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
