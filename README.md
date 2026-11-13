@@ -271,6 +271,10 @@ scripts/down.sh
 
 **Events.** New `kind`s: `instructions`, `context_trimmed`; new fields of `error`.
 
+**Phone.** The phone must be in the tailnet: the Tailscale app is on and signed in to the same tailnet; a cellular network works. The stand runs with the three values of the `voca.priney.com` block in `.env` ([0.1](#01-repository-and-launch), «Route `voca.priney.com`»). On the phone open `https://voca.priney.com/?device=phone`, press «Подключиться» and allow the microphone: HTTPS gives the browser a secure context. The room `voca` takes one page at a time: press «Отключиться» before connecting from another device. Signaling goes through Traefik (`/rtc`), media go directly over the tailnet to `VOCA_LIVEKIT_NODE_IP`: UDP 7882; without UDP livekit-client falls back to TCP 7881 on the same address, and the route does not change. `.local/logs/livekit.log` shows what was used (`connectionType`, `selected ICE candidate pair`). If the page does not connect, check Tailscale on the phone and `scripts/check-rtc.sh https://voca.priney.com`.
+
+**G6 (end-to-end latency).** The corpus is `bench/corpus/g6_turns.txt`, 5 sessions of 6 turns per device. A new session: «Отключиться», wait for the `close` row in `.local/events.jsonl` (the room closes after 20 s), «Подключиться»; the first turn of a session is cold. The run window: `uv run --project agent python bench/report.py start --run <run>` and `… stop --run <run>`; the summary: `… summary --run <run> …`. A lever: `scripts/down.sh agent`, then `VOCA_ENDPOINTING_MIN_DELAY=<x>` or `VOCA_PREEMPTIVE_GENERATION=true` before `scripts/up.sh agent`, then reconnect. Calibration: `bench/barge_in.py record --run <run>` for the duration of the turns, then `bench/report.py calibrate --audio-run <run>`. The result is in [bench/report_g6.md](bench/report_g6.md).
+
 ## Contributing
 
 Open an issue or a pull request. Run the checks from [AGENTS.md](AGENTS.md#checks) before sending a change.
