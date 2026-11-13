@@ -19,6 +19,7 @@ from livekit.agents.voice import (
     UserStateChangedEvent,
 )
 
+from voca.clientio.cards import component_of
 from voca.speech.prepare import Prepared
 
 MARKDOWN = re.compile(
@@ -197,7 +198,12 @@ class TurnTracker:
             self.log.write("metrics", type=metrics.type, **fields)
 
     def on_error(self, ev: ErrorEvent) -> None:
-        self.log.write("error", source=type(ev.source).__name__, error=str(ev.error))
+        self.log.write(
+            "error",
+            component=component_of(ev.error),
+            recoverable=ev.error.recoverable,
+            message=str(ev.error.error),
+        )
 
     def on_close(self, ev: CloseEvent) -> None:
         self.log.write("close", reason=str(ev.reason))
