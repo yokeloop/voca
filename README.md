@@ -267,7 +267,7 @@ scripts/down.sh
 
 **Page.** The indicator `STT · LLM · TTS · инструкции`, the error line, the `voca.cards` channel ([AGENTS.md](AGENTS.md#client-channel)). After a disconnect the user did not ask for (a livekit restart, the network) the page reconnects by itself: after 1, 2, 4, 8, then every 15 s, until «Отключиться» is pressed. On load the page waits for «Подключиться».
 
-**Agent restart.** Known limit: after `scripts/down.sh agent` / `scripts/up.sh agent` while the page stays in the room the agent does not come back by itself. Press «Отключиться», wait up to 20 s for the room to close, then «Подключиться».
+**Agent restart.** Known limit: after `scripts/down.sh agent` / `scripts/up.sh agent` while the page stays in the room the agent does not come back by itself. Press «Отключиться», wait up to 20 s for the room to close, then «Подключиться». The same limit and recovery apply when livekit-server is down long enough that the page rejoins before the worker registers again (for example a 30 s outage).
 
 **Events.** New `kind`s: `instructions`, `context_trimmed`; new fields of `error`.
 
