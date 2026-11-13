@@ -90,6 +90,10 @@ export function setCards(state: CardsState | undefined): void {
   errors.textContent = errorLine(state);
 }
 
+export function setErrorLine(text: string): void {
+  errors.textContent = text;
+}
+
 export function upsertSegment({ segment, who, text, final }: Transcript): void {
   let row = rows.get(segment);
   if (row === undefined) {

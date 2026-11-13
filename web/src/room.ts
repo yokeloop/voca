@@ -1,6 +1,7 @@
 import {
   type ConnectionState,
   createLocalAudioTrack,
+  type DisconnectReason,
   type Participant,
   Room,
   RoomEvent,
@@ -34,6 +35,7 @@ export interface Handlers {
   cards(state: CardsState): void;
   agentState(state: string | undefined): void;
   connection(state: ConnectionState): void;
+  disconnected(reason: DisconnectReason | undefined): void;
 }
 
 function randomDevice(): string {
@@ -126,6 +128,9 @@ export async function connect(
   });
   room.on(RoomEvent.ConnectionStateChanged, (state) => {
     handlers.connection(state);
+  });
+  room.on(RoomEvent.Disconnected, (reason) => {
+    handlers.disconnected(reason);
   });
   await room.connect(url, token);
   try {
