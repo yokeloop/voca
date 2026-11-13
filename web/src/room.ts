@@ -7,10 +7,12 @@ import {
   RoomEvent,
   Track,
 } from "livekit-client";
+import { ClientTiming } from "./timing";
 
 const DEVICE_RE = /^[a-z0-9-]{1,32}$/;
 const DEVICE_KEY = "voca-device";
 const AGENT_STATE = "lk.agent.state";
+const METRICS_TOPIC = "voca.metrics";
 
 export interface Transcript {
   segment: string;
@@ -72,12 +74,20 @@ export async function connect(
   device: string,
   handlers: Handlers,
 ): Promise<Room> {
+  const timing = new ClientTiming((m) => {
+    room.localParticipant
+      .sendText(JSON.stringify({ type: "client_e2e", ...m }), {
+        topic: METRICS_TOPIC,
+      })
+      .catch((error) => console.warn(METRICS_TOPIC, error));
+  });
   const response = await fetch("/api/token", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ device }),
   });
   if (!response.ok) {
+    timing.stop();
     throw new Error(`/api/token: ${response.status}`);
   }
   const { token, url } = (await response.json()) as {
@@ -118,6 +128,7 @@ export async function connect(
   room.on(RoomEvent.TrackSubscribed, (track) => {
     if (track.kind === Track.Kind.Audio) {
       document.body.append(track.attach());
+      timing.addAgent(track.mediaStreamTrack);
     }
   });
   room.on(RoomEvent.ParticipantAttributesChanged, (_changed, participant) => {
@@ -130,9 +141,15 @@ export async function connect(
     handlers.connection(state);
   });
   room.on(RoomEvent.Disconnected, (reason) => {
+    timing.stop();
     handlers.disconnected(reason);
   });
-  await room.connect(url, token);
+  try {
+    await room.connect(url, token);
+  } catch (error) {
+    timing.stop();
+    throw error;
+  }
   try {
     for (const participant of room.remoteParticipants.values()) {
       reportAgent(participant, handlers);
@@ -143,7 +160,9 @@ export async function connect(
       autoGainControl: true,
     });
     await room.localParticipant.publishTrack(track);
+    timing.start(track.mediaStreamTrack);
   } catch (error) {
+    timing.stop();
     await room.disconnect();
     throw error;
   }
