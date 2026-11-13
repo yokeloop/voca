@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import math
 from collections.abc import Callable
 
 from livekit import rtc
@@ -25,12 +26,14 @@ def parse_client(text: str) -> dict[str, int | float] | None:
     if (
         not isinstance(client_e2e_ms, int | float)
         or isinstance(client_e2e_ms, bool)
+        or not math.isfinite(client_e2e_ms)
         or not 0 < client_e2e_ms <= MAX_CLIENT_MS
     ):
         return None
     if (
         not isinstance(speech_ms, int | float)
         or isinstance(speech_ms, bool)
+        or not math.isfinite(speech_ms)
         or speech_ms < 0
     ):
         return None

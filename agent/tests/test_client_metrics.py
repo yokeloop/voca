@@ -50,6 +50,10 @@ def test_parse_client() -> None:
     assert parse_client(message(seq=True)) is None
     assert parse_client(message(client_e2e_ms=0)) is None
     assert parse_client(message(client_e2e_ms=30001)) is None
+    assert parse_client(message(client_e2e_ms=float("nan"))) is None
+    assert parse_client(message(client_e2e_ms=float("inf"))) is None
+    assert parse_client(message(speech_ms=float("nan"))) is None
+    assert parse_client(message(speech_ms=float("inf"))) is None
     no_speech = json.loads(message())
     del no_speech["speech_ms"]
     assert parse_client(json.dumps(no_speech)) is None
