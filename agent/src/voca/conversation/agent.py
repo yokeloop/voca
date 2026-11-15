@@ -146,18 +146,17 @@ class VocaAgent(Agent):
         if pending is None or not pending.task.done():
             return False
         self.pending = None
-        result = (
-            pending.task.result()
-            if pending.task.exception() is None
-            else Failure("error", 0)
-        )
+        error = pending.task.exception()
+        result = pending.task.result() if error is None else Failure("error", 0)
         if isinstance(result, Failure):
+            named = {} if error is None else {"error": type(error).__name__}
             self.log.write(
                 "compaction_failed",
                 trigger="threshold",
                 reason=result.reason,
                 estimate_before=pending.plan.estimate_before,
                 ms=result.ms,
+                **named,
             )
             return False
         ctx = self.chat_ctx.copy()

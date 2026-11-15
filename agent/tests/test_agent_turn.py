@@ -331,6 +331,7 @@ def test_failure_keeps_context(tmp_path: Path) -> None:
     assert len(failed) == 1
     assert failed[0]["reason"] == "connection"
     assert failed[0]["ms"] == 5000
+    assert "error" not in failed[0]
     estimate_before = failed[0]["estimate_before"]
     assert isinstance(estimate_before, int) and estimate_before > 0
     assert kinds_of(events, "compaction") == []
@@ -438,3 +439,30 @@ def test_trim_while_pending_then_adopt(tmp_path: Path) -> None:
     assert (items[2].text_content or "").startswith("факт 9 ")
     assert len(kinds_of(events, "compaction")) == 1
     assert len(kinds_of(events, "context_trimmed")) == 1
+
+
+class RaisingSummarizer(FakeSummarizer):
+    async def summarize(self, prompt: str) -> Summary | Failure:
+        self.prompts.append(prompt)
+        raise RuntimeError("boom")
+
+
+def test_summarizer_exception_names_error(tmp_path: Path) -> None:
+    async def main() -> tuple[VocaAgent, Path, list[str]]:
+        fake = RaisingSummarizer(Summary("x", 1, 1))
+        agent, _, events, _ = make_agent(tmp_path, limits=LIMITS, summarizer=fake)
+        await agent.update_chat_ctx(history(6))
+        before = [item.id for item in agent.chat_ctx.items]
+        agent.maybe_compact()
+        assert agent.pending is not None
+        await asyncio.wait([agent.pending.task])
+        await agent.on_user_turn_completed(agent.chat_ctx.copy(), user_message())
+        return agent, events, before
+
+    agent, events, before = asyncio.run(main())
+    assert [item.id for item in agent.chat_ctx.items] == before
+    failed = kinds_of(events, "compaction_failed")
+    assert len(failed) == 1
+    assert failed[0]["reason"] == "error"
+    assert failed[0]["error"] == "RuntimeError"
+    assert agent.pending is None

@@ -332,9 +332,10 @@ classes come from `livekit-api` in the `agent/` environment.
   `usage.completion_tokens` or the `len // 3` estimate).
 - Failure: `compaction_failed` (`trigger`, `reason`: `no_key`, `timeout`,
   `connection`, `http_<code>`, `error`, `empty`, `length`, `refusal`;
-  `estimate_before`, `ms`); the context does not change, the retry comes
-  after the next reply. Without a key the line is written on each trigger,
-  with no request. At `hard_limit` `trim_chat_ctx` trims to `trim_to`
+  `estimate_before`, `ms`; `error` — the exception class name, only when the
+  summary task raised outside the API errors, with `reason` `error`); the
+  context does not change, the retry comes after the next reply. Without a
+  key the line is written on each trigger, with no request. At `hard_limit` `trim_chat_ctx` trims to `trim_to`
   (`context_trimmed`).
 
 ## Ports
