@@ -335,8 +335,14 @@ classes come from `livekit-api` in the `agent/` environment.
   `estimate_before`, `ms`; `error` — the exception class name, only when the
   summary task raised outside the API errors, with `reason` `error`); the
   context does not change, the retry comes after the next reply. Without a
-  key the line is written on each trigger, with no request. At `hard_limit` `trim_chat_ctx` trims to `trim_to`
-  (`context_trimmed`).
+  key the line is written on each trigger, with no request. At `hard_limit`
+  `trim_chat_ctx` trims to `trim_to` (`context_trimmed`).
+- Guard: an adoption that leaves the estimate at or above the threshold adds
+  a strike, one below it resets the strikes; at two strikes no summary starts
+  and one `compaction_blocked` line is written (`strikes`, `estimate`,
+  `threshold`, `retry_in_s`), after 300 s of block one probe runs, the strikes
+  live in memory per job, and the `hard_limit` trim works regardless (Hermes
+  anti-thrash).
 
 ## Ports
 
