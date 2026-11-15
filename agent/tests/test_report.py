@@ -55,12 +55,12 @@ def test_percentile() -> None:
 
 def test_variant_label() -> None:
     assert report.variant_label({}) == "base"
-    assert report.variant_label({"VOCA_ENDPOINTING_MIN_DELAY": "0.3"}) == (
+    assert report.variant_label({"VOCA_AGENT__ENDPOINTING_MIN_DELAY": "0.3"}) == (
         "min_delay=0.3"
     )
     both = {
-        "VOCA_PREEMPTIVE_GENERATION": "true",
-        "VOCA_ENDPOINTING_MIN_DELAY": "0.3",
+        "VOCA_AGENT__PREEMPTIVE_GENERATION": "true",
+        "VOCA_AGENT__ENDPOINTING_MIN_DELAY": "0.3",
     }
     assert report.variant_label(both) == "min_delay=0.3,preemptive=true"
 
