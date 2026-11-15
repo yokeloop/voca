@@ -221,6 +221,33 @@ These subcommands change state outside the repository and need the owner's permi
 
 Phase logs (requests without keys, responses, SSE events) go to `.local/bench/hermes/`. Host, Hermes profile and Traefik details live in the owner's deployment documentation.
 
+### 0.5 LiteLLM route
+
+**What it is for.** The agent's session summariser (E2) calls a cloud model, `glm-5.3-flash`, through the owner's LiteLLM proxy. It does not use the local llama-server.
+
+**What it needs.**
+
+- The entry `https://litellm.priney.com`: a Cloudflare DNS-only A record → `100.108.52.92`, and Traefik on that host with a dynamic file that routes the name to the LiteLLM proxy. TLS comes from Traefik's existing DNS-01 resolver. The entry is reachable only inside the owner's tailnet.
+- A separate LiteLLM virtual key with `key_alias` `voca`. It can be revoked without touching other clients.
+- Every API request (`/v1/...`) needs the key; `/health/liveliness` answers without it.
+
+**Variables** (`.env.example`):
+
+- `VOCA_LITELLM_KEY` — the virtual key; it stays in your `.env` and is never committed.
+
+**Checks**, from the repository root, without printing the key:
+
+```sh
+set -a; . ./.env; set +a
+getent hosts litellm.priney.com
+curl -fsS -H "Authorization: Bearer $VOCA_LITELLM_KEY" https://litellm.priney.com/v1/models | jq -r '.data[].id' | grep -x glm-5.3-flash
+curl -s -o /dev/null -w '%{http_code}\n' https://litellm.priney.com/v1/models
+```
+
+The first `curl` prints `glm-5.3-flash`, the second prints `401`.
+
+Host, LiteLLM and Traefik details, and how to revoke the key, live in the owner's deployment documentation.
+
 ### 1.1 Agent
 
 The `agent` service is the voice agent: a LiveKit worker (`voca agent start`) that joins the room `voca` when a participant enters and talks in Russian — Silero VAD, STT on audio.cpp, the LLM on llama-server with the `delegate` tool (a stub for now), text preparation (numbers, stress, the first short fragment) and Supertonic TTS with voice F4. It needs the whole stand: LiveKit, audio.cpp ([0.2](#02-audio-stand)), llama-server ([0.3](#03-llm-stand)) and the page ([0.1](#01-repository-and-launch)).
