@@ -236,3 +236,22 @@ def test_archive_search_cli_errors(
     err = capsys.readouterr().err
     assert "voca archive: конфиг не прочитан (" in err
     assert str(config) in err
+
+
+class RolledBack(sqlite3.Connection):
+    def executemany(self, sql: str, parameters: Any, /) -> sqlite3.Cursor:
+        self.execute("ROLLBACK")
+        raise sqlite3.OperationalError("database or disk is full")
+
+
+def test_record_keeps_error_after_sqlite_rollback(tmp_path: Path) -> None:
+    path = tmp_path / "sessions.sqlite3"
+    SessionStore.open(path).close()
+    store = SessionStore(sqlite3.connect(path, autocommit=True, factory=RolledBack))
+    rec = SessionRecorder(store, store.open_session().id)
+    ctx = llm.ChatContext()
+    rec.add(dump(ctx.add_message(role="user", content=["Привет"])))
+    with pytest.raises(sqlite3.OperationalError, match="full"):
+        rec.flush(ctx.to_dict(**DUMP))
+    assert len(rec.pending) == 1
+    store.close()

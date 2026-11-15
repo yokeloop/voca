@@ -71,7 +71,8 @@ class SessionStore:
                     db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
                 db.execute("COMMIT")
             except BaseException:
-                db.execute("ROLLBACK")
+                if db.in_transaction:
+                    db.execute("ROLLBACK")
                 raise
         except BaseException:
             db.close()
@@ -146,7 +147,8 @@ class SessionStore:
             )
             self.db.execute("COMMIT")
         except BaseException:
-            self.db.execute("ROLLBACK")
+            if self.db.in_transaction:
+                self.db.execute("ROLLBACK")
             raise
 
     def search(self, query: str, limit: int) -> list[Hit]:
