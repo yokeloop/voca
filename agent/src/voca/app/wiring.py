@@ -4,6 +4,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 
+import httpx
 import openai as openai_sdk
 from livekit.agents import (
     DEFAULT_API_CONNECT_OPTIONS,
@@ -23,6 +24,7 @@ from voca.speech.fragments import FirstFragmentTokenizer
 from voca.speech.markup import strip_latex_and_tables
 from voca.speech.prepare import Prepared, prepare
 from voca.speech.stress import Stress
+from voca.telemetry.jsonl import JsonlLog
 
 OnPrepared = Callable[[str, Prepared, float], None]
 
@@ -34,6 +36,8 @@ TTS_TEXT_TRANSFORMS: list[TextTransforms] = [
     "filter_emoji",
     strip_latex_and_tables,
 ]
+
+SAMPLING = ("temperature", "top_k", "top_p", "repeat_penalty")
 
 
 class SpeechLanguageClient(openai_sdk.AsyncOpenAI):
@@ -128,12 +132,40 @@ def make_stt(settings: Settings, vad: vad.VAD) -> stt.StreamAdapter:
 
 
 def make_llm(settings: Settings) -> openai.LLM:
+    extra_body: dict[str, Any] = {
+        "thinking_budget_tokens": settings.model.thinking_budget
+    }
+    for name in SAMPLING:
+        value = getattr(settings.model, name)
+        if value is not None:
+            extra_body[name] = value
     return openai.LLM(
         model=settings.llm_profile,
         base_url=settings.llm_url,
         api_key="none",
-        extra_body={"thinking_budget_tokens": settings.model.thinking_budget},
+        extra_body=extra_body,
     )
+
+
+async def check_context(
+    settings: Settings, log: JsonlLog, *, timeout: float = 1.0
+) -> None:
+    url = settings.llm_url.rstrip("/").removesuffix("/v1") + "/props"
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.get(url)
+            response.raise_for_status()
+            n_ctx = response.json()["default_generation_settings"]["n_ctx"]
+    except (httpx.HTTPError, ValueError, KeyError, TypeError):
+        return
+    if not isinstance(n_ctx, int):
+        return
+    if n_ctx != settings.model.context_tokens:
+        log.write(
+            "context_mismatch",
+            n_ctx=n_ctx,
+            context_tokens=settings.model.context_tokens,
+        )
 
 
 def make_tts(

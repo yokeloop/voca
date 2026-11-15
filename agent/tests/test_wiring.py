@@ -1,4 +1,5 @@
 import asyncio
+import json
 import math
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -14,11 +15,14 @@ from voca.app.wiring import (
     MAX_UNRECOVERABLE_ERRORS,
     TTS_TEXT_TRANSFORMS,
     build_session,
+    check_context,
+    make_llm,
     make_tts,
 )
 from voca.app.worker import run, server_options
 from voca.config import Settings
 from voca.speech.prepare import Prepared
+from voca.telemetry.jsonl import JsonlLog
 
 
 def test_build_session_options() -> None:
@@ -122,3 +126,45 @@ def test_run_stops_without_instructions(
     err = capsys.readouterr().err
     assert "инструкции не загружены" in err
     assert str(tmp_path / "SOUL.md") in err
+
+
+def test_make_llm_sampling() -> None:
+    assert make_llm(Settings())._opts.extra_body == {"thinking_budget_tokens": 128}
+    body = make_llm(Settings(model={"temperature": 0.2}))._opts.extra_body
+    assert body == {"thinking_budget_tokens": 128, "temperature": 0.2}
+
+
+def context_rows(tmp_path: Path, props: dict[str, Any] | None) -> list[Any]:
+    async def handler(request: web.Request) -> web.Response:
+        return web.json_response(props)
+
+    async def main() -> None:
+        app = web.Application()
+        if props is not None:
+            app.router.add_get("/props", handler)
+        async with TestServer(app, host="127.0.0.1") as server:
+            settings = Settings(llm_url=str(server.make_url("/v1")))
+            log = JsonlLog(tmp_path / "events.jsonl", session="t")
+            await check_context(settings, log)
+            log.close()
+
+    asyncio.run(main())
+    lines = (tmp_path / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    return [json.loads(line) for line in lines]
+
+
+def test_context_mismatch_written(tmp_path: Path) -> None:
+    rows = context_rows(tmp_path, {"default_generation_settings": {"n_ctx": 8192}})
+    assert len(rows) == 1
+    assert rows[0]["kind"] == "context_mismatch"
+    assert rows[0]["n_ctx"] == 8192
+    assert rows[0]["context_tokens"] == 16384
+
+
+def test_context_match_or_unreachable_writes_nothing(tmp_path: Path) -> None:
+    matched = context_rows(
+        tmp_path / "match", {"default_generation_settings": {"n_ctx": 16384}}
+    )
+    assert not [row for row in matched if row["kind"] == "context_mismatch"]
+    missing = context_rows(tmp_path / "missing", None)
+    assert not [row for row in missing if row["kind"] == "context_mismatch"]
