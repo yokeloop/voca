@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 from livekit.agents import llm
 
+import voca.__main__
 from voca.session.store import SearchError, SessionRecorder, SessionStore, StoreError
 
 DUMP: dict[str, Any] = {
@@ -187,3 +188,51 @@ def test_readonly_missing_file(tmp_path: Path) -> None:
     with pytest.raises(StoreError):
         SessionStore.open_readonly(path)
     assert not path.exists()
+
+
+def run_cli(monkeypatch: pytest.MonkeyPatch, *args: str) -> None:
+    monkeypatch.setattr("sys.argv", ["voca", "archive", "search", *args])
+    voca.__main__.main()
+
+
+def test_archive_search_cli(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / "sessions.sqlite3"
+    remember(path, "Мой кот Ёжик")
+    monkeypatch.setenv("VOCA_SESSION__PATH", str(path))
+    run_cli(monkeypatch, "ежик")
+    lines = capsys.readouterr().out.splitlines()
+    assert len(lines) == 1
+    assert "\tuser\t" in lines[0]
+    assert "[Ёжик]" in lines[0]
+
+
+def test_archive_search_cli_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    missing = tmp_path / "missing.sqlite3"
+    monkeypatch.setenv("VOCA_SESSION__PATH", str(missing))
+    with pytest.raises(SystemExit) as stopped:
+        run_cli(monkeypatch, "ежик")
+    assert stopped.value.code == 2
+    assert "нет файла сессий" in capsys.readouterr().err
+    assert not missing.exists()
+
+    path = tmp_path / "sessions.sqlite3"
+    remember(path, "Привет")
+    monkeypatch.setenv("VOCA_SESSION__PATH", str(path))
+    with pytest.raises(SystemExit) as stopped:
+        run_cli(monkeypatch, '"')
+    assert stopped.value.code == 2
+    assert "неверный запрос" in capsys.readouterr().err
+
+    config = tmp_path / "config.toml"
+    config.write_text("[session]\nunknown = 1\n", encoding="utf-8")
+    monkeypatch.setenv("VOCA_CONFIG", str(config))
+    with pytest.raises(SystemExit) as stopped:
+        run_cli(monkeypatch, "ежик")
+    assert stopped.value.code == 2
+    err = capsys.readouterr().err
+    assert "voca archive: конфиг не прочитан (" in err
+    assert str(config) in err
