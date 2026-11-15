@@ -6,7 +6,7 @@
 [model]
 # Context window in tokens; equal to -c in scripts/llama.sh, a mismatch writes context_mismatch.
 context_tokens = 16384
-# Reasoning budget sent as thinking_budget_tokens.
+# Reasoning budget sent as thinking_budget_tokens with each LLM request.
 thinking_budget = 128
 # Sampling: unset values are not sent, sampling then comes from the server profile.
 # temperature = …
@@ -15,19 +15,19 @@ thinking_budget = 128
 # repeat_penalty = …
 
 [agent]
-# Kokoro voice of the replies.
+# Supertonic voice of the agent.
 tts_voice = "F4"
-# Silence in seconds that ends a user utterance (VAD).
+# Silence in seconds that ends speech for Silero VAD.
 vad_min_silence = 0.3
-# Seconds of user speech that interrupt a reply.
+# Seconds of user speech that interrupt the agent; G5 tunes it.
 interruption_min_duration = 0.5
-# Recognised words that interrupt a reply; 0 means speech alone is enough.
+# Words of user speech that interrupt the agent; G5 tunes it.
 interruption_min_words = 0
-# Seconds from the start of the session's first reply in which interruption is ignored.
+# Seconds from the start of the session's first agent reply during which interruptions are ignored (once per session); G5 tunes it.
 aec_warmup = 3.0
-# Seconds to wait after the end of speech before the reply.
+# Seconds of silence before the user's turn ends; G6 tunes it.
 endpointing_min_delay = 0.5
-# Start generating the reply before the end of the user's turn.
+# Start the reply before the user's turn ends; G6 measures it.
 preemptive_generation = false
 
 [session]
