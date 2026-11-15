@@ -79,7 +79,7 @@ async def entrypoint(ctx: JobContext) -> None:
     )
     recorder = SessionRecorder(store, current.id)
 
-    def save(compacted_at: float | None = None) -> None:
+    def save() -> None:
         try:
             recorder.flush(
                 agent.chat_ctx.to_dict(
@@ -87,7 +87,6 @@ async def entrypoint(ctx: JobContext) -> None:
                     exclude_timestamp=False,
                     exclude_config_update=True,
                 ),
-                compacted_at=compacted_at,
             )
         except sqlite3.Error as error:
             log.write("session_write_failed", error=str(error))
@@ -104,9 +103,10 @@ async def entrypoint(ctx: JobContext) -> None:
                 name=None,
                 text=body,
                 data=dict(data),
-            )
+            ),
+            compacted_at=time.time(),
         )
-        save(compacted_at=time.time())
+        save()
 
     agent.on_compacted = on_compacted
 

@@ -186,22 +186,24 @@ class SessionRecorder:
         self.store = store
         self.session_id = session_id
         self.pending: list[ArchiveRow] = []
+        self.compacted_at: float | None = None
 
     def add(self, item: dict[str, Any]) -> None:
         row = archive_row(item)
         if row is not None:
             self.pending.append(row)
 
-    def add_row(self, row: ArchiveRow) -> None:
+    def add_row(self, row: ArchiveRow, *, compacted_at: float | None = None) -> None:
         self.pending.append(row)
+        if compacted_at is not None:
+            self.compacted_at = compacted_at
 
-    def flush(
-        self, context: dict[str, Any], *, compacted_at: float | None = None
-    ) -> None:
+    def flush(self, context: dict[str, Any]) -> None:
         self.store.record(
             self.session_id,
             self.pending,
             snapshot_items(context["items"]),
-            compacted_at=compacted_at,
+            compacted_at=self.compacted_at,
         )
+        self.compacted_at = None
         self.pending.clear()

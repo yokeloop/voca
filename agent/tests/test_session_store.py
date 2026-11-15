@@ -259,30 +259,29 @@ def test_record_keeps_error_after_sqlite_rollback(tmp_path: Path) -> None:
     store.close()
 
 
+def summary_row(item_id: str) -> ArchiveRow:
+    return ArchiveRow(
+        kind="summary",
+        item_id=item_id,
+        at=5.0,
+        call_id=None,
+        name=None,
+        text="Кота зовут Ёжик",
+        data={"trigger": "threshold", "folded_turns": 4},
+    )
+
+
+def counters(path: Path) -> tuple[float | None, int]:
+    with closing(sqlite3.connect(path)) as db:
+        row = db.execute("SELECT compacted_at, summary_count FROM sessions").fetchone()
+    return row[0], row[1]
+
+
 def test_summary_row_and_counter(tmp_path: Path) -> None:
     path = tmp_path / "sessions.sqlite3"
     store, rec = recorder(path)
-
-    def summary(item_id: str) -> ArchiveRow:
-        return ArchiveRow(
-            kind="summary",
-            item_id=item_id,
-            at=5.0,
-            call_id=None,
-            name=None,
-            text="Кота зовут Ёжик",
-            data={"trigger": "threshold", "folded_turns": 4},
-        )
-
-    def counters() -> tuple[float | None, int]:
-        with closing(sqlite3.connect(path)) as db:
-            row = db.execute(
-                "SELECT compacted_at, summary_count FROM sessions"
-            ).fetchone()
-        return row[0], row[1]
-
-    rec.add_row(summary("sum1"))
-    rec.flush({"items": []}, compacted_at=123.0)
+    rec.add_row(summary_row("sum1"), compacted_at=123.0)
+    rec.flush({"items": []})
     with closing(sqlite3.connect(path)) as db:
         written = db.execute(
             "SELECT kind, data_json FROM messages WHERE item_id = ?", ("sum1",)
@@ -290,12 +289,39 @@ def test_summary_row_and_counter(tmp_path: Path) -> None:
     assert len(written) == 1
     assert written[0][0] == "summary"
     assert json.loads(written[0][1])["folded_turns"] == 4
-    assert counters() == (123.0, 1)
-    rec.add_row(summary("sum2"))
-    rec.flush({"items": []}, compacted_at=124.0)
-    assert counters() == (124.0, 2)
+    assert counters(path) == (123.0, 1)
+    rec.add_row(summary_row("sum2"), compacted_at=124.0)
+    rec.flush({"items": []})
+    assert counters(path) == (124.0, 2)
     hits = store.search("ежик", 20)
     assert hits and all(hit.kind == "summary" for hit in hits)
     rec.flush({"items": []})
-    assert counters() == (124.0, 2)
+    assert counters(path) == (124.0, 2)
+    store.close()
+
+
+def test_summary_retry_keeps_counter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "sessions.sqlite3"
+    store, rec = recorder(path)
+    record = store.record
+    failures = [sqlite3.OperationalError("database or disk is full")]
+
+    def flaky(*args: Any, **kwargs: Any) -> None:
+        if failures:
+            raise failures.pop()
+        record(*args, **kwargs)
+
+    monkeypatch.setattr(store, "record", flaky)
+    rec.add_row(summary_row("sum1"), compacted_at=123.0)
+    with pytest.raises(sqlite3.OperationalError, match="full"):
+        rec.flush({"items": []})
+    assert kinds(path) == []
+    assert counters(path) == (None, 0)
+    rec.flush({"items": []})
+    assert kinds(path) == ["summary"]
+    assert counters(path) == (123.0, 1)
+    rec.flush({"items": []})
+    assert counters(path) == (123.0, 1)
     store.close()
