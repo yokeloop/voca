@@ -5,6 +5,8 @@ import pytest
 
 from voca.config import Settings
 
+EXAMPLE = Path(__file__).resolve().parents[2] / "config.example.toml"
+
 
 def write_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, text: str) -> Path:
     path = tmp_path / "config.toml"
@@ -101,3 +103,10 @@ def test_invalid_values(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None
     assert Settings().compression.daily_at == ""
     write_config(tmp_path, monkeypatch, "[compression]\nthreshold = 0\n")
     assert Settings().compression.threshold == 0
+
+
+def test_example_config_is_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    defaults = Settings().model_dump()
+    monkeypatch.setenv("VOCA_CONFIG", str(EXAMPLE))
+    assert EXAMPLE.is_file()
+    assert Settings().model_dump() == defaults
