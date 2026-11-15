@@ -20,7 +20,7 @@ from voca.telemetry.jsonl import JsonlLog, TurnTracker
 
 def prewarm(proc: JobProcess) -> None:
     proc.userdata["vad"] = silero.VAD.load(
-        min_silence_duration=Settings().vad_min_silence
+        min_silence_duration=Settings().agent.vad_min_silence
     )
     proc.userdata["stress"] = load_accent()
 
@@ -45,8 +45,8 @@ async def entrypoint(ctx: JobContext) -> None:
         instructions=instructions,
         log=log,
         cards=cards,
-        ctx_high=settings.ctx_high_tokens(),
-        ctx_low=settings.ctx_low_tokens(),
+        ctx_high=settings.trim_at_tokens(),
+        ctx_low=settings.trim_to_tokens(),
     )
     tracker = TurnTracker(log)
     executor = ThreadPoolExecutor(max_workers=1)

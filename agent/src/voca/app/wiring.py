@@ -132,7 +132,7 @@ def make_llm(settings: Settings) -> openai.LLM:
         model=settings.llm_profile,
         base_url=settings.llm_url,
         api_key="none",
-        extra_body={"thinking_budget_tokens": settings.llm_thinking_budget},
+        extra_body={"thinking_budget_tokens": settings.model.thinking_budget},
     )
 
 
@@ -144,7 +144,7 @@ def make_tts(
 ) -> tts.StreamAdapter:
     inner = openai.TTS(
         model="tts",
-        voice=settings.tts_voice,
+        voice=settings.agent.tts_voice,
         response_format="pcm",
         sample_rate=44100,
         client=SpeechLanguageClient(
@@ -180,15 +180,15 @@ def build_session(
             tts_conn_options=APIConnectOptions(max_retry=1, timeout=5.0),
             max_unrecoverable_errors=MAX_UNRECOVERABLE_ERRORS,
         ),
-        aec_warmup_duration=settings.aec_warmup,
+        aec_warmup_duration=settings.agent.aec_warmup,
         turn_handling={
             "turn_detection": "vad",
-            "endpointing": {"min_delay": settings.endpointing_min_delay},
+            "endpointing": {"min_delay": settings.agent.endpointing_min_delay},
             "interruption": {
                 "mode": "vad",
-                "min_duration": settings.interruption_min_duration,
-                "min_words": settings.interruption_min_words,
+                "min_duration": settings.agent.interruption_min_duration,
+                "min_words": settings.agent.interruption_min_words,
             },
-            "preemptive_generation": {"enabled": settings.preemptive_generation},
+            "preemptive_generation": {"enabled": settings.agent.preemptive_generation},
         },
     )

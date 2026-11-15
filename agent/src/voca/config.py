@@ -1,19 +1,125 @@
+import os
+import re
 from pathlib import Path
-from typing import Self
+from typing import Any, Self
 
-from pydantic import Field, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    field_validator,
+    model_validator,
+)
+from pydantic_settings import (
+    BaseSettings,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+    TomlConfigSettingsSource,
+)
 
-# equal to -c in scripts/llama.sh
-LLM_CONTEXT_TOKENS = 16384
+DAILY_AT = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 
 
 def default_state_dir() -> Path:
     return Path(__file__).resolve().parents[3] / ".local"
 
 
+def config_path() -> Path:
+    return Path(os.environ.get("VOCA_CONFIG", "~/.voca/config.toml")).expanduser()
+
+
+class ModelConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    # equal to -c in scripts/llama.sh
+    context_tokens: int = Field(default=16384, gt=0)
+    thinking_budget: int = Field(default=128, ge=0)
+    temperature: float | None = None
+    top_k: int | None = None
+    top_p: float | None = None
+    repeat_penalty: float | None = None
+
+
+class AgentConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    tts_voice: str = "F4"
+    vad_min_silence: float = 0.3
+    interruption_min_duration: float = 0.5
+    interruption_min_words: int = 0
+    aec_warmup: float = 3.0
+    endpointing_min_delay: float = 0.5
+    preemptive_generation: bool = False
+
+
+class SessionConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: Path = Field(default=Path("~/.voca/sessions.sqlite3"), validate_default=True)
+    history_on_join: int = Field(default=50, ge=0)
+
+    @field_validator("path")
+    @classmethod
+    def expand_path(cls, value: Path) -> Path:
+        return value.expanduser()
+
+
+class CompressionModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    url: str = "https://litellm.priney.com/v1"
+    model: str = "glm-5.3-flash"
+    timeout_s: float = Field(default=60, gt=0)
+
+
+class CompressionConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    threshold: float = Field(default=0.60, ge=0)
+    hard_limit: float = 0.85
+    trim_to: float = 0.40
+    tail_ratio: float = Field(default=0.20, gt=0, lt=1)
+    tail_turns_min: int = Field(default=2, ge=0)
+    idle_hours: float = Field(default=4, ge=0)
+    daily_at: str = "04:00"
+    model: CompressionModel = Field(default_factory=CompressionModel)
+
+    @field_validator("daily_at")
+    @classmethod
+    def check_daily_at(cls, value: str) -> str:
+        if value != "" and not DAILY_AT.match(value):
+            raise ValueError("daily_at: HH:MM или пустая строка")
+        return value
+
+    @model_validator(mode="after")
+    def check_limits(self) -> Self:
+        if (
+            not 0 < self.trim_to < self.hard_limit < 1
+            or self.threshold >= self.hard_limit
+        ):
+            raise ValueError(
+                "compression: нужно 0 < trim_to < hard_limit < 1 "
+                "и threshold < hard_limit"
+            )
+        return self
+
+
+class ConfigFile(TomlConfigSettingsSource):
+    def __call__(self) -> dict[str, Any]:
+        data = super().__call__()
+        if "litellm_key" in data:
+            raise ValueError(
+                f"{config_path()}: litellm_key в файле не читается — "
+                "ключ только в VOCA_LITELLM_KEY"
+            )
+        return data
+
+
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="VOCA_")
+    model_config = SettingsConfigDict(
+        env_prefix="VOCA_", env_nested_delimiter="__", extra="forbid"
+    )
 
     web_host: str = "127.0.0.1"
     web_port: int = 8083
@@ -24,33 +130,42 @@ class Settings(BaseSettings):
     audio_url: str = "http://127.0.0.1:8082/v1"
     llm_url: str = "http://127.0.0.1:8081/v1"
     llm_profile: str = "lfm2.5-2.6b"
-    tts_voice: str = "F4"
-    llm_thinking_budget: int = 128
-    vad_min_silence: float = 0.3
-    interruption_min_duration: float = 0.5
-    interruption_min_words: int = 0
-    aec_warmup: float = 3.0
-    endpointing_min_delay: float = 0.5
-    preemptive_generation: bool = False
     agent_port: int = 8084
     state_dir: Path = Field(default_factory=default_state_dir)
     instructions_dir: Path = Path("~/.voca/instructions")
-    ctx_trim_high: float = 0.60
-    ctx_trim_low: float = 0.40
+    litellm_key: SecretStr | None = None
+    model: ModelConfig = Field(default_factory=ModelConfig)
+    agent: AgentConfig = Field(default_factory=AgentConfig)
+    session: SessionConfig = Field(default_factory=SessionConfig)
+    compression: CompressionConfig = Field(default_factory=CompressionConfig)
 
     @field_validator("instructions_dir")
     @classmethod
     def expand_instructions_dir(cls, value: Path) -> Path:
         return value.expanduser()
 
-    @model_validator(mode="after")
-    def check_trim(self) -> Self:
-        if not 0 < self.ctx_trim_low < self.ctx_trim_high < 1:
-            raise ValueError("VOCA_CTX_TRIM_LOW < VOCA_CTX_TRIM_HIGH, both in (0, 1)")
-        return self
+    @field_validator("litellm_key", mode="before")
+    @classmethod
+    def empty_key_is_none(cls, value: object) -> object:
+        return None if value == "" else value
 
-    def ctx_high_tokens(self) -> int:
-        return int(self.ctx_trim_high * LLM_CONTEXT_TOKENS)
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        return (
+            init_settings,
+            env_settings,
+            ConfigFile(settings_cls, toml_file=config_path()),
+        )
 
-    def ctx_low_tokens(self) -> int:
-        return int(self.ctx_trim_low * LLM_CONTEXT_TOKENS)
+    def trim_at_tokens(self) -> int:
+        return int(self.compression.hard_limit * self.model.context_tokens)
+
+    def trim_to_tokens(self) -> int:
+        return int(self.compression.trim_to * self.model.context_tokens)
