@@ -168,3 +168,29 @@ def test_context_match_or_unreachable_writes_nothing(tmp_path: Path) -> None:
     assert not [row for row in matched if row["kind"] == "context_mismatch"]
     missing = context_rows(tmp_path / "missing", None)
     assert not [row for row in missing if row["kind"] == "context_mismatch"]
+
+
+def test_run_stops_on_broken_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def run_app(options: Any) -> None:
+        raise AssertionError("run_app called")
+
+    monkeypatch.setattr("voca.app.worker.cli.run_app", run_app)
+    monkeypatch.setattr("sys.argv", ["voca"])
+    for index, text in enumerate(
+        (
+            "[compression\n",
+            "[compression]\nhard_limit = 0.3\n",
+            '[compression.model]\napi_key = "x"\n',
+        )
+    ):
+        path = tmp_path / f"config-{index}.toml"
+        path.write_text(text, encoding="utf-8")
+        monkeypatch.setenv("VOCA_CONFIG", str(path))
+        with pytest.raises(SystemExit) as stopped:
+            run("start", [])
+        assert stopped.value.code == 1
+        err = capsys.readouterr().err
+        assert "конфиг не прочитан" in err
+        assert str(path) in err

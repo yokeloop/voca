@@ -8,10 +8,10 @@ from livekit.agents import JobContext, JobProcess, WorkerOptions, cli
 from livekit.agents.voice import ErrorEvent, room_io
 from livekit.plugins import silero
 
-from voca.app.wiring import build_session
+from voca.app.wiring import build_session, check_context
 from voca.clientio.cards import CardState
 from voca.clientio.metrics import bind_metrics
-from voca.config import Settings
+from voca.config import Settings, config_path
 from voca.conversation.agent import VocaAgent
 from voca.conversation.instructions import InstructionError, InstructionLoader
 from voca.speech.stress import load_accent
@@ -37,6 +37,7 @@ async def entrypoint(ctx: JobContext) -> None:
         source=instructions.source,
         error=None,
     )
+    await check_context(settings, log)
     cards = CardState(instructions)
     cards.bind(ctx.room)
     bind_metrics(ctx.room, log.write)
@@ -106,7 +107,15 @@ def server_options(settings: Settings) -> WorkerOptions:
 
 
 def run(mode: str, rest: list[str]) -> None:
-    settings = Settings()
+    try:
+        settings = Settings()
+    except ValueError as error:
+        print(
+            f"voca agent: конфиг не прочитан ({config_path()}): {error}; "
+            "образец — config.example.toml, путь — VOCA_CONFIG",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     try:
         InstructionLoader(settings.instructions_dir).load()
     except InstructionError as error:
