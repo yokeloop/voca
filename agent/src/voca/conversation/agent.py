@@ -2,7 +2,7 @@ import asyncio
 import time
 from collections.abc import AsyncGenerator, Callable
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 
 from livekit.agents import FlushSentinel, ToolError, function_tool, llm
 from livekit.agents.voice import Agent, ModelSettings
@@ -12,7 +12,9 @@ from voca.conversation.compaction import (
     SUMMARY_KEY,
     Limits,
     Plan,
+    Trigger,
     build_prompt,
+    due,
     estimate,
     plan,
     summary_budget,
@@ -35,6 +37,7 @@ BLOCK_RETRY_S = 300
 class Pending:
     plan: Plan
     task: asyncio.Task[Summary | Failure]
+    trigger: str
 
 
 def refusal(component: str, *, tts_down: bool) -> str | None:
@@ -85,6 +88,20 @@ def records(ctx: llm.ChatContext) -> list[Item]:
     return items
 
 
+def last_message_at(ctx: llm.ChatContext) -> float | None:
+    times = [
+        item.created_at
+        for item in ctx.items
+        if item.type in ("function_call", "function_call_output")
+        or (
+            item.type == "message"
+            and item.role in ("user", "assistant")
+            and not item.extra.get(SUMMARY_KEY)
+        )
+    ]
+    return max(times, default=None)
+
+
 class VocaAgent(Agent):
     def __init__(
         self,
@@ -98,7 +115,8 @@ class VocaAgent(Agent):
         chat_ctx: llm.ChatContext | None = None,
         limits: Limits | None = None,
         summarizer: Summarizer | None = None,
-        clock: Callable[[], float] = time.monotonic,
+        clock: Callable[[], float] = time.time,
+        compacted_at: float | None = None,
     ) -> None:
         super().__init__(instructions=instructions.text, chat_ctx=chat_ctx)
         self.loader = loader
@@ -112,6 +130,7 @@ class VocaAgent(Agent):
         self.pending: Pending | None = None
         self.on_compacted: OnCompacted | None = None
         self.clock = clock
+        self.compacted_at = compacted_at if compacted_at is not None else self.clock()
         self.strikes = 0
         self.blocked_at: float | None = None
 
@@ -143,18 +162,22 @@ class VocaAgent(Agent):
                 return
             self.strikes = 1
             self.blocked_at = None
+        self.start_compaction("threshold", items)
+
+    def start_compaction(self, trigger: str, items: list[Item]) -> bool:
+        assert self.limits is not None and self.summarizer is not None
         found = plan(items, self.limits)
         if found is None:
-            return
+            return False
         if not self.summarizer.ready:
             self.log.write(
                 "compaction_failed",
-                trigger="threshold",
+                trigger=trigger,
                 reason="no_key",
                 estimate_before=found.estimate_before,
                 ms=0,
             )
-            return
+            return False
         prompt = build_prompt(
             found.middle,
             found.previous_body,
@@ -162,8 +185,28 @@ class VocaAgent(Agent):
             budget=summary_budget(found.folded_tokens),
         )
         self.pending = Pending(
-            found, asyncio.create_task(self.summarizer.summarize(prompt))
+            found, asyncio.create_task(self.summarizer.summarize(prompt)), trigger
         )
+        return True
+
+    def check_due(self) -> Trigger | None:
+        if self.limits is None or self.summarizer is None or self.pending is not None:
+            return None
+        ctx = self.chat_ctx.copy()
+        items = records(ctx)
+        last = last_message_at(ctx)
+        trigger = due(
+            datetime.fromtimestamp(self.clock()),
+            None if last is None else datetime.fromtimestamp(last),
+            datetime.fromtimestamp(self.compacted_at),
+            self.limits.idle_hours,
+            self.limits.daily_at,
+            estimate(items),
+            self.limits.tail_budget,
+        )
+        if trigger is not None and self.start_compaction(trigger, items):
+            return trigger
+        return None
 
     async def accept_compaction(self) -> bool:
         pending = self.pending
@@ -176,7 +219,7 @@ class VocaAgent(Agent):
             named = {} if error is None else {"error": type(error).__name__}
             self.log.write(
                 "compaction_failed",
-                trigger="threshold",
+                trigger=pending.trigger,
                 reason=result.reason,
                 estimate_before=pending.plan.estimate_before,
                 ms=result.ms,
@@ -203,17 +246,19 @@ class VocaAgent(Agent):
         ctx.items.insert(index, message)
         await self.update_chat_ctx(ctx)
         after = estimate(records(self.chat_ctx.copy()))
-        if self.limits is not None and after >= self.limits.threshold:
-            self.strikes += 1
-        else:
-            self.strikes = 0
+        if pending.trigger == "threshold":
+            if self.limits is not None and after >= self.limits.threshold:
+                self.strikes += 1
+            else:
+                self.strikes = 0
         data: dict[str, object] = {
-            "trigger": "threshold",
+            "trigger": pending.trigger,
             "estimate_before": pending.plan.estimate_before,
             "after": after,
             "folded_turns": pending.plan.folded_turns,
         }
         self.log.write("compaction", **data, ms=result.ms, summary_tokens=result.tokens)
+        self.compacted_at = self.clock()
         if self.on_compacted is not None:
             self.on_compacted(message.id, at, result.body, data)
         return True
@@ -258,6 +303,7 @@ class VocaAgent(Agent):
                 after=trim.estimate_after,
             )
             changed = True
+        self.check_due()
         if changed:
             turn_ctx.items = self.chat_ctx.copy().items
 

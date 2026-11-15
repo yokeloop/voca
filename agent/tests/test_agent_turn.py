@@ -3,12 +3,13 @@ import json
 import shutil
 import time
 from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
 
 from livekit.agents import llm
 
 from voca.clientio.cards import CardState
-from voca.conversation.agent import VocaAgent, records, refusal
+from voca.conversation.agent import BLOCK_STRIKES, VocaAgent, records, refusal
 from voca.conversation.compaction import Limits, estimate
 from voca.conversation.instructions import InstructionLoader
 from voca.conversation.summarizer import Failure, Summarizer, Summary
@@ -25,7 +26,8 @@ def make_agent(
     chat_ctx: llm.ChatContext | None = None,
     limits: Limits | None = None,
     summarizer: Summarizer | None = None,
-    clock: Callable[[], float] = time.monotonic,
+    clock: Callable[[], float] = time.time,
+    compacted_at: float | None = None,
 ) -> tuple[VocaAgent, Path, Path, CardState]:
     directory = tmp_path / "instructions"
     shutil.copytree(EXAMPLE, directory)
@@ -44,6 +46,7 @@ def make_agent(
         limits=limits,
         summarizer=summarizer,
         clock=clock,
+        compacted_at=compacted_at,
     )
     return agent, directory, events, cards
 
@@ -501,6 +504,211 @@ async def block(
     agent.maybe_compact()
     agent.maybe_compact()
     return agent, events, fake
+
+
+T0 = datetime(2026, 11, 15, 3, 0).timestamp()
+
+
+def schedule(idle_hours: float, daily_at: str, tail_budget: int = 300) -> Limits:
+    return Limits(
+        threshold=500,
+        tail_budget=tail_budget,
+        tail_turns_min=2,
+        idle_hours=idle_hours,
+        daily_at=daily_at,
+    )
+
+
+def test_join_starts_one_compaction_and_first_turn_uses_full_context(
+    tmp_path: Path,
+) -> None:
+    async def main() -> tuple[VocaAgent, Path, FakeSummarizer]:
+        fake = FakeSummarizer(Summary("## О чём говорили\nфакт 1", 50, 900), hold=True)
+        clock = FakeClock()
+        clock.now = T0 + 13 + 5 * 3600
+        agent, _, events, _ = make_agent(
+            tmp_path,
+            limits=schedule(4, ""),
+            summarizer=fake,
+            clock=clock,
+            compacted_at=T0,
+        )
+        await agent.update_chat_ctx(history(6, start=T0))
+        assert agent.check_due() == "idle"
+        assert agent.check_due() is None
+        await asyncio.sleep(0)
+        assert len(fake.prompts) == 1
+        assert agent.pending is not None
+        assert agent.pending.trigger == "idle"
+        ids = [item.id for item in agent.chat_ctx.items]
+        turn_ctx = agent.chat_ctx.copy()
+        await asyncio.wait_for(
+            agent.on_user_turn_completed(turn_ctx, user_message()), 1
+        )
+        assert [item.id for item in agent.chat_ctx.items] == ids
+        assert [item.id for item in turn_ctx.items] == ids
+        assert summaries(agent.chat_ctx) == []
+        assert kinds_of(events, "compaction") == []
+        assert len(fake.prompts) == 1
+        fake.gate.set()
+        await agent.pending.task
+        await agent.on_user_turn_completed(agent.chat_ctx.copy(), user_message())
+        return agent, events, fake
+
+    agent, events, fake = asyncio.run(main())
+    assert len(summaries(agent.chat_ctx)) == 1
+    written = kinds_of(events, "compaction")
+    assert len(written) == 1
+    assert written[0]["trigger"] == "idle"
+    assert len(fake.prompts) == 1
+
+
+def test_silent_room_then_reply_triggers_idle(tmp_path: Path) -> None:
+    async def main() -> tuple[VocaAgent, Path, FakeSummarizer, FakeClock]:
+        fake = FakeSummarizer(Summary("тело", 40, 700))
+        clock = FakeClock()
+        agent, _, events, _ = make_agent(
+            tmp_path,
+            limits=schedule(4, ""),
+            summarizer=fake,
+            clock=clock,
+            compacted_at=T0,
+        )
+        await agent.update_chat_ctx(history(6, start=T0))
+        clock.now = T0 + 13 + 3 * 3600 + 59 * 60
+        await agent.on_user_turn_completed(agent.chat_ctx.copy(), user_message())
+        assert agent.pending is None
+        assert fake.prompts == []
+        clock.now = T0 + 13 + 4 * 3600
+        await agent.on_user_turn_completed(agent.chat_ctx.copy(), user_message())
+        assert agent.pending is not None
+        assert agent.pending.trigger == "idle"
+        await asyncio.sleep(0)
+        assert len(fake.prompts) == 1
+        await agent.pending.task
+        clock.now += 5
+        await agent.on_user_turn_completed(agent.chat_ctx.copy(), user_message())
+        written = kinds_of(events, "compaction")
+        assert len(written) == 1
+        assert written[0]["trigger"] == "idle"
+        assert agent.compacted_at == clock.now
+        await agent.on_user_turn_completed(agent.chat_ctx.copy(), user_message())
+        return agent, events, fake, clock
+
+    _, _, fake, _ = asyncio.run(main())
+    assert len(fake.prompts) == 1
+
+
+def test_reply_after_daily_at_triggers_daily(tmp_path: Path) -> None:
+    async def main() -> Path:
+        fake = FakeSummarizer(Summary("тело", 40, 700))
+        clock = FakeClock()
+        agent, _, events, _ = make_agent(
+            tmp_path,
+            limits=schedule(0, "04:00"),
+            summarizer=fake,
+            clock=clock,
+            compacted_at=T0,
+        )
+        await agent.update_chat_ctx(history(6, start=T0 + 60))
+        clock.now = datetime(2026, 11, 15, 3, 59).timestamp()
+        await agent.on_user_turn_completed(agent.chat_ctx.copy(), user_message())
+        assert agent.pending is None
+        clock.now = datetime(2026, 11, 15, 4, 1).timestamp()
+        await agent.on_user_turn_completed(agent.chat_ctx.copy(), user_message())
+        assert agent.pending is not None
+        assert agent.pending.trigger == "daily"
+        await agent.pending.task
+        await agent.on_user_turn_completed(agent.chat_ctx.copy(), user_message())
+        return events
+
+    events = asyncio.run(main())
+    written = kinds_of(events, "compaction")
+    assert len(written) == 1
+    assert written[0]["trigger"] == "daily"
+
+
+def test_schedule_failure_keeps_trigger(tmp_path: Path) -> None:
+    async def main() -> tuple[VocaAgent, Path, list[str]]:
+        fake = FakeSummarizer(Failure("connection", 300))
+        clock = FakeClock()
+        clock.now = T0 + 13 + 5 * 3600
+        agent, _, events, _ = make_agent(
+            tmp_path,
+            limits=schedule(4, ""),
+            summarizer=fake,
+            clock=clock,
+            compacted_at=T0,
+        )
+        await agent.update_chat_ctx(history(6, start=T0))
+        ids = [item.id for item in agent.chat_ctx.items]
+        assert agent.check_due() == "idle"
+        assert agent.pending is not None
+        await agent.pending.task
+        await agent.on_user_turn_completed(agent.chat_ctx.copy(), user_message())
+        assert [item.id for item in agent.chat_ctx.items] == ids
+        return agent, events, ids
+
+    agent, events, _ = asyncio.run(main())
+    failed = kinds_of(events, "compaction_failed")
+    assert len(failed) == 1
+    assert failed[0]["trigger"] == "idle"
+    assert failed[0]["reason"] == "connection"
+    assert kinds_of(events, "compaction") == []
+    assert agent.compacted_at == T0
+
+
+def test_schedule_skips_small_context(tmp_path: Path) -> None:
+    async def main() -> tuple[VocaAgent, FakeSummarizer]:
+        fake = FakeSummarizer(Summary("тело", 40, 700))
+        clock = FakeClock()
+        clock.now = T0 + 13 + 5 * 3600
+        agent, _, _, _ = make_agent(
+            tmp_path,
+            limits=schedule(4, "", tail_budget=100_000),
+            summarizer=fake,
+            clock=clock,
+            compacted_at=T0,
+        )
+        await agent.update_chat_ctx(history(6, start=T0))
+        assert agent.check_due() is None
+        return agent, fake
+
+    agent, fake = asyncio.run(main())
+    assert agent.pending is None
+    assert fake.prompts == []
+
+
+def test_schedule_bypasses_guard(tmp_path: Path) -> None:
+    async def main() -> tuple[VocaAgent, Path, FakeSummarizer, FakeClock]:
+        fake = FakeSummarizer(Summary("## О чём говорили\nфакт 1", 50, 1200))
+        clock = FakeClock()
+        clock.now = T0 + 13 + 5 * 3600
+        agent, _, events, _ = make_agent(
+            tmp_path,
+            limits=schedule(4, ""),
+            summarizer=fake,
+            clock=clock,
+            compacted_at=T0,
+        )
+        await agent.update_chat_ctx(history(6, start=T0))
+        agent.strikes = BLOCK_STRIKES
+        agent.blocked_at = clock.now
+        assert agent.check_due() == "idle"
+        await asyncio.sleep(0)
+        assert len(fake.prompts) == 1
+        assert agent.pending is not None
+        await agent.pending.task
+        await agent.on_user_turn_completed(agent.chat_ctx.copy(), user_message())
+        return agent, events, fake, clock
+
+    agent, events, _, clock = asyncio.run(main())
+    written = kinds_of(events, "compaction")
+    assert len(written) == 1
+    assert written[0]["trigger"] == "idle"
+    assert agent.strikes == BLOCK_STRIKES
+    assert agent.blocked_at == clock.now
+    assert kinds_of(events, "compaction_blocked") == []
 
 
 def test_ineffective_compactions_block(tmp_path: Path) -> None:
