@@ -60,8 +60,9 @@ class VocaAgent(Agent):
         cards: CardState,
         ctx_high: int,
         ctx_low: int,
+        chat_ctx: llm.ChatContext | None = None,
     ) -> None:
-        super().__init__(instructions=instructions.text)
+        super().__init__(instructions=instructions.text, chat_ctx=chat_ctx)
         self.loader = loader
         self.current = instructions
         self.log = log

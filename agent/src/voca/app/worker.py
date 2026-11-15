@@ -1,19 +1,26 @@
 import math
 import os
+import sqlite3
 import sys
 from concurrent.futures import ThreadPoolExecutor
 
 from livekit import rtc
-from livekit.agents import JobContext, JobProcess, WorkerOptions, cli
-from livekit.agents.voice import ErrorEvent, room_io
+from livekit.agents import JobContext, JobProcess, WorkerOptions, cli, llm
+from livekit.agents.voice import (
+    ConversationItemAddedEvent,
+    ErrorEvent,
+    FunctionToolsExecutedEvent,
+    room_io,
+)
 from livekit.plugins import silero
 
 from voca.app.wiring import build_session, check_context
 from voca.clientio.cards import CardState
 from voca.clientio.metrics import bind_metrics
 from voca.config import Settings, config_path
-from voca.conversation.agent import VocaAgent
+from voca.conversation.agent import VocaAgent, records
 from voca.conversation.instructions import InstructionError, InstructionLoader
+from voca.session.store import SessionRecorder, SessionStore, StoreError
 from voca.speech.stress import load_accent
 from voca.telemetry.jsonl import JsonlLog, TurnTracker
 
@@ -38,6 +45,15 @@ async def entrypoint(ctx: JobContext) -> None:
         error=None,
     )
     await check_context(settings, log)
+    store = SessionStore.open(settings.session.path)
+    current = store.open_session()
+    restored = llm.ChatContext.from_dict(current.context)
+    log.write(
+        "session_restored",
+        session_id=current.id,
+        items=len(restored.items),
+        estimate=sum(item.tokens for item in records(restored)),
+    )
     cards = CardState(instructions)
     cards.bind(ctx.room)
     bind_metrics(ctx.room, log.write)
@@ -48,8 +64,23 @@ async def entrypoint(ctx: JobContext) -> None:
         cards=cards,
         ctx_high=settings.trim_at_tokens(),
         ctx_low=settings.trim_to_tokens(),
+        chat_ctx=restored,
     )
-    tracker = TurnTracker(log)
+    recorder = SessionRecorder(store, current.id)
+
+    def save() -> None:
+        try:
+            recorder.flush(
+                agent.chat_ctx.to_dict(
+                    exclude_function_call=False,
+                    exclude_timestamp=False,
+                    exclude_config_update=True,
+                )
+            )
+        except sqlite3.Error as error:
+            log.write("session_write_failed", error=str(error))
+
+    tracker = TurnTracker(log, on_turn=save)
     executor = ThreadPoolExecutor(max_workers=1)
     session = build_session(
         settings,
@@ -58,6 +89,18 @@ async def entrypoint(ctx: JobContext) -> None:
         executor=executor,
         on_prepared=tracker.on_prepared,
     )
+
+    def on_item(ev: ConversationItemAddedEvent) -> None:
+        if isinstance(ev.item, llm.ChatMessage):
+            recorder.add(ev.item.model_dump(mode="json", exclude_none=True))
+
+    def on_tools(ev: FunctionToolsExecutedEvent) -> None:
+        for call, output in ev.zipped():
+            recorder.add(call.model_dump(mode="json", exclude_none=True))
+            recorder.add(output.model_dump(mode="json", exclude_none=True))
+
+    session.on("conversation_item_added", on_item)
+    session.on("function_tools_executed", on_tools)
     tracker.attach(session)
     session.on("metrics_collected", cards.on_metrics)
 
@@ -69,6 +112,9 @@ async def entrypoint(ctx: JobContext) -> None:
     session.on("error", on_error)
 
     async def shutdown() -> None:
+        await session.aclose()
+        save()
+        store.close()
         executor.shutdown(wait=False)
         log.close()
 
@@ -122,6 +168,14 @@ def run(mode: str, rest: list[str]) -> None:
         print(
             f"voca agent: инструкции не загружены: {error}; "
             "образец — instructions.example/, каталог — VOCA_INSTRUCTIONS_DIR",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    try:
+        SessionStore.open(settings.session.path).close()
+    except (StoreError, sqlite3.Error, OSError) as error:
+        print(
+            f"voca agent: хранилище сессии не открыто ({settings.session.path}): {error}",
             file=sys.stderr,
         )
         sys.exit(1)

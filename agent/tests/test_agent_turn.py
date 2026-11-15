@@ -14,7 +14,11 @@ EXAMPLE = Path(__file__).resolve().parents[2] / "instructions.example"
 
 
 def make_agent(
-    tmp_path: Path, *, ctx_high: int = 13926, ctx_low: int = 6553
+    tmp_path: Path,
+    *,
+    ctx_high: int = 13926,
+    ctx_low: int = 6553,
+    chat_ctx: llm.ChatContext | None = None,
 ) -> tuple[VocaAgent, Path, Path, CardState]:
     directory = tmp_path / "instructions"
     shutil.copytree(EXAMPLE, directory)
@@ -29,6 +33,7 @@ def make_agent(
         cards=cards,
         ctx_high=ctx_high,
         ctx_low=ctx_low,
+        chat_ctx=chat_ctx,
     )
     return agent, directory, events, cards
 
@@ -113,3 +118,11 @@ def test_refusal() -> None:
     assert refusal("llm", tts_down=False) == "не могу ответить сейчас"
     assert refusal("tts", tts_down=False) is None
     assert refusal("llm", tts_down=True) is None
+
+
+def test_restored_context_reaches_agent(tmp_path: Path) -> None:
+    ctx = llm.ChatContext()
+    ctx.add_message(role="user", content=["Меня зовут Арсений"])
+    ctx.add_message(role="assistant", content=["Приятно познакомиться"])
+    agent, _, _, _ = make_agent(tmp_path, chat_ctx=ctx)
+    assert [item.id for item in agent.chat_ctx.items] == [item.id for item in ctx.items]

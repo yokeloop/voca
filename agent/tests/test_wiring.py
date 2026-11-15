@@ -1,7 +1,10 @@
 import asyncio
 import json
 import math
+import shutil
+import sqlite3
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -126,6 +129,31 @@ def test_run_stops_without_instructions(
     err = capsys.readouterr().err
     assert "инструкции не загружены" in err
     assert str(tmp_path / "SOUL.md") in err
+
+
+def test_run_stops_on_newer_session_store(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def run_app(options: Any) -> None:
+        raise AssertionError("run_app called")
+
+    instructions = tmp_path / "instructions"
+    shutil.copytree(
+        Path(__file__).resolve().parents[2] / "instructions.example", instructions
+    )
+    store = tmp_path / "sessions.sqlite3"
+    with closing(sqlite3.connect(store)) as db:
+        db.execute("PRAGMA user_version = 2")
+    monkeypatch.setenv("VOCA_INSTRUCTIONS_DIR", str(instructions))
+    monkeypatch.setenv("VOCA_SESSION__PATH", str(store))
+    monkeypatch.setattr("voca.app.worker.cli.run_app", run_app)
+    monkeypatch.setattr("sys.argv", ["voca"])
+    with pytest.raises(SystemExit) as stopped:
+        run("start", [])
+    assert stopped.value.code == 1
+    err = capsys.readouterr().err
+    assert "хранилище сессии не открыто" in err
+    assert str(store) in err
 
 
 def test_make_llm_sampling() -> None:

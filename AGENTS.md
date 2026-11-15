@@ -15,12 +15,14 @@ Hermes. This file is the working contract for agents and contributors.
   stub, instructions and context trim in `on_user_turn_completed`, failures
   spoken aloud; `instructions.py`: `InstructionLoader` with the last valid
   set; `context.py`: `trim_chat_ctx`), `clientio/` (the `voca.cards`
-  channel), `telemetry/` (`.local/events.jsonl`), `config.py` (`Settings`:
-  the environment and the agent config file, «Agent config»).
+  channel), `telemetry/` (`.local/events.jsonl`), `session/`
+  (`SessionStore`: the session snapshot and the archive in one SQLite file,
+  «Session store»; `voca archive search`), `config.py` (`Settings`: the
+  environment and the agent config file, «Agent config»).
   `agent/src/voca/speech/` prepares text before TTS: the tool-call markup
   filter, LaTeX and tables, numbers as words, stress and the first fragment.
-  `markup`, `numbers`, `prepare`, `conversation/context` and
-  `conversation/instructions` are pure modules, which
+  `markup`, `numbers`, `prepare`, `conversation/context`,
+  `conversation/instructions` and `session/model` are pure modules, which
   `tests/test_import_boundaries.py` checks.
 - `instructions.example/` — a sample `SOUL.md`, `user.md` and `agent.md`; the
   real files live outside the repository, in `VOCA_INSTRUCTIONS_DIR`.
@@ -114,8 +116,9 @@ a section) are no longer read.
 - `[compression]` — the compression triggers and the trim.
 - `[compression.model]` — the summariser.
 
-`[session]` and the compression fields other than `hard_limit` and `trim_to`
-are already validated, but the agent does not use them yet.
+`[session].history_on_join` and the compression fields other than `hard_limit`
+and `trim_to` are already validated, but the agent does not use them yet;
+`[session].path` is the session store («Session store»).
 
 Trim: above `hard_limit · context_tokens` estimated tokens (`len(text) // 3`)
 the oldest turns are dropped until `trim_to · context_tokens` remain. The rules
@@ -250,6 +253,43 @@ classes come from `livekit-api` in the `agent/` environment.
   track stays above −50 dBFS for two 10 ms ticks.
 - The agent writes a JSONL `client` row; an invalid message only logs a
   warning.
+
+## Session store
+
+- The file is `[session].path` (default `~/.voca/sessions.sqlite3`, env
+  `VOCA_SESSION__PATH`). When the agent creates it, the directory gets 0700
+  and the file 0600. The file is in WAL mode, so `-wal` and `-shm` lie beside
+  it; migrations follow `user_version`. A schema newer than the agent or any
+  error opening the file stops `voca agent`: exit code 1 and the line
+  `хранилище сессии не открыто`.
+- Tables: `sessions` (`id`, `started_at`, `ended_at`, `end_reason`,
+  `context_json`, `context_at`, `compacted_at`, `summary_count`); `messages`,
+  append-only (`kind` user/assistant/tool_call/tool_result/summary, `item_id`,
+  `call_id`, `name`, `text`, `data_json`; `UNIQUE (session_id, item_id)`);
+  `messages_fts` (`unicode61 remove_diacritics 2`).
+- Restore: at the start of each job the open session (`ended_at IS NULL`) is
+  lifted into `VocaAgent(chat_ctx=…)`, and the agent writes a
+  `session_restored` line (`session_id`, `items`, `estimate`). `session` in
+  the JSONL stays the job id.
+- Snapshot: `to_dict(exclude_function_call=False, exclude_timestamp=False,
+  exclude_config_update=True)` without system and developer messages; the
+  instructions come from `InstructionLoader`. The trim changes only the
+  snapshot; archive rows stay.
+- Writes: one transaction «new rows + snapshot» after each `turn` line and
+  when the job stops. Tool calls and results wait for the next boundary. A
+  failed write gives a `session_write_failed` line (`error`), and the rows
+  stay in the buffer.
+- Search: «ё/Ё» is folded to «е/Е» in the triggers and in the query; the
+  tokenizer does not do it. The stock FTS `'rebuild'` would reindex without
+  the fold: rebuild with `'delete-all'` and `INSERT … SELECT id,
+  replace(replace(text,'ё','е'),'Ё','Е') FROM messages` (as the comment in
+  `001-session.sql` shows).
+- `voca archive search <query> [--limit N]` (default 20): FTS5 syntax; another
+  word form is found with the prefix `word*`. An output line is `id`, time,
+  `kind` and the `snippet` with `[…]`. An invalid query or a missing file
+  gives exit code 2, and no file is created.
+- The file is the only copy of the history; its backup is E5 (the `~/.voca/`
+  directory).
 
 ## Ports
 

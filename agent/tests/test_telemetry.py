@@ -5,7 +5,11 @@ import pytest
 from livekit.agents import APIConnectionError
 from livekit.agents.llm import ChatMessage, LLMError
 from livekit.agents.metrics import LLMMetrics
-from livekit.agents.voice import ErrorEvent, UserStateChangedEvent
+from livekit.agents.voice import (
+    ConversationItemAddedEvent,
+    ErrorEvent,
+    UserStateChangedEvent,
+)
 
 from voca.speech.prepare import Prepared
 from voca.telemetry.jsonl import Fragments, JsonlLog, TurnTracker, turn_row
@@ -128,6 +132,29 @@ def test_tracker_error(tmp_path: Path) -> None:
     assert row["component"] == "llm"
     assert row["recoverable"] is False
     assert row["message"]
+
+
+def test_tracker_on_turn_after_turn_row(tmp_path: Path) -> None:
+    path = tmp_path / "events.jsonl"
+    log = JsonlLog(path, session="job-1")
+    seen: list[list[str]] = []
+
+    def on_turn() -> None:
+        lines = path.read_text(encoding="utf-8").splitlines()
+        seen.append([json.loads(line)["kind"] for line in lines])
+
+    tracker = TurnTracker(log, on_turn=on_turn)
+    tracker.on_item(
+        ConversationItemAddedEvent(item=ChatMessage(role="user", content=["Привет"]))
+    )
+    tracker.on_item(
+        ConversationItemAddedEvent(
+            item=ChatMessage(role="assistant", content=["Здравствуй"])
+        )
+    )
+    log.close()
+    assert len(seen) == 1
+    assert "turn" in seen[0]
 
 
 def test_jsonl_log(tmp_path: Path) -> None:
