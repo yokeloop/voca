@@ -75,7 +75,7 @@ Scripts:
   `record --run NAME [--mic SOURCE] [--speaker SINK]` (one two-channel PipeWire
   recording: FL — the microphone, FR — the speakers' monitor;
   `.local/g5/<run>/audio.wav` and `audio.json` with the clocks and the agent's
-  `VOCA_*` values), `analyze` (the delay «onset → the old sound stops» per
+  `VOCA_AGENT__*` values), `analyze` (the delay «onset → the old sound stops» per
   interruption), `false --mode speech|silence` (false interruptions from the
   JSONL), `history` (the cut history against what was heard, through STT);
   needs `scripts/up.sh` (all five) and the speakers as the default output.

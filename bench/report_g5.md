@@ -21,7 +21,7 @@
 
 **`bench/barge_in.py`**:
 
-- `record --run NAME [--mic SOURCE] [--speaker SINK]` — одна двухканальная запись `pw-record` 48 кГц без автоматических связей (узел `voca-g5`), связи `pw-link`: FL — микрофон, FR — monitor колонок; `audio.json` — часы начала и конца, устройства, порты и значения `VOCA_INTERRUPTION_MIN_DURATION`, `VOCA_INTERRUPTION_MIN_WORDS`, `VOCA_AEC_WARMUP` из окружения процесса агента.
+- `record --run NAME [--mic SOURCE] [--speaker SINK]` — одна двухканальная запись `pw-record` 48 кГц без автоматических связей (узел `voca-g5`), связи `pw-link`: FL — микрофон, FR — monitor колонок; `audio.json` — часы начала и конца, устройства, порты и значения `VOCA_AGENT__INTERRUPTION_MIN_DURATION`, `VOCA_AGENT__INTERRUPTION_MIN_WORDS`, `VOCA_AGENT__AEC_WARMUP` из окружения процесса агента.
 - `analyze` — задержка «onset речи пользователя → прекращение старого звука» по звуку: огибающие 10 мс, задержка monitor → микрофон и усиление эха по опорному окну 2 с, onset — 3 кадра подряд на 10 дБ выше ожидаемого эха, прекращение — 300 мс тишины monitor ниже −60 dBFS; `delay = (прекращение на monitor + lag) − onset на микрофоне`. Метки JSONL (`agent_state` `speaking` → `listening` без строки `turn` в пределах 0.1 с) дают только окна поиска.
 - `false --mode speech|silence` — ложные перебивания по JSONL: в речи агента `false_interruption`, паузы, перебитые `turn`, `user_input_transcribed` внутри речи и `speaking_s`; в тишине `user_input_transcribed`, `turn`, `thinking`, отдельно `vad_speaking`.
 - `history` — отрезок monitor перебитой реплики распознаётся `recognize_batch` и сверяется с текстом истории: хвосты совпадают с точностью ±2 слова после нормализации чисел.
@@ -63,7 +63,7 @@
 
 ## 10. Сценарий будущего прогона
 
-Команды — в корне клона, где запущены пять сервисов. `B` = `uv run --project agent python bench/barge_in.py`; `R` = `B record --speaker <sink колонок> --mic <source микрофона> --run`. Перезапуск варианта: `scripts/down.sh agent`, затем `VOCA_INTERRUPTION_MIN_DURATION=<x> VOCA_AEC_WARMUP=<y> scripts/up.sh agent`; на странице «Отключиться», «Подключиться» (новая сессия).
+Команды — в корне клона, где запущены пять сервисов. `B` = `uv run --project agent python bench/barge_in.py`; `R` = `B record --speaker <sink колонок> --mic <source микрофона> --run`. Перезапуск варианта: `scripts/down.sh agent`, затем `VOCA_AGENT__INTERRUPTION_MIN_DURATION=<x> VOCA_AGENT__AEC_WARMUP=<y> scripts/up.sh agent`; на странице «Отключиться», «Подключиться» (новая сессия).
 
 Уроки сессии 2026-11-12:
 

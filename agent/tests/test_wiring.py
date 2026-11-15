@@ -1,10 +1,10 @@
 import asyncio
+import json
 import math
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
-import pydantic
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestServer
@@ -15,33 +15,14 @@ from voca.app.wiring import (
     MAX_UNRECOVERABLE_ERRORS,
     TTS_TEXT_TRANSFORMS,
     build_session,
+    check_context,
+    make_llm,
     make_tts,
 )
 from voca.app.worker import run, server_options
 from voca.config import Settings
 from voca.speech.prepare import Prepared
-
-
-def test_settings_defaults_and_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    settings = Settings()
-    assert settings.agent_port == 8084
-    assert settings.llm_thinking_budget == 128
-    assert settings.state_dir.name == ".local"
-    assert settings.instructions_dir == Path.home() / ".voca" / "instructions"
-    assert settings.ctx_high_tokens() == 9830
-    assert settings.ctx_low_tokens() == 6553
-    monkeypatch.setenv("VOCA_AGENT_PORT", "9999")
-    assert Settings().agent_port == 9999
-    monkeypatch.setenv("VOCA_INSTRUCTIONS_DIR", "~/x")
-    assert Settings().instructions_dir == Path.home() / "x"
-
-
-def test_settings_trim_thresholds() -> None:
-    with pytest.raises(pydantic.ValidationError):
-        Settings(ctx_trim_high=0.4, ctx_trim_low=0.6)
-    with pytest.raises(pydantic.ValidationError):
-        Settings(ctx_trim_low=0)
-    Settings(ctx_trim_high=0.08, ctx_trim_low=0.05)
+from voca.telemetry.jsonl import JsonlLog
 
 
 def test_build_session_options() -> None:
@@ -145,3 +126,71 @@ def test_run_stops_without_instructions(
     err = capsys.readouterr().err
     assert "инструкции не загружены" in err
     assert str(tmp_path / "SOUL.md") in err
+
+
+def test_make_llm_sampling() -> None:
+    assert make_llm(Settings())._opts.extra_body == {"thinking_budget_tokens": 128}
+    body = make_llm(Settings(model={"temperature": 0.2}))._opts.extra_body
+    assert body == {"thinking_budget_tokens": 128, "temperature": 0.2}
+
+
+def context_rows(tmp_path: Path, props: dict[str, Any] | None) -> list[Any]:
+    async def handler(request: web.Request) -> web.Response:
+        return web.json_response(props)
+
+    async def main() -> None:
+        app = web.Application()
+        if props is not None:
+            app.router.add_get("/props", handler)
+        async with TestServer(app, host="127.0.0.1") as server:
+            settings = Settings(llm_url=str(server.make_url("/v1")))
+            log = JsonlLog(tmp_path / "events.jsonl", session="t")
+            await check_context(settings, log)
+            log.close()
+
+    asyncio.run(main())
+    lines = (tmp_path / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    return [json.loads(line) for line in lines]
+
+
+def test_context_mismatch_written(tmp_path: Path) -> None:
+    rows = context_rows(tmp_path, {"default_generation_settings": {"n_ctx": 8192}})
+    assert len(rows) == 1
+    assert rows[0]["kind"] == "context_mismatch"
+    assert rows[0]["n_ctx"] == 8192
+    assert rows[0]["context_tokens"] == 16384
+
+
+def test_context_match_or_unreachable_writes_nothing(tmp_path: Path) -> None:
+    matched = context_rows(
+        tmp_path / "match", {"default_generation_settings": {"n_ctx": 16384}}
+    )
+    assert not [row for row in matched if row["kind"] == "context_mismatch"]
+    missing = context_rows(tmp_path / "missing", None)
+    assert not [row for row in missing if row["kind"] == "context_mismatch"]
+
+
+def test_run_stops_on_broken_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def run_app(options: Any) -> None:
+        raise AssertionError("run_app called")
+
+    monkeypatch.setattr("voca.app.worker.cli.run_app", run_app)
+    monkeypatch.setattr("sys.argv", ["voca"])
+    for index, text in enumerate(
+        (
+            "[compression\n",
+            "[compression]\nhard_limit = 0.3\n",
+            '[compression.model]\napi_key = "x"\n',
+        )
+    ):
+        path = tmp_path / f"config-{index}.toml"
+        path.write_text(text, encoding="utf-8")
+        monkeypatch.setenv("VOCA_CONFIG", str(path))
+        with pytest.raises(SystemExit) as stopped:
+            run("start", [])
+        assert stopped.value.code == 1
+        err = capsys.readouterr().err
+        assert "конфиг не прочитан" in err
+        assert str(path) in err

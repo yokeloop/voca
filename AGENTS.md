@@ -15,7 +15,8 @@ Hermes. This file is the working contract for agents and contributors.
   stub, instructions and context trim in `on_user_turn_completed`, failures
   spoken aloud; `instructions.py`: `InstructionLoader` with the last valid
   set; `context.py`: `trim_chat_ctx`), `clientio/` (the `voca.cards`
-  channel), `telemetry/` (`.local/events.jsonl`).
+  channel), `telemetry/` (`.local/events.jsonl`), `config.py` (`Settings`:
+  the environment and the agent config file, «Agent config»).
   `agent/src/voca/speech/` prepares text before TTS: the tool-call markup
   filter, LaTeX and tables, numbers as words, stress and the first fragment.
   `markup`, `numbers`, `prepare`, `conversation/context` and
@@ -23,6 +24,8 @@ Hermes. This file is the working contract for agents and contributors.
   `tests/test_import_boundaries.py` checks.
 - `instructions.example/` — a sample `SOUL.md`, `user.md` and `agent.md`; the
   real files live outside the repository, in `VOCA_INSTRUCTIONS_DIR`.
+- `config.example.toml` — a sample agent config; the real file is
+  `~/.voca/config.toml` (`VOCA_CONFIG`), outside the repository.
 - `web/` — the page (Vite + TypeScript, `livekit-client`); `pnpm --dir web build`
   writes `web/dist/`, which `voca web` serves.
 - `bench/` — stand scripts and their reports; they run in the `agent/`
@@ -87,22 +90,50 @@ stand's downloads; it is a stand check, not a CI check.
 | `VOCA_HERMES_KEY` | empty | `API_SERVER_KEY` of the Hermes profile; a secret, only in `.env` |
 | `VOCA_LITELLM_KEY` | empty | LiteLLM virtual key `voca` for `https://litellm.priney.com` (the session summariser); a secret, only in `.env` |
 
-The agent's pipeline settings (`VOCA_TTS_VOICE`, `VOCA_LLM_THINKING_BUDGET`,
-`VOCA_VAD_MIN_SILENCE`, `VOCA_INTERRUPTION_MIN_DURATION`,
-`VOCA_INTERRUPTION_MIN_WORDS`, `VOCA_AEC_WARMUP`, `VOCA_ENDPOINTING_MIN_DELAY`,
-`VOCA_PREEMPTIVE_GENERATION`, `VOCA_INSTRUCTIONS_DIR` — default
-`~/.voca/instructions`, `VOCA_CTX_TRIM_HIGH` — 0.60, `VOCA_CTX_TRIM_LOW` —
-0.40) have their defaults in `Settings` (`agent/src/voca/config.py`);
-`scripts/env.sh` does not set them, and `.env.example` lists them commented
-out. The two trim values are shares of `-c 16384` (`LLM_CONTEXT_TOKENS` in
-`config.py`), estimated as `len(text) // 3`, with `LOW < HIGH`.
-`VOCA_AEC_WARMUP` covers only the first N seconds from the start of the
-session's first agent reply; later replies are interruptible at once.
-
 Everything downloaded lives outside the clone, in the machine's shared
 directories `~/Apps/<tool>/<version>/` and `~/models/`; a variable with that
 default names each path. `devkey`/`secret` cannot change without a
 livekit-server config.
+
+### Agent config
+
+The agent's behaviour lives in `~/.voca/config.toml`, outside the repository;
+`VOCA_CONFIG` sets another path, and `config.example.toml` is the sample. A
+missing file means the defaults of `Settings` (`agent/src/voca/config.py`). The
+file is read at the start of each job; there is no hot reload.
+
+Sources in order: constructor arguments → environment → file → defaults. A
+one-off override for one run is `VOCA_<SECTION>__<FIELD>`, e.g.
+`VOCA_COMPRESSION__THRESHOLD=0.08` or `VOCA_COMPRESSION__MODEL__TIMEOUT_S=9`.
+The former flat names of these settings (`VOCA_` plus the field name, without
+a section) are no longer read.
+
+- `[model]` — the context window, the reasoning budget, sampling.
+- `[agent]` — the seven pipeline settings; G5/G6 tune them.
+- `[session]` — the session history file and how much of it a client gets.
+- `[compression]` — the compression triggers and the trim.
+- `[compression.model]` — the summariser.
+
+`[session]` and the compression fields other than `hard_limit` and `trim_to`
+are already validated, but the agent does not use them yet.
+
+Trim: above `hard_limit · context_tokens` estimated tokens (`len(text) // 3`)
+the oldest turns are dropped until `trim_to · context_tokens` remain. The rules
+are `0 < trim_to < hard_limit < 1` and `threshold < hard_limit`.
+
+`context_tokens` is kept equal to `-c 16384` in `scripts/llama.sh` by hand. At
+the start of each job the agent reads `GET /props` of llama-server and writes a
+`context_mismatch` line when `n_ctx` differs.
+
+The summariser key comes only from `VOCA_LITELLM_KEY` (the table above);
+`litellm_key`, `api_key` and any unknown key in the file are rejected. A file
+with an error makes `voca agent` print `конфиг не прочитан` with the path and
+exit with code 1.
+
+`VOCA_INSTRUCTIONS_DIR` (default `~/.voca/instructions`) is an environment
+variable, not a file field. `[agent].aec_warmup` covers only the first N
+seconds from the start of the session's first agent reply; later replies are
+interruptible at once.
 
 ## Downloads
 
@@ -171,7 +202,8 @@ with the shared flags — `--alias "$VOCA_LLM_PROFILE"`, `--jinja`,
 `127.0.0.1:8081`, `-c 16384`, `-fa on`, q8_0 KV cache, `--parallel 1`, `-t 2`,
 all layers on the GPU — plus the profile's `args`. Extra arguments are
 appended to the command. Sampling is set on the server by the profile, from
-the model card; chat template kwargs come from the client.
+the model card; the client sends `thinking_budget_tokens` and only the sampling
+values set in `[model]` («Agent config»).
 
 livekit-server runs as `--dev --bind 0.0.0.0 --node-ip "$VOCA_LIVEKIT_NODE_IP"`.
 
