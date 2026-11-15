@@ -20,6 +20,8 @@ from livekit.plugins import openai
 from openai._models import FinalRequestOptions
 
 from voca.config import Settings
+from voca.conversation.compaction import Limits
+from voca.conversation.summarizer import Summarizer
 from voca.speech.fragments import FirstFragmentTokenizer
 from voca.speech.markup import strip_latex_and_tables
 from voca.speech.prepare import Prepared, prepare
@@ -144,6 +146,30 @@ def make_llm(settings: Settings) -> openai.LLM:
         base_url=settings.llm_url,
         api_key="none",
         extra_body=extra_body,
+    )
+
+
+def compaction_limits(settings: Settings) -> Limits:
+    window = settings.model.context_tokens
+    c = settings.compression
+    return Limits(
+        threshold=int(c.threshold * window),
+        tail_budget=int(c.tail_ratio * c.threshold * window),
+        tail_turns_min=c.tail_turns_min,
+    )
+
+
+def make_summarizer(settings: Settings) -> Summarizer:
+    if settings.litellm_key is None:
+        return Summarizer(None, model=settings.compression.model.model)
+    return Summarizer(
+        openai_sdk.AsyncOpenAI(
+            api_key=settings.litellm_key.get_secret_value(),
+            base_url=settings.compression.model.url,
+            timeout=settings.compression.model.timeout_s,
+            max_retries=0,
+        ),
+        model=settings.compression.model.model,
     )
 
 
