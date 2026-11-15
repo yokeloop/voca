@@ -14,7 +14,7 @@ EXAMPLE = Path(__file__).resolve().parents[2] / "instructions.example"
 
 
 def make_agent(
-    tmp_path: Path, *, ctx_high: int = 9830, ctx_low: int = 6553
+    tmp_path: Path, *, ctx_high: int = 13926, ctx_low: int = 6553
 ) -> tuple[VocaAgent, Path, Path, CardState]:
     directory = tmp_path / "instructions"
     shutil.copytree(EXAMPLE, directory)
