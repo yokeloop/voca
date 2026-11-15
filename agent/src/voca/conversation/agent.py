@@ -1,4 +1,5 @@
 import asyncio
+import time
 from collections.abc import AsyncGenerator, Callable
 from dataclasses import dataclass
 from datetime import date
@@ -26,6 +27,8 @@ from voca.telemetry.jsonl import JsonlLog
 REFUSALS = {"stt": "не расслышал", "llm": "не могу ответить сейчас"}
 
 OnCompacted = Callable[[str, float, str, dict[str, object]], None]
+BLOCK_STRIKES = 2
+BLOCK_RETRY_S = 300
 
 
 @dataclass
@@ -95,6 +98,7 @@ class VocaAgent(Agent):
         chat_ctx: llm.ChatContext | None = None,
         limits: Limits | None = None,
         summarizer: Summarizer | None = None,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         super().__init__(instructions=instructions.text, chat_ctx=chat_ctx)
         self.loader = loader
@@ -107,6 +111,9 @@ class VocaAgent(Agent):
         self.summarizer = summarizer
         self.pending: Pending | None = None
         self.on_compacted: OnCompacted | None = None
+        self.clock = clock
+        self.strikes = 0
+        self.blocked_at: float | None = None
 
     def maybe_compact(self) -> None:
         if (
@@ -117,8 +124,25 @@ class VocaAgent(Agent):
         ):
             return
         items = records(self.chat_ctx.copy())
-        if estimate(items) < self.limits.threshold:
+        total = estimate(items)
+        if total < self.limits.threshold:
             return
+        if self.strikes >= BLOCK_STRIKES:
+            now = self.clock()
+            if self.blocked_at is None:
+                self.blocked_at = now
+                self.log.write(
+                    "compaction_blocked",
+                    strikes=self.strikes,
+                    estimate=total,
+                    threshold=self.limits.threshold,
+                    retry_in_s=BLOCK_RETRY_S,
+                )
+                return
+            if now - self.blocked_at < BLOCK_RETRY_S:
+                return
+            self.strikes = 1
+            self.blocked_at = None
         found = plan(items, self.limits)
         if found is None:
             return
@@ -179,6 +203,10 @@ class VocaAgent(Agent):
         ctx.items.insert(index, message)
         await self.update_chat_ctx(ctx)
         after = estimate(records(self.chat_ctx.copy()))
+        if self.limits is not None and after >= self.limits.threshold:
+            self.strikes += 1
+        else:
+            self.strikes = 0
         data: dict[str, object] = {
             "trigger": "threshold",
             "estimate_before": pending.plan.estimate_before,

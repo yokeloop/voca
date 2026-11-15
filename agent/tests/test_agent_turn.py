@@ -1,6 +1,8 @@
 import asyncio
 import json
 import shutil
+import time
+from collections.abc import Callable
 from pathlib import Path
 
 from livekit.agents import llm
@@ -23,6 +25,7 @@ def make_agent(
     chat_ctx: llm.ChatContext | None = None,
     limits: Limits | None = None,
     summarizer: Summarizer | None = None,
+    clock: Callable[[], float] = time.monotonic,
 ) -> tuple[VocaAgent, Path, Path, CardState]:
     directory = tmp_path / "instructions"
     shutil.copytree(EXAMPLE, directory)
@@ -40,6 +43,7 @@ def make_agent(
         chat_ctx=chat_ctx,
         limits=limits,
         summarizer=summarizer,
+        clock=clock,
     )
     return agent, directory, events, cards
 
@@ -466,3 +470,122 @@ def test_summarizer_exception_names_error(tmp_path: Path) -> None:
     assert failed[0]["reason"] == "error"
     assert failed[0]["error"] == "RuntimeError"
     assert agent.pending is None
+
+
+class FakeClock:
+    def __init__(self) -> None:
+        self.now: float = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+async def block(
+    tmp_path: Path, clock: FakeClock
+) -> tuple[VocaAgent, Path, FakeSummarizer]:
+    fake = FakeSummarizer(Summary("## О чём говорили\nфакт 1", 50, 1200))
+    agent, _, events, _ = make_agent(
+        tmp_path, limits=LIMITS, summarizer=fake, clock=clock
+    )
+    await agent.update_chat_ctx(history(6))
+    await compact_and_accept(agent)
+    assert agent.strikes == 1
+    ctx = agent.chat_ctx.copy()
+    add_pairs(ctx, 7, 4, 1000.0)
+    await agent.update_chat_ctx(ctx)
+    await compact_and_accept(agent)
+    assert agent.strikes == 2
+    ctx = agent.chat_ctx.copy()
+    add_pairs(ctx, 11, 2, 1000.0)
+    await agent.update_chat_ctx(ctx)
+    agent.maybe_compact()
+    agent.maybe_compact()
+    return agent, events, fake
+
+
+def test_ineffective_compactions_block(tmp_path: Path) -> None:
+    agent, events, fake = asyncio.run(block(tmp_path, FakeClock()))
+    assert agent.pending is None
+    assert len(fake.prompts) == 2
+    assert len(kinds_of(events, "compaction")) == 2
+    blocked = kinds_of(events, "compaction_blocked")
+    assert len(blocked) == 1
+    assert blocked[0]["strikes"] == 2
+    assert blocked[0]["threshold"] == 500
+    assert blocked[0]["retry_in_s"] == 300
+    total = blocked[0]["estimate"]
+    assert isinstance(total, int) and total >= 500
+
+
+def test_effective_compaction_resets_strikes(tmp_path: Path) -> None:
+    async def main() -> tuple[VocaAgent, Path]:
+        fake = FakeSummarizer(Summary("## О чём говорили\nфакт 1", 50, 1200))
+        limits = Limits(threshold=1000, tail_budget=300, tail_turns_min=2)
+        agent, _, events, _ = make_agent(tmp_path, limits=limits, summarizer=fake)
+        await agent.update_chat_ctx(history(10))
+        agent.strikes = 1
+        await compact_and_accept(agent)
+        return agent, events
+
+    agent, events = asyncio.run(main())
+    written = kinds_of(events, "compaction")
+    assert len(written) == 1
+    after = written[0]["after"]
+    assert isinstance(after, int) and after < 1000
+    assert agent.strikes == 0
+    assert kinds_of(events, "compaction_blocked") == []
+
+
+def test_probe_after_retry(tmp_path: Path) -> None:
+    async def main() -> tuple[VocaAgent, Path]:
+        clock = FakeClock()
+        agent, events, fake = await block(tmp_path, clock)
+        assert len(kinds_of(events, "compaction_blocked")) == 1
+        clock.now = 299.0
+        agent.maybe_compact()
+        assert agent.pending is None
+        assert len(fake.prompts) == 2
+        clock.now = 300.0
+        agent.maybe_compact()
+        await asyncio.sleep(0)
+        assert agent.pending is not None
+        assert agent.strikes == 1
+        assert len(fake.prompts) == 3
+        await agent.pending.task
+        await agent.on_user_turn_completed(agent.chat_ctx.copy(), user_message())
+        assert agent.strikes == 2
+        clock.now = 301.0
+        agent.maybe_compact()
+        assert agent.pending is None
+        return agent, events
+
+    _, events = asyncio.run(main())
+    assert len(kinds_of(events, "compaction_blocked")) == 2
+
+
+def test_hard_limit_trims_while_blocked(tmp_path: Path) -> None:
+    async def main() -> tuple[VocaAgent, Path, FakeSummarizer]:
+        fake = FakeSummarizer(Summary("x", 1, 1))
+        agent, _, events, _ = make_agent(
+            tmp_path,
+            ctx_high=1500,
+            ctx_low=800,
+            limits=LIMITS,
+            summarizer=fake,
+            clock=FakeClock(),
+        )
+        await agent.update_chat_ctx(history(10))
+        agent.strikes = 2
+        agent.maybe_compact()
+        assert agent.pending is None
+        assert fake.prompts == []
+        assert len(kinds_of(events, "compaction_blocked")) == 1
+        await agent.on_user_turn_completed(agent.chat_ctx.copy(), user_message())
+        return agent, events, fake
+
+    _, events, _ = asyncio.run(main())
+    trimmed = kinds_of(events, "context_trimmed")
+    assert len(trimmed) == 1
+    after = trimmed[0]["after"]
+    assert isinstance(after, int) and after <= 800
+    assert kinds_of(events, "compaction") == []
