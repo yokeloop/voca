@@ -1,3 +1,4 @@
+import json
 import sqlite3
 import stat
 from contextlib import closing
@@ -8,6 +9,7 @@ import pytest
 from livekit.agents import llm
 
 import voca.__main__
+from voca.session.model import ArchiveRow
 from voca.session.store import SearchError, SessionRecorder, SessionStore, StoreError
 
 DUMP: dict[str, Any] = {
@@ -254,4 +256,46 @@ def test_record_keeps_error_after_sqlite_rollback(tmp_path: Path) -> None:
     with pytest.raises(sqlite3.OperationalError, match="full"):
         rec.flush(ctx.to_dict(**DUMP))
     assert len(rec.pending) == 1
+    store.close()
+
+
+def test_summary_row_and_counter(tmp_path: Path) -> None:
+    path = tmp_path / "sessions.sqlite3"
+    store, rec = recorder(path)
+
+    def summary(item_id: str) -> ArchiveRow:
+        return ArchiveRow(
+            kind="summary",
+            item_id=item_id,
+            at=5.0,
+            call_id=None,
+            name=None,
+            text="Кота зовут Ёжик",
+            data={"trigger": "threshold", "folded_turns": 4},
+        )
+
+    def counters() -> tuple[float | None, int]:
+        with closing(sqlite3.connect(path)) as db:
+            row = db.execute(
+                "SELECT compacted_at, summary_count FROM sessions"
+            ).fetchone()
+        return row[0], row[1]
+
+    rec.add_row(summary("sum1"))
+    rec.flush({"items": []}, compacted_at=123.0)
+    with closing(sqlite3.connect(path)) as db:
+        written = db.execute(
+            "SELECT kind, data_json FROM messages WHERE item_id = ?", ("sum1",)
+        ).fetchall()
+    assert len(written) == 1
+    assert written[0][0] == "summary"
+    assert json.loads(written[0][1])["folded_turns"] == 4
+    assert counters() == (123.0, 1)
+    rec.add_row(summary("sum2"))
+    rec.flush({"items": []}, compacted_at=124.0)
+    assert counters() == (124.0, 2)
+    hits = store.search("ежик", 20)
+    assert hits and all(hit.kind == "summary" for hit in hits)
+    rec.flush({"items": []})
+    assert counters() == (124.0, 2)
     store.close()
