@@ -409,3 +409,32 @@ def test_summary_survives_snapshot(tmp_path: Path) -> None:
     found = [item for item in records(restored) if item.summary]
     assert len(found) == 1
     assert found[0].text.startswith("[СЖАТИЕ КОНТЕКСТА")
+
+
+def test_trim_while_pending_then_adopt(tmp_path: Path) -> None:
+    async def main() -> tuple[VocaAgent, Path]:
+        fake = FakeSummarizer(Summary("## О чём говорили\nфакт 1", 50, 1200), hold=True)
+        agent, _, events, _ = make_agent(
+            tmp_path, ctx_high=1500, ctx_low=800, limits=LIMITS, summarizer=fake
+        )
+        await agent.update_chat_ctx(history(10))
+        agent.maybe_compact()
+        await asyncio.sleep(0)
+        await agent.on_user_turn_completed(agent.chat_ctx.copy(), user_message())
+        assert len(kinds_of(events, "context_trimmed")) == 1
+        assert kinds_of(events, "compaction") == []
+        assert summaries(agent.chat_ctx) == []
+        fake.gate.set()
+        assert agent.pending is not None
+        await agent.pending.task
+        await agent.on_user_turn_completed(agent.chat_ctx.copy(), user_message())
+        return agent, events
+
+    agent, events = asyncio.run(main())
+    items = agent.chat_ctx.items
+    assert len(summaries(agent.chat_ctx)) == 1
+    assert items[1].extra.get("voca_summary")
+    assert items[2].type == "message" and items[2].role == "user"
+    assert (items[2].text_content or "").startswith("факт 9 ")
+    assert len(kinds_of(events, "compaction")) == 1
+    assert len(kinds_of(events, "context_trimmed")) == 1
