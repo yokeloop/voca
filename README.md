@@ -229,7 +229,7 @@ Phase logs (requests without keys, responses, SSE events) go to `.local/bench/he
 
 - The entry `https://litellm.priney.com`: a Cloudflare DNS-only A record → `100.108.52.92`, and Traefik on that host with a dynamic file that routes the name to the LiteLLM proxy. TLS comes from Traefik's existing DNS-01 resolver. The entry is reachable only inside the owner's tailnet.
 - A separate LiteLLM virtual key with `key_alias` `voca`. It can be revoked without touching other clients.
-- Every request needs the key.
+- Every API request (`/v1/...`) needs the key; `/health/liveliness` answers without it.
 
 **Variables** (`.env.example`):
 
