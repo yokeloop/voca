@@ -1,4 +1,4 @@
-from voca.conversation.context import Item, approx_tokens, trim_chat_ctx
+from voca.conversation.context import Item, approx_tokens, split_turns, trim_chat_ctx
 
 
 def message(id: str, role: str, tokens: int) -> Item:
@@ -78,3 +78,36 @@ def test_keeps_config_items() -> None:
 
 def test_approx_tokens() -> None:
     assert approx_tokens("абвгде") == 2
+
+
+def summary_item() -> Item:
+    return Item(
+        id="sum",
+        kind="message",
+        role="assistant",
+        call_id=None,
+        tokens=50,
+        summary=True,
+    )
+
+
+def test_split_turns_skips_summary() -> None:
+    items = [message("s", "system", 10), summary_item(), *turns(2, 100)]
+    split = split_turns(items)
+    assert len(split) == 2
+    assert all(item.id != "sum" for turn in split for item in turn)
+    assert split[0][0].id == "u1"
+
+
+def test_trim_keeps_summary() -> None:
+    items = [
+        message("s", "system", 10),
+        summary_item(),
+        *turns(2, 100),
+        *turns(6, 100)[4:],
+    ]
+    trim = trim_chat_ctx(items, high=300, low=150)
+    assert trim is not None
+    assert "sum" not in trim.drop
+    assert trim.estimate_before == sum(item.tokens for item in items)
+    assert trim.estimate_before == 10 + 50 + 600
