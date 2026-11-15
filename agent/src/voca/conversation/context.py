@@ -12,6 +12,8 @@ class Item:
     role: str | None
     call_id: str | None
     tokens: int
+    text: str = ""
+    summary: bool = False
 
 
 @dataclass(frozen=True)
@@ -29,6 +31,8 @@ def split_turns(items: Sequence[Item]) -> list[list[Item]]:
     turns: list[list[Item]] = []
     pending: set[str] = set()
     for item in items:
+        if item.summary:
+            continue
         if item.kind not in TURN_KINDS or (
             item.kind == "message" and item.role in KEPT_ROLES
         ):

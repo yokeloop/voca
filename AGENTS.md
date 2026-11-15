@@ -12,9 +12,13 @@ Hermes. This file is the working contract for agents and contributors.
   (prewarm, entrypoint, `WorkerOptions`), `app/wiring.py` (the plugins,
   `PreparedTTS`, `build_session`, `SpeechLanguageClient`), `conversation/`
   (`VocaAgent`: the tool-call markup filter in `llm_node`, the `delegate`
-  stub, instructions and context trim in `on_user_turn_completed`, failures
-  spoken aloud; `instructions.py`: `InstructionLoader` with the last valid
-  set; `context.py`: `trim_chat_ctx`), `clientio/` (the `voca.cards`
+  stub, instructions, accepting a finished summary and the emergency context
+  trim in `on_user_turn_completed`, the threshold trigger `maybe_compact`,
+  failures spoken aloud; `instructions.py`: `InstructionLoader` with the last
+  valid set; `context.py`: `trim_chat_ctx` — the emergency path at
+  `hard_limit`; `compaction.py`: the compaction plan and the summariser
+  prompt; `summarizer.py`: the call to `[compression.model]`), `clientio/`
+  (the `voca.cards`
   channel), `telemetry/` (`.local/events.jsonl`), `session/`
   (`SessionStore`: the session snapshot and the archive in one SQLite file,
   «Session store»; `voca archive search`), `config.py` (`Settings`: the
@@ -22,7 +26,8 @@ Hermes. This file is the working contract for agents and contributors.
   `agent/src/voca/speech/` prepares text before TTS: the tool-call markup
   filter, LaTeX and tables, numbers as words, stress and the first fragment.
   `markup`, `numbers`, `prepare`, `conversation/context`,
-  `conversation/instructions` and `session/model` are pure modules, which
+  `conversation/compaction`, `conversation/instructions` and `session/model`
+  are pure modules, which
   `tests/test_import_boundaries.py` checks.
 - `instructions.example/` — a sample `SOUL.md`, `user.md` and `agent.md`; the
   real files live outside the repository, in `VOCA_INSTRUCTIONS_DIR`.
@@ -116,13 +121,14 @@ a section) are no longer read.
 - `[compression]` — the compression triggers and the trim.
 - `[compression.model]` — the summariser.
 
-`[session].history_on_join` and the compression fields other than `hard_limit`
-and `trim_to` are already validated, but the agent does not use them yet;
-`[session].path` is the session store («Session store»).
+`[session].history_on_join`, `[compression].idle_hours` and `daily_at` are
+already validated, but the agent does not use them yet; `[session].path` is
+the session store («Session store»).
 
 Trim: above `hard_limit · context_tokens` estimated tokens (`len(text) // 3`)
 the oldest turns are dropped until `trim_to · context_tokens` remain. The rules
-are `0 < trim_to < hard_limit < 1` and `threshold < hard_limit`.
+are `0 < trim_to < hard_limit < 1` and `threshold < hard_limit`. This trim is
+now the emergency path; compaction («Context compaction») runs first.
 
 `context_tokens` is kept equal to `-c 16384` in `scripts/llama.sh` by hand. At
 the start of each job the agent reads `GET /props` of llama-server and writes a
@@ -273,10 +279,11 @@ classes come from `livekit-api` in the `agent/` environment.
   the JSONL stays the job id.
 - Snapshot: `to_dict(exclude_function_call=False, exclude_timestamp=False,
   exclude_config_update=True)` without system and developer messages; the
-  instructions come from `InstructionLoader`. The trim changes only the
-  snapshot; archive rows stay.
+  instructions come from `InstructionLoader`. The trim and compaction change
+  only the snapshot; archive rows stay.
 - Writes: one transaction «new rows + snapshot» after each `turn` line and
-  when the job stops. Tool calls and results wait for the next boundary. A
+  when the job stops and after a summary is adopted (`summary` row,
+  `compacted_at`, `summary_count`; «Context compaction»). Tool calls and results wait for the next boundary. A
   failed write gives a `session_write_failed` line (`error`), and the rows
   stay in the buffer.
 - Search: «ё/Ё» is folded to «е/Е» in the triggers and in the query; the
@@ -290,6 +297,52 @@ classes come from `livekit-api` in the `agent/` environment.
   gives exit code 2, and no file is created.
 - The file is the only copy of the history; its backup is E5 (the `~/.voca/`
   directory).
+
+## Context compaction
+
+- Mechanism: Hermes `3cbe7b1` `agent/context_compressor.py`, the tail by the
+  `legacy` formula.
+- Trigger: after each agent reply (`agent_state_changed` → `listening`), when
+  the estimate `len(text) // 3` over the context is at least
+  `threshold · context_tokens`; `threshold = 0` turns it off. At most one
+  request runs at a time; a new trigger while one runs is ignored.
+- Plan: the head is the instructions; the previous summary is found by
+  `extra.voca_summary`; the tail is the `split_turns` turns from the end
+  within `tail_ratio · threshold · context_tokens`, at least `tail_turns_min`
+  and always the last turn; «call — result» pairs are never split; the middle
+  goes to the summary.
+- Prompt: one user message in Russian, fresh or iterative («ПРЕДЫДУЩИЙ
+  ПЕРЕСКАЗ / НОВЫЕ РЕПЛИКИ»), six sections, secrets → `[СКРЫТО]`, today's
+  date, the goal «Целевой объём ~N токенов» with N = clamp(20 % of the folded
+  part, 400, 1500); `max_tokens` is not sent, as in Hermes (thinking models
+  spend it on reasoning); `finish_reason == "length"`, an empty reply or a
+  refusal count as failure; `<think>…</think>` is stripped.
+- Call: `[compression.model]` (`url`, `model`, `timeout_s`) through
+  `openai.AsyncOpenAI`, the key is `VOCA_LITELLM_KEY`, no retries.
+- Adoption: in the next `on_user_turn_completed`; the turn neither waits for
+  the summary nor cancels it. Only the folded middle and the previous summary
+  are removed. The summary is an assistant message with the prefix
+  «[СЖАТИЕ КОНТЕКСТА — ТОЛЬКО СПРАВКА]» and an end marker; it stands right
+  before the first remaining turn, `created_at` = that turn's
+  `created_at − 1e-6`. The first turn after adoption pays one full prefill.
+- Record: an archive row `summary` (the body without the prefix, `data_json`:
+  `trigger`, `estimate_before`, `after`, `folded_turns`), the snapshot,
+  `compacted_at`, `summary_count`; a `compaction` line (`trigger`,
+  `estimate_before`, `after`, `folded_turns`, `ms`, `summary_tokens` —
+  `usage.completion_tokens` or the `len // 3` estimate).
+- Failure: `compaction_failed` (`trigger`, `reason`: `no_key`, `timeout`,
+  `connection`, `http_<code>`, `error`, `empty`, `length`, `refusal`;
+  `estimate_before`, `ms`; `error` — the exception class name, only when the
+  summary task raised outside the API errors, with `reason` `error`); the
+  context does not change, the retry comes after the next reply. Without a
+  key the line is written on each trigger, with no request. At `hard_limit`
+  `trim_chat_ctx` trims to `trim_to` (`context_trimmed`).
+- Guard: an adoption that leaves the estimate at or above the threshold adds
+  a strike, one below it resets the strikes; at two strikes no summary starts
+  and one `compaction_blocked` line is written (`strikes`, `estimate`,
+  `threshold`, `retry_in_s`), after 300 s of block one probe runs, the strikes
+  live in memory per job, and the `hard_limit` trim works regardless (Hermes
+  anti-thrash).
 
 ## Ports
 

@@ -115,7 +115,12 @@ class SessionStore:
         return Session(id=session_id, context=context)
 
     def record(
-        self, session_id: str, rows: Sequence[ArchiveRow], items: list[dict[str, Any]]
+        self,
+        session_id: str,
+        rows: Sequence[ArchiveRow],
+        items: list[dict[str, Any]],
+        *,
+        compacted_at: float | None = None,
     ) -> None:
         self.db.execute("BEGIN IMMEDIATE")
         try:
@@ -145,6 +150,16 @@ class SessionStore:
                     session_id,
                 ),
             )
+            if compacted_at is not None:
+                self.db.execute(
+                    "UPDATE sessions SET compacted_at = ?,"
+                    " summary_count = summary_count + ? WHERE id = ?",
+                    (
+                        compacted_at,
+                        sum(row.kind == "summary" for row in rows),
+                        session_id,
+                    ),
+                )
             self.db.execute("COMMIT")
         except BaseException:
             if self.db.in_transaction:
@@ -175,14 +190,24 @@ class SessionRecorder:
         self.store = store
         self.session_id = session_id
         self.pending: list[ArchiveRow] = []
+        self.compacted_at: float | None = None
 
     def add(self, item: dict[str, Any]) -> None:
         row = archive_row(item)
         if row is not None:
             self.pending.append(row)
 
+    def add_row(self, row: ArchiveRow, *, compacted_at: float | None = None) -> None:
+        self.pending.append(row)
+        if compacted_at is not None:
+            self.compacted_at = compacted_at
+
     def flush(self, context: dict[str, Any]) -> None:
         self.store.record(
-            self.session_id, self.pending, snapshot_items(context["items"])
+            self.session_id,
+            self.pending,
+            snapshot_items(context["items"]),
+            compacted_at=self.compacted_at,
         )
+        self.compacted_at = None
         self.pending.clear()

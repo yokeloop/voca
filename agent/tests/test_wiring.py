@@ -19,11 +19,14 @@ from voca.app.wiring import (
     TTS_TEXT_TRANSFORMS,
     build_session,
     check_context,
+    compaction_limits,
     make_llm,
+    make_summarizer,
     make_tts,
 )
 from voca.app.worker import run, server_options
 from voca.config import Settings
+from voca.conversation.compaction import Limits
 from voca.speech.prepare import Prepared
 from voca.telemetry.jsonl import JsonlLog
 
@@ -222,3 +225,26 @@ def test_run_stops_on_broken_config(
         err = capsys.readouterr().err
         assert "конфиг не прочитан" in err
         assert str(path) in err
+
+
+def test_compaction_limits() -> None:
+    assert compaction_limits(Settings()) == Limits(
+        threshold=9830, tail_budget=1966, tail_turns_min=2
+    )
+    assert compaction_limits(Settings(compression={"threshold": 0})).threshold == 0
+    low = compaction_limits(Settings(compression={"threshold": 0.08}))
+    assert low.threshold == 1310
+    assert low.tail_budget == 262
+
+
+def test_make_summarizer(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert make_summarizer(Settings()).ready is False
+    monkeypatch.setenv("VOCA_LITELLM_KEY", "abc")
+    summarizer = make_summarizer(Settings())
+    assert summarizer.ready is True
+    assert summarizer.client is not None
+    assert str(summarizer.client.base_url) == "https://litellm.priney.com/v1/"
+    assert summarizer.client.max_retries == 0
+    assert summarizer.client.timeout == 60
+    assert summarizer.model == "glm-5.3-flash"
+    asyncio.run(summarizer.close())

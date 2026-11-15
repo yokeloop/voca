@@ -2,11 +2,13 @@ import math
 import os
 import sqlite3
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 from livekit import rtc
 from livekit.agents import JobContext, JobProcess, WorkerOptions, cli, llm
 from livekit.agents.voice import (
+    AgentStateChangedEvent,
     ConversationItemAddedEvent,
     ErrorEvent,
     FunctionToolsExecutedEvent,
@@ -14,12 +16,18 @@ from livekit.agents.voice import (
 )
 from livekit.plugins import silero
 
-from voca.app.wiring import build_session, check_context
+from voca.app.wiring import (
+    build_session,
+    check_context,
+    compaction_limits,
+    make_summarizer,
+)
 from voca.clientio.cards import CardState
 from voca.clientio.metrics import bind_metrics
 from voca.config import Settings, config_path
 from voca.conversation.agent import VocaAgent, records
 from voca.conversation.instructions import InstructionError, InstructionLoader
+from voca.session.model import ArchiveRow
 from voca.session.store import SessionRecorder, SessionStore, StoreError
 from voca.speech.stress import load_accent
 from voca.telemetry.jsonl import JsonlLog, TurnTracker
@@ -57,6 +65,7 @@ async def entrypoint(ctx: JobContext) -> None:
     cards = CardState(instructions)
     cards.bind(ctx.room)
     bind_metrics(ctx.room, log.write)
+    summarizer = make_summarizer(settings)
     agent = VocaAgent(
         loader=loader,
         instructions=instructions,
@@ -65,6 +74,8 @@ async def entrypoint(ctx: JobContext) -> None:
         ctx_high=settings.trim_at_tokens(),
         ctx_low=settings.trim_to_tokens(),
         chat_ctx=restored,
+        limits=compaction_limits(settings),
+        summarizer=summarizer,
     )
     recorder = SessionRecorder(store, current.id)
 
@@ -75,10 +86,29 @@ async def entrypoint(ctx: JobContext) -> None:
                     exclude_function_call=False,
                     exclude_timestamp=False,
                     exclude_config_update=True,
-                )
+                ),
             )
         except sqlite3.Error as error:
             log.write("session_write_failed", error=str(error))
+
+    def on_compacted(
+        item_id: str, at: float, body: str, data: dict[str, object]
+    ) -> None:
+        recorder.add_row(
+            ArchiveRow(
+                kind="summary",
+                item_id=item_id,
+                at=at,
+                call_id=None,
+                name=None,
+                text=body,
+                data=dict(data),
+            ),
+            compacted_at=time.time(),
+        )
+        save()
+
+    agent.on_compacted = on_compacted
 
     tracker = TurnTracker(log, on_turn=save)
     executor = ThreadPoolExecutor(max_workers=1)
@@ -101,6 +131,12 @@ async def entrypoint(ctx: JobContext) -> None:
 
     session.on("conversation_item_added", on_item)
     session.on("function_tools_executed", on_tools)
+
+    def on_state(ev: AgentStateChangedEvent) -> None:
+        if ev.new_state == "listening":
+            agent.maybe_compact()
+
+    session.on("agent_state_changed", on_state)
     tracker.attach(session)
     session.on("metrics_collected", cards.on_metrics)
 
@@ -113,6 +149,8 @@ async def entrypoint(ctx: JobContext) -> None:
 
     async def shutdown() -> None:
         await session.aclose()
+        agent.cancel_compaction()
+        await summarizer.close()
         save()
         store.close()
         executor.shutdown(wait=False)
