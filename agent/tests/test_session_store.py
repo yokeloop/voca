@@ -325,3 +325,14 @@ def test_summary_retry_keeps_counter(
     rec.flush({"items": []})
     assert counters(path) == (123.0, 1)
     store.close()
+
+
+def test_two_pending_summaries_count_both(tmp_path: Path) -> None:
+    path = tmp_path / "sessions.sqlite3"
+    store, rec = recorder(path)
+    rec.add_row(summary_row("sum1"), compacted_at=1.0)
+    rec.add_row(summary_row("sum2"), compacted_at=2.0)
+    rec.flush({"items": []})
+    assert kinds(path) == ["summary", "summary"]
+    assert counters(path) == (2.0, 2)
+    store.close()

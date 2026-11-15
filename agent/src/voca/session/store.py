@@ -153,8 +153,12 @@ class SessionStore:
             if compacted_at is not None:
                 self.db.execute(
                     "UPDATE sessions SET compacted_at = ?,"
-                    " summary_count = summary_count + 1 WHERE id = ?",
-                    (compacted_at, session_id),
+                    " summary_count = summary_count + ? WHERE id = ?",
+                    (
+                        compacted_at,
+                        sum(row.kind == "summary" for row in rows),
+                        session_id,
+                    ),
                 )
             self.db.execute("COMMIT")
         except BaseException:
