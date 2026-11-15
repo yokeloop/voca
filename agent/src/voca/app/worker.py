@@ -112,6 +112,7 @@ async def entrypoint(ctx: JobContext) -> None:
     session.on("error", on_error)
 
     async def shutdown() -> None:
+        await session.aclose()
         save()
         store.close()
         executor.shutdown(wait=False)
