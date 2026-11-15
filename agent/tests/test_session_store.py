@@ -1,6 +1,7 @@
 import json
 import sqlite3
 import stat
+import time
 from contextlib import closing
 from pathlib import Path
 from typing import Any
@@ -336,3 +337,23 @@ def test_two_pending_summaries_count_both(tmp_path: Path) -> None:
     assert kinds(path) == ["summary", "summary"]
     assert counters(path) == (2.0, 2)
     store.close()
+
+
+def test_open_session_times(tmp_path: Path) -> None:
+    path = tmp_path / "s.sqlite3"
+    store = SessionStore.open(path)
+    before = time.time()
+    session = store.open_session()
+    after = time.time()
+    assert before <= session.started_at <= after
+    assert session.compacted_at is None
+    rec = SessionRecorder(store, session.id)
+    rec.add_row(summary_row("sum1"), compacted_at=123.0)
+    rec.flush({"items": []})
+    store.close()
+    store = SessionStore.open(path)
+    again = store.open_session()
+    store.close()
+    assert again.id == session.id
+    assert again.started_at == session.started_at
+    assert again.compacted_at == 123.0
