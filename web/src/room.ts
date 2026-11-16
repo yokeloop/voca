@@ -13,6 +13,7 @@ const DEVICE_RE = /^[a-z0-9-]{1,32}$/;
 const DEVICE_KEY = "voca-device";
 const AGENT_STATE = "lk.agent.state";
 const METRICS_TOPIC = "voca.metrics";
+const HISTORY_TOPIC = "voca.history";
 
 export interface Transcript {
   segment: string;
@@ -32,9 +33,17 @@ export interface CardsState {
   };
 }
 
+export interface HistoryItem {
+  id: string;
+  at: number;
+  who: "вы" | "агент" | "сжатие";
+  text: string;
+}
+
 export interface Handlers {
   transcript(transcript: Transcript): void;
   cards(state: CardsState): void;
+  history(items: HistoryItem[]): void;
   agentState(state: string | undefined): void;
   connection(state: ConnectionState): void;
   disconnected(reason: DisconnectReason | undefined): void;
@@ -162,6 +171,16 @@ export async function connect(
       }
     } catch (error) {
       console.warn("voca.cards", error);
+    }
+  });
+  room.registerTextStreamHandler(HISTORY_TOPIC, async (reader) => {
+    try {
+      const message = JSON.parse(await reader.readAll());
+      if (message.type === "history" && Array.isArray(message.items)) {
+        handlers.history(message.items as HistoryItem[]);
+      }
+    } catch (error) {
+      console.warn("voca.history", error);
     }
   });
   room.on(RoomEvent.TrackSubscribed, (track) => {
