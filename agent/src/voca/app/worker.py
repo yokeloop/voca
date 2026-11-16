@@ -1,3 +1,4 @@
+import logging
 import math
 import os
 import sqlite3
@@ -22,12 +23,13 @@ from voca.app.wiring import (
     compaction_limits,
     make_summarizer,
 )
-from voca.clientio.cards import CardState
+from voca.clientio.cards import CardState, bind_tasks
 from voca.clientio.history import HistoryChannel, send_on_wait
 from voca.clientio.metrics import bind_metrics
 from voca.config import Settings, config_path
 from voca.conversation.agent import VocaAgent, records
 from voca.conversation.instructions import InstructionError, InstructionLoader
+from voca.delegation.sqlite import SqliteTaskRepository, TaskStoreError
 from voca.session.model import ArchiveRow
 from voca.session.store import SessionRecorder, SessionStore, StoreError
 from voca.speech.stress import load_accent
@@ -56,6 +58,13 @@ async def entrypoint(ctx: JobContext) -> None:
     await check_context(settings, log)
     store = SessionStore.open(settings.session.path)
     current = store.open_session()
+    tasks: SqliteTaskRepository | None = None
+    try:
+        tasks = SqliteTaskRepository.open(settings.delegation.path)
+    except (TaskStoreError, sqlite3.Error, OSError):
+        logging.getLogger("voca.tasks").exception(
+            "task store not opened: %s", settings.delegation.path
+        )
     restored = llm.ChatContext.from_dict(current.context)
     log.write(
         "session_restored",
@@ -65,6 +74,8 @@ async def entrypoint(ctx: JobContext) -> None:
     )
     cards = CardState(instructions)
     cards.bind(ctx.room)
+    if tasks is not None:
+        bind_tasks(ctx.room, tasks)
     history = HistoryChannel(store, current.id, settings.session.history_on_join)
     history.bind(ctx.room)
     bind_metrics(ctx.room, log.write)
@@ -158,6 +169,8 @@ async def entrypoint(ctx: JobContext) -> None:
         agent.cancel_compaction()
         await summarizer.close()
         save()
+        if tasks is not None:
+            tasks.close()
         store.close()
         executor.shutdown(wait=False)
         log.close()
