@@ -320,6 +320,8 @@ Exit codes: 0 succeeded, 1 failed or unavailable, 2 usage, config or missing var
 
 **States.** `queued` → `running` → `succeeded` | `failed`, plus `waiting_approval` (Hermes asks to approve a dangerous command: `description`, `command`, `choices` are printed) and `unknown` (Hermes canonical mode; VOCA calls `resolve-unknown`). Failure reasons: `unavailable` (the request was refused: no connection, 4xx, 429, 503; an unknown outcome — a read timeout, a cut connection, 5xx other than 503 — is retried once with the same key), `timeout` (`[delegation].run_timeout` passed: VOCA sends `/stop`, waits 30 s for a final status; `completed` within that time still counts), `interrupted by gateway restart` (`cancelled` without a VOCA `/stop`), `lost` (404), `lost before launch`.
 
+**Approval in `session_authority` mode.** Hermes in canonical `session_authority` mode (the `voca` profile, Hermes `3cbe7b1`) returns `approval: null` and puts the request into `pending_controls` (`kind: approval`, `prompt_id`, `execution_generation`); VOCA takes the first such entry and answers `POST /v1/runs/{id}/approval` with exactly `{"request_id": <prompt_id>, "execution_generation": <int>, "choice": "once"|"deny"}`; without `pending_controls` it reads `approval` and sends `{"choice", "request_id"}` as before.
+
 **Task file.** `[delegation].path`, default `~/.voca/tasks.sqlite3` (`VOCA_DELEGATION__PATH`), table `tasks`; details in [AGENTS.md](AGENTS.md#agent-config).
 
 **Events.** `voca bench delegate` writes nothing to `.local/events.jsonl`.
