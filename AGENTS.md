@@ -18,8 +18,7 @@ Hermes. This file is the working contract for agents and contributors.
   `instructions.py`: `InstructionLoader` with the last valid set; `context.py`: `trim_chat_ctx` — the emergency path at
   `hard_limit`; `compaction.py`: the compaction plan and the summariser
   prompt; `summarizer.py`: the call to `[compression.model]`), `clientio/`
-  (the `voca.cards`
-  channel), `telemetry/` (`.local/events.jsonl`), `session/`
+  (the `voca.cards` and `voca.history` channels), `telemetry/` (`.local/events.jsonl`), `session/`
   (`SessionStore`: the session snapshot and the archive in one SQLite file,
   «Session store»; `voca archive search`), `config.py` (`Settings`: the
   environment and the agent config file, «Agent config»).
@@ -121,8 +120,9 @@ a section) are no longer read.
 - `[compression]` — the compression triggers and the trim.
 - `[compression.model]` — the summariser.
 
-`[session].history_on_join` is already validated, but the agent does not use
-it yet; `[session].path` is the session store («Session store»).
+`[session].history_on_join` is how many archive rows a joining client gets
+in `voca.history` («Client channel»); `[session].path` is the session store
+(«Session store»).
 
 Trim: above `hard_limit · context_tokens` estimated tokens (`len(text) // 3`)
 the oldest turns are dropped until `trim_to · context_tokens` remain. The rules
@@ -245,6 +245,21 @@ classes come from `livekit-api` in the `agent/` environment.
   metric of that stage.
 - `hermes` is not sent in E1; `instructions_error` is an addition to
   `derive:eb1id854:§5`.
+- The agent sends a JSON `history` message on the text stream topic
+  `voca.history` to one participant (`destination_identities`):
+  `{"type": "history", "session_id", "items": [{"id", "at", "who":
+  "вы"|"агент"|"сжатие", "text"}]}`.
+- `items` are the last `[session].history_on_join` (default 50) `user`,
+  `assistant` and `summary` rows of the open session's archive, oldest first;
+  `id` is the archive's `item_id`, a `summary` has an empty `text`. Tool calls
+  and results are not sent.
+- The message goes out when a participant connects and after
+  `ctx.wait_for_participant()` for a participant that joined before the job; a
+  first join can therefore get it twice. Sends are chained, the archive is read
+  at send time.
+- On every `history` the page clears its transcript, draws the items
+  (`сжатие` as the line «— контекст сжат —») and appends live
+  `lk.transcription` segments after them.
 - The page sends the agent JSON on the text stream topic `voca.metrics`:
   `{"type": "client_e2e", "seq", "client_e2e_ms", "speech_ms"}`, one message
   per pair «end of speech → first agent sound».
@@ -385,7 +400,6 @@ Further deviations from `derive:eb1id854` (E1 research, VOCA-11):
   `LIVEKIT_*`; `ws_url` is passed to the worker explicitly.
 - О7: the agent has a `delegate` stub that raises
   `ToolError("Делегирование сейчас недоступно")`, not «1.1 without delegate».
-- О11: a reconnecting client sees only new replies, as in derive:eb1id854:§6.6, not the current transcript of derive:8kki4ynb:§7.
 
 ## References
 

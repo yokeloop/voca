@@ -23,6 +23,7 @@ from voca.app.wiring import (
     make_summarizer,
 )
 from voca.clientio.cards import CardState
+from voca.clientio.history import HistoryChannel, send_on_wait
 from voca.clientio.metrics import bind_metrics
 from voca.config import Settings, config_path
 from voca.conversation.agent import VocaAgent, records
@@ -64,6 +65,8 @@ async def entrypoint(ctx: JobContext) -> None:
     )
     cards = CardState(instructions)
     cards.bind(ctx.room)
+    history = HistoryChannel(store, current.id, settings.session.history_on_join)
+    history.bind(ctx.room)
     bind_metrics(ctx.room, log.write)
     summarizer = make_summarizer(settings)
     agent = VocaAgent(
@@ -173,7 +176,7 @@ async def entrypoint(ctx: JobContext) -> None:
             agent.check_due()
 
     ctx.room.on("participant_connected", on_participant)
-    participant = await ctx.wait_for_participant()
+    participant = await send_on_wait(ctx, history)
     log.device = participant.identity.removeprefix("user-")
     cards.publish()
     agent.check_due()
