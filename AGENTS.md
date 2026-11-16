@@ -20,13 +20,18 @@ Hermes. This file is the working contract for agents and contributors.
   prompt; `summarizer.py`: the call to `[compression.model]`), `clientio/`
   (the `voca.cards` and `voca.history` channels), `telemetry/` (`.local/events.jsonl`), `session/`
   (`SessionStore`: the session snapshot and the archive in one SQLite file,
-  «Session store»; `voca archive search`), `config.py` (`Settings`: the
+  «Session store»; `voca archive search`), `delegation/` (`DelegationService`:
+  tasks given to Hermes through the Runs API, the state machine, polling, the
+  deadline with `/stop`, `recover()` and `approve()`; `hermes.py` — the Runs
+  API adapter and the only status mapping; `sqlite.py` — the task file
+  `[delegation].path`; `voca bench delegate`), `config.py` (`Settings`: the
   environment and the agent config file, «Agent config»).
   `agent/src/voca/speech/` prepares text before TTS: the tool-call markup
   filter, LaTeX and tables, numbers as words, stress and the first fragment.
   `markup`, `numbers`, `prepare`, `conversation/context`,
-  `conversation/compaction`, `conversation/instructions` and `session/model`
-  are pure modules, which
+  `conversation/compaction`, `conversation/instructions`, `session/model`,
+  `delegation/model`, `delegation/ports` and `delegation/service` are pure
+  modules, which
   `tests/test_import_boundaries.py` checks.
 - `instructions.example/` — a sample `SOUL.md`, `user.md` and `agent.md`; the
   real files live outside the repository, in `VOCA_INSTRUCTIONS_DIR`.
@@ -92,8 +97,8 @@ stand's downloads; it is a stand check, not a CI check.
 | `VOCA_LLM_URL` | `http://127.0.0.1:8081/v1` | llama-server API of the agent's LLM |
 | `VOCA_AGENT_PORT` | `8084` | Health port of the agent worker (127.0.0.1) |
 | `VOCA_STATE_DIR` | `$VOCA_ROOT/.local` | Directory of the agent's `events.jsonl` |
-| `VOCA_HERMES_URL` | empty | Hermes API server URL for `bench/hermes_runs.py`; `https://hermes.priney.com` on the stand |
-| `VOCA_HERMES_KEY` | empty | `API_SERVER_KEY` of the Hermes profile; a secret, only in `.env` |
+| `VOCA_HERMES_URL` | empty | Hermes API server URL for `bench/hermes_runs.py` and the agent (`voca bench delegate`); `https://hermes.priney.com` on the stand |
+| `VOCA_HERMES_KEY` | empty | `API_SERVER_KEY` of the Hermes profile; read by `bench/hermes_runs.py` and the agent; a secret, only in `.env` |
 | `VOCA_LITELLM_KEY` | empty | LiteLLM virtual key `voca` for `https://litellm.priney.com` (the session summariser); a secret, only in `.env` |
 
 Everything downloaded lives outside the clone, in the machine's shared
@@ -119,10 +124,18 @@ a section) are no longer read.
 - `[session]` — the session history file and how much of it a client gets.
 - `[compression]` — the compression triggers and the trim.
 - `[compression.model]` — the summariser.
+- `[delegation]` — the task file and the run deadline.
 
 `[session].history_on_join` is how many archive rows a joining client gets
 in `voca.history` («Client channel»); `[session].path` is the session store
 («Session store»).
+
+`[delegation].path` (default `~/.voca/tasks.sqlite3`, env
+`VOCA_DELEGATION__PATH`) is the task file: the directory 0700 and the file 0600
+when VOCA creates them, WAL, migrations by `user_version`; a newer schema is
+refused. It is separate from the session store and is backed up with `~/.voca/`
+(E5). `[delegation].run_timeout` (900 s, `VOCA_DELEGATION__RUN_TIMEOUT`) counts
+from a task's creation; after it VOCA sends `/stop` to the run.
 
 Trim: above `hard_limit · context_tokens` estimated tokens (`len(text) // 3`)
 the oldest turns are dropped until `trim_to · context_tokens` remain. The rules
@@ -134,7 +147,9 @@ the start of each job the agent reads `GET /props` of llama-server and writes a
 `context_mismatch` line when `n_ctx` differs.
 
 The summariser key comes only from `VOCA_LITELLM_KEY` (the table above);
-`litellm_key`, `api_key` and any unknown key in the file are rejected. A file
+`litellm_key`, `api_key` and any unknown key in the file are rejected. The
+Hermes URL and key come only from the environment (`VOCA_HERMES_URL`,
+`VOCA_HERMES_KEY`); `hermes_key` in the file is rejected. A file
 with an error makes `voca agent` print `конфиг не прочитан` with the path and
 exit with code 1.
 
