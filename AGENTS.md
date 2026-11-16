@@ -18,7 +18,7 @@ Hermes. This file is the working contract for agents and contributors.
   `instructions.py`: `InstructionLoader` with the last valid set; `context.py`: `trim_chat_ctx` — the emergency path at
   `hard_limit`; `compaction.py`: the compaction plan and the summariser
   prompt; `summarizer.py`: the call to `[compression.model]`), `clientio/`
-  (the `voca.cards` and `voca.history` channels), `telemetry/` (`.local/events.jsonl`), `session/`
+  (the `voca.cards` and `voca.history` channels, the RPC `voca.list_tasks`), `telemetry/` (`.local/events.jsonl`), `session/`
   (`SessionStore`: the session snapshot and the archive in one SQLite file,
   «Session store»; `voca archive search`), `delegation/` (`DelegationService`:
   tasks given to Hermes through the Runs API, the state machine, polling, the
@@ -258,8 +258,31 @@ classes come from `livekit-api` in the `agent/` environment.
   connects and on every change.
 - A component is `down` after an unrecoverable error and `ok` after the first
   metric of that stage.
-- `hermes` is not sent in E1; `instructions_error` is an addition to
-  `derive:eb1id854:§5`.
+- `instructions_error` is an addition to `derive:eb1id854:§5`;
+  `components.hermes` is not sent: tasks travel as `task` messages.
+- The agent sends a JSON `task` message on `voca.cards` on every change of a
+  task given to Hermes: `{"type": "task", "tool_call_id", "status":
+  "queued"|"running"|"waiting_approval"|"unknown"|"succeeded"|"failed",
+  "text", "result": string|null, "error": string|null, "created_at",
+  "delivered_at": number|null, "approval": {"description", "command",
+  "choices"}|null}`. `approval` is set only while the task is
+  `waiting_approval`. `task` and `state` share one send chain, so their order
+  is kept. Live `task` messages start with the `delegate` tool (VOCA-33).
+- The agent registers the RPC method `voca.list_tasks` (empty payload). It
+  answers `{"tasks": [...]}` — the same objects without `type`, every task in
+  `[delegation].path`, newest first, no limit. When the task file does not
+  open, the agent logs `task store not opened` to `.local/logs/agent.log`,
+  keeps running and does not register the method; the caller gets 1400
+  `UNSUPPORTED_METHOD`.
+- The page calls `voca.list_tasks` on the first `state` from each agent
+  identity in a room, so a new job and every rejoin ask again. The answer
+  replaces the page's task block; a `task` message updates one card by
+  `tool_call_id`, and a new one goes on top.
+- The task block is separate from the transcript: neither `history` nor a
+  disconnect clears it. A card shows the status, the text, the full result,
+  the error and «озвучено» once `delivered_at` is set. A `waiting_approval`
+  card also shows `description`, `command` and «Скажите „Подтверждаю“ или
+  „Отклоняю“».
 - The agent sends a JSON `history` message on the text stream topic
   `voca.history` to one participant (`destination_identities`):
   `{"type": "history", "session_id", "items": [{"id", "at", "who":
