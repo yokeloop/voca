@@ -4,6 +4,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 
+import httpx
 import openai as openai_sdk
 from livekit.agents import (
     DEFAULT_API_CONNECT_OPTIONS,
@@ -19,10 +20,13 @@ from livekit.plugins import openai
 from openai._models import FinalRequestOptions
 
 from voca.config import Settings
+from voca.conversation.compaction import Limits
+from voca.conversation.summarizer import Summarizer
 from voca.speech.fragments import FirstFragmentTokenizer
 from voca.speech.markup import strip_latex_and_tables
 from voca.speech.prepare import Prepared, prepare
 from voca.speech.stress import Stress
+from voca.telemetry.jsonl import JsonlLog
 
 OnPrepared = Callable[[str, Prepared, float], None]
 
@@ -34,6 +38,8 @@ TTS_TEXT_TRANSFORMS: list[TextTransforms] = [
     "filter_emoji",
     strip_latex_and_tables,
 ]
+
+SAMPLING = ("temperature", "top_k", "top_p", "repeat_penalty")
 
 
 class SpeechLanguageClient(openai_sdk.AsyncOpenAI):
@@ -128,12 +134,66 @@ def make_stt(settings: Settings, vad: vad.VAD) -> stt.StreamAdapter:
 
 
 def make_llm(settings: Settings) -> openai.LLM:
+    extra_body: dict[str, Any] = {
+        "thinking_budget_tokens": settings.model.thinking_budget
+    }
+    for name in SAMPLING:
+        value = getattr(settings.model, name)
+        if value is not None:
+            extra_body[name] = value
     return openai.LLM(
         model=settings.llm_profile,
         base_url=settings.llm_url,
         api_key="none",
-        extra_body={"thinking_budget_tokens": settings.llm_thinking_budget},
+        extra_body=extra_body,
     )
+
+
+def compaction_limits(settings: Settings) -> Limits:
+    window = settings.model.context_tokens
+    c = settings.compression
+    return Limits(
+        threshold=int(c.threshold * window),
+        tail_budget=int(c.tail_ratio * c.threshold * window),
+        tail_turns_min=c.tail_turns_min,
+        idle_hours=c.idle_hours,
+        daily_at=c.daily_at,
+    )
+
+
+def make_summarizer(settings: Settings) -> Summarizer:
+    if settings.litellm_key is None:
+        return Summarizer(None, model=settings.compression.model.model)
+    return Summarizer(
+        openai_sdk.AsyncOpenAI(
+            api_key=settings.litellm_key.get_secret_value(),
+            base_url=settings.compression.model.url,
+            timeout=settings.compression.model.timeout_s,
+            max_retries=0,
+        ),
+        model=settings.compression.model.model,
+    )
+
+
+async def check_context(
+    settings: Settings, log: JsonlLog, *, timeout: float = 1.0
+) -> None:
+    url = settings.llm_url.rstrip("/").removesuffix("/v1") + "/props"
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.get(url)
+            response.raise_for_status()
+            n_ctx = response.json()["default_generation_settings"]["n_ctx"]
+    except (httpx.HTTPError, ValueError, KeyError, TypeError):
+        return
+    if not isinstance(n_ctx, int):
+        return
+    if n_ctx != settings.model.context_tokens:
+        log.write(
+            "context_mismatch",
+            n_ctx=n_ctx,
+            context_tokens=settings.model.context_tokens,
+        )
 
 
 def make_tts(
@@ -144,7 +204,7 @@ def make_tts(
 ) -> tts.StreamAdapter:
     inner = openai.TTS(
         model="tts",
-        voice=settings.tts_voice,
+        voice=settings.agent.tts_voice,
         response_format="pcm",
         sample_rate=44100,
         client=SpeechLanguageClient(
@@ -180,15 +240,15 @@ def build_session(
             tts_conn_options=APIConnectOptions(max_retry=1, timeout=5.0),
             max_unrecoverable_errors=MAX_UNRECOVERABLE_ERRORS,
         ),
-        aec_warmup_duration=settings.aec_warmup,
+        aec_warmup_duration=settings.agent.aec_warmup,
         turn_handling={
             "turn_detection": "vad",
-            "endpointing": {"min_delay": settings.endpointing_min_delay},
+            "endpointing": {"min_delay": settings.agent.endpointing_min_delay},
             "interruption": {
                 "mode": "vad",
-                "min_duration": settings.interruption_min_duration,
-                "min_words": settings.interruption_min_words,
+                "min_duration": settings.agent.interruption_min_duration,
+                "min_words": settings.agent.interruption_min_words,
             },
-            "preemptive_generation": {"enabled": settings.preemptive_generation},
+            "preemptive_generation": {"enabled": settings.agent.preemptive_generation},
         },
     )

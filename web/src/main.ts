@@ -2,6 +2,7 @@ import { ConnectionState, DisconnectReason, type Room } from "livekit-client";
 import { connect, deviceName, disconnect, type Handlers } from "./room";
 import {
   render,
+  replaceHistory,
   setCards,
   setConnected,
   setErrorLine,
@@ -69,6 +70,11 @@ if (app) {
       cards(state) {
         if (live()) {
           setCards(state);
+        }
+      },
+      history(items) {
+        if (live()) {
+          replaceHistory(items);
         }
       },
       agentState(state) {

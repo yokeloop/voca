@@ -11,10 +11,10 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 G6_DIR = ROOT / ".local" / "g6"
 AGENT_PID = ROOT / ".local" / "run" / "agent.pid"
-LEVER_VARS = ("VOCA_ENDPOINTING_MIN_DELAY", "VOCA_PREEMPTIVE_GENERATION")
+LEVER_VARS = ("VOCA_AGENT__ENDPOINTING_MIN_DELAY", "VOCA_AGENT__PREEMPTIVE_GENERATION")
 LEVER_NAMES = {
-    "VOCA_ENDPOINTING_MIN_DELAY": "min_delay",
-    "VOCA_PREEMPTIVE_GENERATION": "preemptive",
+    "VOCA_AGENT__ENDPOINTING_MIN_DELAY": "min_delay",
+    "VOCA_AGENT__PREEMPTIVE_GENERATION": "preemptive",
 }
 LINKS = (
     "end_of_turn_delay_ms",

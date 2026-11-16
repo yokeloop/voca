@@ -12,17 +12,26 @@ Hermes. This file is the working contract for agents and contributors.
   (prewarm, entrypoint, `WorkerOptions`), `app/wiring.py` (the plugins,
   `PreparedTTS`, `build_session`, `SpeechLanguageClient`), `conversation/`
   (`VocaAgent`: the tool-call markup filter in `llm_node`, the `delegate`
-  stub, instructions and context trim in `on_user_turn_completed`, failures
-  spoken aloud; `instructions.py`: `InstructionLoader` with the last valid
-  set; `context.py`: `trim_chat_ctx`), `clientio/` (the `voca.cards`
-  channel), `telemetry/` (`.local/events.jsonl`).
+  stub, instructions, accepting a finished summary and the emergency context
+  trim in `on_user_turn_completed`, the threshold trigger `maybe_compact`,
+  the idle and daily check `check_due`, failures spoken aloud;
+  `instructions.py`: `InstructionLoader` with the last valid set; `context.py`: `trim_chat_ctx` — the emergency path at
+  `hard_limit`; `compaction.py`: the compaction plan and the summariser
+  prompt; `summarizer.py`: the call to `[compression.model]`), `clientio/`
+  (the `voca.cards` and `voca.history` channels), `telemetry/` (`.local/events.jsonl`), `session/`
+  (`SessionStore`: the session snapshot and the archive in one SQLite file,
+  «Session store»; `voca archive search`), `config.py` (`Settings`: the
+  environment and the agent config file, «Agent config»).
   `agent/src/voca/speech/` prepares text before TTS: the tool-call markup
   filter, LaTeX and tables, numbers as words, stress and the first fragment.
-  `markup`, `numbers`, `prepare`, `conversation/context` and
-  `conversation/instructions` are pure modules, which
+  `markup`, `numbers`, `prepare`, `conversation/context`,
+  `conversation/compaction`, `conversation/instructions` and `session/model`
+  are pure modules, which
   `tests/test_import_boundaries.py` checks.
 - `instructions.example/` — a sample `SOUL.md`, `user.md` and `agent.md`; the
   real files live outside the repository, in `VOCA_INSTRUCTIONS_DIR`.
+- `config.example.toml` — a sample agent config; the real file is
+  `~/.voca/config.toml` (`VOCA_CONFIG`), outside the repository.
 - `web/` — the page (Vite + TypeScript, `livekit-client`); `pnpm --dir web build`
   writes `web/dist/`, which `voca web` serves.
 - `bench/` — stand scripts and their reports; they run in the `agent/`
@@ -85,23 +94,54 @@ stand's downloads; it is a stand check, not a CI check.
 | `VOCA_STATE_DIR` | `$VOCA_ROOT/.local` | Directory of the agent's `events.jsonl` |
 | `VOCA_HERMES_URL` | empty | Hermes API server URL for `bench/hermes_runs.py`; `https://hermes.priney.com` on the stand |
 | `VOCA_HERMES_KEY` | empty | `API_SERVER_KEY` of the Hermes profile; a secret, only in `.env` |
-
-The agent's pipeline settings (`VOCA_TTS_VOICE`, `VOCA_LLM_THINKING_BUDGET`,
-`VOCA_VAD_MIN_SILENCE`, `VOCA_INTERRUPTION_MIN_DURATION`,
-`VOCA_INTERRUPTION_MIN_WORDS`, `VOCA_AEC_WARMUP`, `VOCA_ENDPOINTING_MIN_DELAY`,
-`VOCA_PREEMPTIVE_GENERATION`, `VOCA_INSTRUCTIONS_DIR` — default
-`~/.voca/instructions`, `VOCA_CTX_TRIM_HIGH` — 0.60, `VOCA_CTX_TRIM_LOW` —
-0.40) have their defaults in `Settings` (`agent/src/voca/config.py`);
-`scripts/env.sh` does not set them, and `.env.example` lists them commented
-out. The two trim values are shares of `-c 16384` (`LLM_CONTEXT_TOKENS` in
-`config.py`), estimated as `len(text) // 3`, with `LOW < HIGH`.
-`VOCA_AEC_WARMUP` covers only the first N seconds from the start of the
-session's first agent reply; later replies are interruptible at once.
+| `VOCA_LITELLM_KEY` | empty | LiteLLM virtual key `voca` for `https://litellm.priney.com` (the session summariser); a secret, only in `.env` |
 
 Everything downloaded lives outside the clone, in the machine's shared
 directories `~/Apps/<tool>/<version>/` and `~/models/`; a variable with that
 default names each path. `devkey`/`secret` cannot change without a
 livekit-server config.
+
+### Agent config
+
+The agent's behaviour lives in `~/.voca/config.toml`, outside the repository;
+`VOCA_CONFIG` sets another path, and `config.example.toml` is the sample. A
+missing file means the defaults of `Settings` (`agent/src/voca/config.py`). The
+file is read at the start of each job; there is no hot reload.
+
+Sources in order: constructor arguments → environment → file → defaults. A
+one-off override for one run is `VOCA_<SECTION>__<FIELD>`, e.g.
+`VOCA_COMPRESSION__THRESHOLD=0.08` or `VOCA_COMPRESSION__MODEL__TIMEOUT_S=9`.
+The former flat names of these settings (`VOCA_` plus the field name, without
+a section) are no longer read.
+
+- `[model]` — the context window, the reasoning budget, sampling.
+- `[agent]` — the seven pipeline settings; G5/G6 tune them.
+- `[session]` — the session history file and how much of it a client gets.
+- `[compression]` — the compression triggers and the trim.
+- `[compression.model]` — the summariser.
+
+`[session].history_on_join` is how many archive rows a joining client gets
+in `voca.history` («Client channel»); `[session].path` is the session store
+(«Session store»).
+
+Trim: above `hard_limit · context_tokens` estimated tokens (`len(text) // 3`)
+the oldest turns are dropped until `trim_to · context_tokens` remain. The rules
+are `0 < trim_to < hard_limit < 1` and `threshold < hard_limit`. This trim is
+now the emergency path; compaction («Context compaction») runs first.
+
+`context_tokens` is kept equal to `-c 16384` in `scripts/llama.sh` by hand. At
+the start of each job the agent reads `GET /props` of llama-server and writes a
+`context_mismatch` line when `n_ctx` differs.
+
+The summariser key comes only from `VOCA_LITELLM_KEY` (the table above);
+`litellm_key`, `api_key` and any unknown key in the file are rejected. A file
+with an error makes `voca agent` print `конфиг не прочитан` with the path and
+exit with code 1.
+
+`VOCA_INSTRUCTIONS_DIR` (default `~/.voca/instructions`) is an environment
+variable, not a file field. `[agent].aec_warmup` covers only the first N
+seconds from the start of the session's first agent reply; later replies are
+interruptible at once.
 
 ## Downloads
 
@@ -170,7 +210,8 @@ with the shared flags — `--alias "$VOCA_LLM_PROFILE"`, `--jinja`,
 `127.0.0.1:8081`, `-c 16384`, `-fa on`, q8_0 KV cache, `--parallel 1`, `-t 2`,
 all layers on the GPU — plus the profile's `args`. Extra arguments are
 appended to the command. Sampling is set on the server by the profile, from
-the model card; chat template kwargs come from the client.
+the model card; the client sends `thinking_budget_tokens` and only the sampling
+values set in `[model]` («Agent config»).
 
 livekit-server runs as `--dev --bind 0.0.0.0 --node-ip "$VOCA_LIVEKIT_NODE_IP"`.
 
@@ -204,6 +245,21 @@ classes come from `livekit-api` in the `agent/` environment.
   metric of that stage.
 - `hermes` is not sent in E1; `instructions_error` is an addition to
   `derive:eb1id854:§5`.
+- The agent sends a JSON `history` message on the text stream topic
+  `voca.history` to one participant (`destination_identities`):
+  `{"type": "history", "session_id", "items": [{"id", "at", "who":
+  "вы"|"агент"|"сжатие", "text"}]}`.
+- `items` are the last `[session].history_on_join` (default 50) `user`,
+  `assistant` and `summary` rows of the open session's archive, oldest first;
+  `id` is the archive's `item_id`, a `summary` has an empty `text`. Tool calls
+  and results are not sent.
+- The message goes out when a participant connects and after
+  `ctx.wait_for_participant()` for a participant that joined before the job; a
+  first join can therefore get it twice. Sends are chained, the archive is read
+  at send time.
+- On every `history` the page clears its transcript, draws the items
+  (`сжатие` as the line «— контекст сжат —») and appends live
+  `lk.transcription` segments after them.
 - The page sends the agent JSON on the text stream topic `voca.metrics`:
   `{"type": "client_e2e", "seq", "client_e2e_ms", "speech_ms"}`, one message
   per pair «end of speech → first agent sound».
@@ -217,6 +273,109 @@ classes come from `livekit-api` in the `agent/` environment.
   track stays above −50 dBFS for two 10 ms ticks.
 - The agent writes a JSONL `client` row; an invalid message only logs a
   warning.
+
+## Session store
+
+- The file is `[session].path` (default `~/.voca/sessions.sqlite3`, env
+  `VOCA_SESSION__PATH`). When the agent creates it, the directory gets 0700
+  and the file 0600. The file is in WAL mode, so `-wal` and `-shm` lie beside
+  it; migrations follow `user_version`. A schema newer than the agent or any
+  error opening the file stops `voca agent`: exit code 1 and the line
+  `хранилище сессии не открыто`.
+- Tables: `sessions` (`id`, `started_at`, `ended_at`, `end_reason`,
+  `context_json`, `context_at`, `compacted_at`, `summary_count`); `messages`,
+  append-only (`kind` user/assistant/tool_call/tool_result/summary, `item_id`,
+  `call_id`, `name`, `text`, `data_json`; `UNIQUE (session_id, item_id)`);
+  `messages_fts` (`unicode61 remove_diacritics 2`).
+- Restore: at the start of each job the open session (`ended_at IS NULL`) is
+  lifted into `VocaAgent(chat_ctx=…)`, and the agent writes a
+  `session_restored` line (`session_id`, `items`, `estimate`). `session` in
+  the JSONL stays the job id.
+- Snapshot: `to_dict(exclude_function_call=False, exclude_timestamp=False,
+  exclude_config_update=True)` without system and developer messages; the
+  instructions come from `InstructionLoader`. The trim and compaction change
+  only the snapshot; archive rows stay.
+- Writes: one transaction «new rows + snapshot» after each `turn` line and
+  when the job stops and after a summary is adopted (`summary` row,
+  `compacted_at`, `summary_count`; «Context compaction»). Tool calls and results wait for the next boundary. A
+  failed write gives a `session_write_failed` line (`error`), and the rows
+  stay in the buffer.
+- Search: «ё/Ё» is folded to «е/Е» in the triggers and in the query; the
+  tokenizer does not do it. The stock FTS `'rebuild'` would reindex without
+  the fold: rebuild with `'delete-all'` and `INSERT … SELECT id,
+  replace(replace(text,'ё','е'),'Ё','Е') FROM messages` (as the comment in
+  `001-session.sql` shows).
+- `voca archive search <query> [--limit N]` (default 20): FTS5 syntax; another
+  word form is found with the prefix `word*`. An output line is `id`, time,
+  `kind` and the `snippet` with `[…]`. An invalid query or a missing file
+  gives exit code 2, and no file is created.
+- The file is the only copy of the history; its backup is E5 (the `~/.voca/`
+  directory).
+
+## Context compaction
+
+- Mechanism: Hermes `3cbe7b1` `agent/context_compressor.py`, the tail by the
+  `legacy` formula.
+- Trigger: after each agent reply (`agent_state_changed` → `listening`), when
+  the estimate `len(text) // 3` over the context is at least
+  `threshold · context_tokens`; `threshold = 0` turns it off. At most one
+  request runs at a time; a new trigger while one runs is ignored.
+- Idle and daily triggers:
+  - `idle_hours` (0 — off): the time since the last message (user,
+    assistant, tool call or result; the summary does not count) is at least
+    `idle_hours`;
+  - `daily_at` (`""` — off): the latest `HH:MM` boundary in the host's local
+    time (`datetime.fromtimestamp`, no time zone setting) is later than the
+    last compression, or the session start if there was none;
+  - both need a message newer than the last compression and a context above
+    `tail_ratio · threshold · context_tokens`; idle wins when both are due;
+  - checked at the start of a job after the first participant, on
+    `participant_connected` of `user-*` and at every turn boundary in
+    `on_user_turn_completed`, after the adoption and the trim; there is no
+    timer;
+  - the same background summary as the threshold, adopted one turn later;
+    the first reply after joining may still use the full context; `trigger`
+    is `idle` or `daily` in `compaction` and `compaction_failed`;
+  - the last message time comes from the restored context, so idle time
+    survives an agent restart (unlike Hermes, whose idle clock is in memory).
+- Plan: the head is the instructions; the previous summary is found by
+  `extra.voca_summary`; the tail is the `split_turns` turns from the end
+  within `tail_ratio · threshold · context_tokens`, at least `tail_turns_min`
+  and always the last turn; «call — result» pairs are never split; the middle
+  goes to the summary.
+- Prompt: one user message in Russian, fresh or iterative («ПРЕДЫДУЩИЙ
+  ПЕРЕСКАЗ / НОВЫЕ РЕПЛИКИ»), six sections, secrets → `[СКРЫТО]`, today's
+  date, the goal «Целевой объём ~N токенов» with N = clamp(20 % of the folded
+  part, 400, 1500); `max_tokens` is not sent, as in Hermes (thinking models
+  spend it on reasoning); `finish_reason == "length"`, an empty reply or a
+  refusal count as failure; `<think>…</think>` is stripped.
+- Call: `[compression.model]` (`url`, `model`, `timeout_s`) through
+  `openai.AsyncOpenAI`, the key is `VOCA_LITELLM_KEY`, no retries.
+- Adoption: in the next `on_user_turn_completed`; the turn neither waits for
+  the summary nor cancels it. Only the folded middle and the previous summary
+  are removed. The summary is an assistant message with the prefix
+  «[СЖАТИЕ КОНТЕКСТА — ТОЛЬКО СПРАВКА]» and an end marker; it stands right
+  before the first remaining turn, `created_at` = that turn's
+  `created_at − 1e-6`. The first turn after adoption pays one full prefill.
+- Record: an archive row `summary` (the body without the prefix, `data_json`:
+  `trigger`, `estimate_before`, `after`, `folded_turns`), the snapshot,
+  `compacted_at`, `summary_count`; a `compaction` line (`trigger`,
+  `estimate_before`, `after`, `folded_turns`, `ms`, `summary_tokens` —
+  `usage.completion_tokens` or the `len // 3` estimate).
+- Failure: `compaction_failed` (`trigger`, `reason`: `no_key`, `timeout`,
+  `connection`, `http_<code>`, `error`, `empty`, `length`, `refusal`;
+  `estimate_before`, `ms`; `error` — the exception class name, only when the
+  summary task raised outside the API errors, with `reason` `error`); the
+  context does not change, the retry comes after the next reply. Without a
+  key the line is written on each trigger, with no request. At `hard_limit`
+  `trim_chat_ctx` trims to `trim_to` (`context_trimmed`).
+- Guard: an adoption that leaves the estimate at or above the threshold adds
+  a strike, one below it resets the strikes; at two strikes no summary starts
+  and one `compaction_blocked` line is written (`strikes`, `estimate`,
+  `threshold`, `retry_in_s`), after 300 s of block one probe runs, the strikes
+  live in memory per job, and the `hard_limit` trim works regardless (Hermes
+  anti-thrash). The idle and daily triggers bypass the guard: they neither
+  check nor change the strikes.
 
 ## Ports
 
@@ -241,7 +400,6 @@ Further deviations from `derive:eb1id854` (E1 research, VOCA-11):
   `LIVEKIT_*`; `ws_url` is passed to the worker explicitly.
 - О7: the agent has a `delegate` stub that raises
   `ToolError("Делегирование сейчас недоступно")`, not «1.1 without delegate».
-- О11: a reconnecting client sees only new replies, as in derive:eb1id854:§6.6, not the current transcript of derive:8kki4ynb:§7.
 
 ## References
 

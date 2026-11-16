@@ -1,6 +1,7 @@
 import json
 import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -128,8 +129,11 @@ def turn_row(
 
 
 class TurnTracker:
-    def __init__(self, log: JsonlLog) -> None:
+    def __init__(
+        self, log: JsonlLog, on_turn: Callable[[], None] | None = None
+    ) -> None:
         self.log = log
+        self.on_turn = on_turn
         self.fragments = Fragments()
         self.llm: LLMMetrics | None = None
         self.user: ChatMessage | None = None
@@ -175,6 +179,8 @@ class TurnTracker:
                 self.log.write("interruption")
             self.fragments = Fragments()
             self.llm = None
+            if self.on_turn is not None:
+                self.on_turn()
 
     def on_state(self, ev: AgentStateChangedEvent) -> None:
         self.log.write("agent_state", old=ev.old_state, new=ev.new_state)

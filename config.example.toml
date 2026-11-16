@@ -1,0 +1,65 @@
+# Sample agent config. Copy it to ~/.voca/config.toml (another path: VOCA_CONFIG).
+# A one-off override for one run: VOCA_<SECTION>__<FIELD>, e.g.
+# VOCA_COMPRESSION__THRESHOLD=0.08 scripts/up.sh agent.
+# Fields that later tasks of the epic will read are already validated at start.
+
+[model]
+# Context window in tokens; equal to -c in scripts/llama.sh, a mismatch writes context_mismatch.
+context_tokens = 16384
+# Reasoning budget sent as thinking_budget_tokens with each LLM request.
+thinking_budget = 128
+# Sampling: unset values are not sent, sampling then comes from the server profile.
+# temperature = …
+# top_k = …
+# top_p = …
+# repeat_penalty = …
+
+[agent]
+# Supertonic voice of the agent.
+tts_voice = "F4"
+# Silence in seconds that ends speech for Silero VAD.
+vad_min_silence = 0.3
+# Seconds of user speech that interrupt the agent; G5 tunes it.
+interruption_min_duration = 0.5
+# Words of user speech that interrupt the agent; G5 tunes it.
+interruption_min_words = 0
+# Seconds from the start of the session's first agent reply during which interruptions are ignored (once per session); G5 tunes it.
+aec_warmup = 3.0
+# Seconds of silence before the user's turn ends; G6 tunes it.
+endpointing_min_delay = 0.5
+# Start the reply before the user's turn ends; G6 measures it.
+preemptive_generation = false
+
+[session]
+# SQLite file of the session history.
+path = "~/.voca/sessions.sqlite3"
+# Messages sent to a client in voca.history when it joins.
+history_on_join = 50
+
+[compression]
+# Share of context_tokens that triggers compression; 0 turns the trigger off.
+threshold = 0.60
+# Share of the window for the emergency trim when there is no summary.
+hard_limit = 0.85
+# Share of the window the trim goes down to (the former ctx_trim_low).
+trim_to = 0.40
+# Tail budget = tail_ratio × threshold × context_tokens.
+# The idle and daily triggers skip a context not above this budget.
+tail_ratio = 0.20
+# Turns kept in the tail at least.
+tail_turns_min = 2
+# Hours since the last message after which the session is compressed; 0 turns it off.
+# Checked when a page joins and at every reply, no timer; the summary is adopted one reply later.
+idle_hours = 4
+# Daily compression boundary HH:MM in the host's local time; "" turns it off.
+# Checked when a page joins and at every reply: if the boundary passed since the last compression.
+daily_at = "04:00"
+
+[compression.model]
+# The key is not written here: VOCA_LITELLM_KEY in .env only.
+# LiteLLM on the rpi, the route works only in the tailnet.
+url = "https://litellm.priney.com/v1"
+# Model name in LiteLLM.
+model = "glm-5.3-flash"
+# Request timeout in seconds.
+timeout_s = 60

@@ -1,5 +1,5 @@
 import { ConnectionState } from "livekit-client";
-import type { CardsState, Transcript } from "./room";
+import type { CardsState, HistoryItem, Transcript } from "./room";
 
 const AGENT_LABELS: Record<string, string> = {
   initializing: "агент запускается",
@@ -92,6 +92,19 @@ export function setCards(state: CardsState | undefined): void {
 
 export function setErrorLine(text: string): void {
   errors.textContent = text;
+}
+
+export function replaceHistory(items: HistoryItem[]): void {
+  rows.clear();
+  transcript.replaceChildren(
+    ...items.map(({ who, text }) => {
+      const row = document.createElement("li");
+      row.textContent =
+        who === "сжатие" ? "— контекст сжат —" : `${who}: ${text}`;
+      row.style.opacity = "1";
+      return row;
+    }),
+  );
 }
 
 export function upsertSegment({ segment, who, text, final }: Transcript): void {

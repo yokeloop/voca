@@ -36,9 +36,9 @@ TURN_BEFORE_S = 0.1
 LINK_WAIT_S = 3.0
 NODE = "voca-g5"
 VARIANT_VARS = (
-    "VOCA_INTERRUPTION_MIN_DURATION",
-    "VOCA_INTERRUPTION_MIN_WORDS",
-    "VOCA_AEC_WARMUP",
+    "VOCA_AGENT__INTERRUPTION_MIN_DURATION",
+    "VOCA_AGENT__INTERRUPTION_MIN_WORDS",
+    "VOCA_AGENT__AEC_WARMUP",
 )
 AGENT_PID = ROOT / ".local" / "run" / "agent.pid"
 HISTORY_LEAD_S = 0.5
@@ -471,12 +471,12 @@ def read_json(path: Path) -> Any:
 
 
 def variant_min_duration(variant: dict[str, str]) -> float:
-    value = variant.get("VOCA_INTERRUPTION_MIN_DURATION", "default")
+    value = variant.get("VOCA_AGENT__INTERRUPTION_MIN_DURATION", "default")
     if value != "default":
         return float(value)
     from voca.config import Settings
 
-    return Settings().interruption_min_duration
+    return Settings().agent.interruption_min_duration
 
 
 def fmt(value: float | None, digits: int) -> str:
