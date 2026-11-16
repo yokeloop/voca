@@ -22,6 +22,7 @@ APPROVAL = {
     "choices": ["once", "deny"],
     "request_id": "r1",
 }
+AUTHORITY_APPROVAL = {**APPROVAL, "request_id": "p1", "execution_generation": 3}
 
 
 class FakeRepo:
@@ -72,7 +73,7 @@ class FakeBackend:
         self.posts: list[tuple[str, str]] = []
         self.gets: list[tuple[str, bool]] = []
         self.stopped: list[str] = []
-        self.approved: list[tuple[str, str, str | None]] = []
+        self.approved: list[tuple[str, str, dict[str, Any]]] = []
         self.resolved: list[tuple[str, dict[str, Any]]] = []
 
     async def create_run(self, key: str, text: str) -> str:
@@ -91,9 +92,9 @@ class FakeBackend:
         return state
 
     async def approve(
-        self, run_id: str, choice: Literal["once", "deny"], request_id: str | None
+        self, run_id: str, choice: Literal["once", "deny"], approval: dict[str, Any]
     ) -> None:
-        self.approved.append((run_id, choice, request_id))
+        self.approved.append((run_id, choice, approval))
         take(self.approvals)
 
     async def resolve_unknown(self, run_id: str, admission: dict[str, Any]) -> None:
@@ -318,14 +319,14 @@ def test_unknown_calls_resolve() -> None:
     assert task.error == "interrupted"
 
 
-def waiting_task(repo: FakeRepo) -> None:
+def waiting_task(repo: FakeRepo, approval: dict[str, Any] = APPROVAL) -> None:
     repo.tasks["k"] = Task(
         "k",
         "a",
         TaskStatus.WAITING_APPROVAL,
         created_at=0,
         run_id="run_1",
-        approval=APPROVAL,
+        approval=approval,
     )
 
 
@@ -338,8 +339,18 @@ def test_approve_once_and_deny() -> None:
         await service.approve("k", "deny")
 
     asyncio.run(main())
-    assert backend.approved == [("run_1", "once", "r1"), ("run_1", "deny", "r1")]
+    assert backend.approved == [
+        ("run_1", "once", APPROVAL),
+        ("run_1", "deny", APPROVAL),
+    ]
     assert repo.tasks["k"].status == TaskStatus.WAITING_APPROVAL
+
+
+def test_approve_authority_passes_generation() -> None:
+    service, repo, backend, _, _ = make()
+    waiting_task(repo, AUTHORITY_APPROVAL)
+    asyncio.run(service.approve("k", "once"))
+    assert backend.approved == [("run_1", "once", AUTHORITY_APPROVAL)]
 
 
 def test_approve_conflict() -> None:

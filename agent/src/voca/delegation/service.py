@@ -203,7 +203,7 @@ class DelegationService:
         if task.status != TaskStatus.WAITING_APPROVAL or task.approval is None:
             raise ApprovalNotActive(key)
         assert task.run_id is not None
-        await self.backend.approve(task.run_id, choice, task.approval.get("request_id"))
+        await self.backend.approve(task.run_id, choice, task.approval)
 
     async def mark_delivered(self, key: str) -> Task:
         task = await self._get(key)

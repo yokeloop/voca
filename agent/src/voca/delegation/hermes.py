@@ -16,6 +16,23 @@ SESSION_KEY = "voca"
 HERMES_TERMINAL = frozenset({"completed", "failed", "cancelled", "interrupted"})
 TIMEOUT = httpx.Timeout(10.0, connect=3.0)
 RUNNING = frozenset({"started", "queued", "running", "stopping"})
+APPROVAL_FIELDS = ("description", "command", "choices", "request_id")
+
+
+def approval_of(body: dict[str, Any]) -> dict[str, Any] | None:
+    for control in body.get("pending_controls") or []:
+        if isinstance(control, dict) and control.get("kind") == "approval":
+            return {
+                "description": control.get("description"),
+                "command": control.get("command"),
+                "choices": control.get("choices"),
+                "request_id": control.get("prompt_id"),
+                "execution_generation": control.get("execution_generation"),
+            }
+    approval = body.get("approval")
+    if not isinstance(approval, dict):
+        return None
+    return {key: approval[key] for key in APPROVAL_FIELDS if key in approval}
 
 
 def map_run(body: dict[str, Any], stop_requested: bool) -> RunState:
@@ -24,12 +41,7 @@ def map_run(body: dict[str, Any], stop_requested: bool) -> RunState:
     if status in RUNNING:
         return RunState(run_id, TaskStatus.RUNNING)
     if status == "waiting_for_approval":
-        approval = body.get("approval")
-        return RunState(
-            run_id,
-            TaskStatus.WAITING_APPROVAL,
-            approval=approval if isinstance(approval, dict) else None,
-        )
+        return RunState(run_id, TaskStatus.WAITING_APPROVAL, approval=approval_of(body))
     if status == "completed":
         return RunState(run_id, TaskStatus.SUCCEEDED, result=body.get("output") or "")
     if status in ("failed", "interrupted"):
@@ -130,11 +142,17 @@ class HermesBackend:
         raise OutcomeUnknown(error_code(response))
 
     async def approve(
-        self, run_id: str, choice: Literal["once", "deny"], request_id: str | None
+        self, run_id: str, choice: Literal["once", "deny"], approval: dict[str, Any]
     ) -> None:
         body: dict[str, Any] = {"choice": choice}
-        if request_id is not None:
-            body["request_id"] = request_id
+        if "execution_generation" in approval:
+            body = {
+                "request_id": approval.get("request_id"),
+                "execution_generation": approval["execution_generation"],
+                "choice": choice,
+            }
+        elif approval.get("request_id") is not None:
+            body["request_id"] = approval["request_id"]
         response = await self._send("POST", f"/v1/runs/{run_id}/approval", body)
         if response.status_code == 200:
             return
