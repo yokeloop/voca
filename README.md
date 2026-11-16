@@ -303,6 +303,27 @@ scripts/down.sh
 
 **G6 (end-to-end latency).** The corpus is `bench/corpus/g6_turns.txt`, 5 sessions of 6 turns per device. A new job: «Отключиться», wait for the `close` row in `.local/events.jsonl` (the room closes after 20 s), «Подключиться»; the first turn of a session is cold. The run window: `uv run --project agent python bench/report.py start --run <run>` and `… stop --run <run>`; the summary: `… summary --run <run> …`. A lever: `scripts/down.sh agent`, then `VOCA_AGENT__ENDPOINTING_MIN_DELAY=<x>` or `VOCA_AGENT__PREEMPTIVE_GENERATION=true` before `scripts/up.sh agent`, then reconnect. The page measures `client_e2e_ms` itself (end of speech on the microphone → first agent sound in the browser, sent on `voca.metrics`, [AGENTS.md](AGENTS.md#client-channel) «Client channel»); `summary` puts it next to `e2e_latency_ms`; the difference is the network, the buffer and decoding. Sound after WebAudio (the output device latency) is not included. The result is in [bench/report_g6.md](bench/report_g6.md): G6 is not passed, bottleneck TTS TTFB — one run of 13 turns from a remote Mac in the tailnet (the engineer cut the host, phone and lever runs), `e2e_latency_ms` p50 2855 / p95 3738 ms, `client_e2e_ms` p50 3635 / p95 4681 ms, `tts_ttfb_ms` p50 938 ms.
 
+### 1.3 Delegation
+
+**What it is.** VOCA gives a task to Hermes through the Runs API (`POST /v1/runs` with `Idempotency-Key` = the task key, `X-Hermes-Session-Key: voca`, `session_id` = the task key). It polls `GET /v1/runs/{id}` every 2 s. The task is written before the request is sent, so a repeated key gives the same task and no second run. The voice tool comes later; for now `voca bench delegate` drives the core.
+
+**Needs.** `VOCA_HERMES_URL` and `VOCA_HERMES_KEY` in the environment ([0.4](#04-hermes-preflight)); `set -a; . ./.env; set +a` before the command.
+
+**CLI.** `agent/.venv/bin/voca bench delegate "<text>"` — a new key `cli-<uuid>`, printed first, then every state change (`<key> <status> <run_id>`), then `result:` or `error:`. Other forms:
+
+- `--key K "<text>"` — the same task again;
+- `--recover` — carries every open task to its end and lists the undelivered ones; only `cli-*` tasks are marked delivered;
+- `--timeout S` — a deadline for this run;
+- `--approve once|deny --key K` — answers a pending approval.
+
+Exit codes: 0 succeeded, 1 failed or unavailable, 2 usage, config or missing variables, 130 interrupted.
+
+**States.** `queued` → `running` → `succeeded` | `failed`, plus `waiting_approval` (Hermes asks to approve a dangerous command: `description`, `command`, `choices` are printed) and `unknown` (Hermes canonical mode; VOCA calls `resolve-unknown`). Failure reasons: `unavailable` (the request was refused: no connection, 4xx, 429, 503; an unknown outcome — a read timeout, a cut connection, 5xx other than 503 — is retried once with the same key), `timeout` (`[delegation].run_timeout` passed: VOCA sends `/stop`, waits 30 s for a final status; `completed` within that time still counts), `interrupted by gateway restart` (`cancelled` without a VOCA `/stop`), `lost` (404), `lost before launch`.
+
+**Task file.** `[delegation].path`, default `~/.voca/tasks.sqlite3` (`VOCA_DELEGATION__PATH`), table `tasks`; details in [AGENTS.md](AGENTS.md#agent-config).
+
+**Events.** `voca bench delegate` writes nothing to `.local/events.jsonl`.
+
 ## Contributing
 
 Open an issue or a pull request. Run the checks from [AGENTS.md](AGENTS.md#checks) before sending a change.
