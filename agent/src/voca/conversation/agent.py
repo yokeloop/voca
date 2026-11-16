@@ -1,11 +1,14 @@
 import asyncio
+import logging
+import re
 import time
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine
 from dataclasses import dataclass
 from datetime import date, datetime
+from typing import Any
 
-from livekit.agents import FlushSentinel, ToolError, function_tool, llm
-from livekit.agents.voice import Agent, ModelSettings
+from livekit.agents import FlushSentinel, RunContext, ToolError, function_tool, llm
+from livekit.agents.voice import Agent, AgentSession, ModelSettings
 
 from voca.clientio.cards import CardState
 from voca.conversation.compaction import (
@@ -23,6 +26,9 @@ from voca.conversation.compaction import (
 from voca.conversation.context import Item, approx_tokens, split_turns, trim_chat_ctx
 from voca.conversation.instructions import InstructionLoader, InstructionSet
 from voca.conversation.summarizer import Failure, Summarizer, Summary
+from voca.delegation.model import GATEWAY_RESTART, TIMEOUT, Task, TaskStatus
+from voca.delegation.ports import Unavailable
+from voca.delegation.service import DelegationService
 from voca.speech.markup import scan
 from voca.telemetry.jsonl import JsonlLog
 
@@ -31,6 +37,13 @@ REFUSALS = {"stt": "не расслышал", "llm": "не могу ответи
 OnCompacted = Callable[[str, float, str, dict[str, object]], None]
 BLOCK_STRIKES = 2
 BLOCK_RETRY_S = 300
+DELEGATE_ACCEPTED = "Поручение принято, сообщу, когда будет результат"
+DELEGATE_UNAVAILABLE = "Делегирование сейчас недоступно"
+SPEECH_LIMIT = 300
+FAILURE_REASONS = {
+    TIMEOUT: "не дождался результата",
+    GATEWAY_RESTART: "Hermes перезапускался",
+}
 
 
 @dataclass
@@ -44,6 +57,26 @@ def refusal(component: str, *, tts_down: bool) -> str | None:
     if tts_down:
         return None
     return REFUSALS.get(component)
+
+
+def clip(text: str, limit: int = SPEECH_LIMIT) -> str:
+    text = " ".join(text.split())
+    if len(text) <= limit:
+        return text
+    head = text[: limit + 1]
+    found = re.match(r".*[.!?…](?= )", head)
+    if found is not None:
+        return found.group(0).rstrip()
+    space = head.rfind(" ")
+    return (head[:space] if space > 0 else text[:limit]).rstrip()
+
+
+def delivery_text(task: Task) -> str:
+    if task.status == TaskStatus.SUCCEEDED:
+        result = clip(task.result or "")
+        return f"Готово по поручению: {result}" if result else "Готово по поручению."
+    reason = FAILURE_REASONS.get(task.error or "", "Hermes вернул ошибку")
+    return f"Поручение не выполнено: {reason}."
 
 
 def records(ctx: llm.ChatContext) -> list[Item]:
@@ -117,6 +150,7 @@ class VocaAgent(Agent):
         summarizer: Summarizer | None = None,
         clock: Callable[[], float] = time.time,
         compacted_at: float | None = None,
+        delegation: DelegationService | None = None,
     ) -> None:
         super().__init__(instructions=instructions.text, chat_ctx=chat_ctx)
         self.loader = loader
@@ -133,6 +167,129 @@ class VocaAgent(Agent):
         self.compacted_at = compacted_at if compacted_at is not None else self.clock()
         self.strikes = 0
         self.blocked_at: float | None = None
+        self.delegation = delegation
+        self.background: set[asyncio.Task[Any]] = set()
+        self.deliverer: asyncio.Task[None] | None = None
+        self.in_tool: set[str] = set()
+        self.queue: asyncio.Queue[str] = asyncio.Queue()
+        self.queued: set[str] = set()
+        self.present = asyncio.Event()
+        self.playout: dict[str, bool] = {}
+        self.stopped = False
+
+    def set_present(self, present: bool) -> None:
+        if present:
+            self.present.set()
+        else:
+            self.present.clear()
+
+    def _spawn(self, coro: Coroutine[Any, Any, Any]) -> None:
+        if self.stopped:
+            coro.close()
+            return
+        task = asyncio.create_task(coro)
+        self.background.add(task)
+        task.add_done_callback(self._finished)
+
+    def _finished(self, task: asyncio.Task[Any]) -> None:
+        self.background.discard(task)
+        if not task.cancelled() and task.exception() is not None:
+            logging.getLogger("voca.tasks").error(
+                "delegation task failed", exc_info=task.exception()
+            )
+
+    def enqueue(self, task: Task) -> None:
+        key = task.tool_call_id
+        if (
+            task.is_open
+            or task.delivered_at is not None
+            or key in self.queued
+            or key in self.in_tool
+        ):
+            return
+        self.queued.add(key)
+        self.queue.put_nowait(key)
+
+    def on_task_change(self, task: Task) -> None:
+        key = task.tool_call_id
+        self.cards.publish_task(task)
+        extra = {"interrupted": self.playout.pop(key)} if key in self.playout else {}
+        self.log.write(
+            "task",
+            tool_call_id=key,
+            status=task.status.value,
+            run_id=task.run_id,
+            error=task.error,
+            delivered=task.delivered_at is not None,
+            **extra,
+        )
+        self.enqueue(task)
+
+    async def enqueue_undelivered(self) -> None:
+        if self.delegation is None:
+            return
+        for task in await self.delegation.repo.list_undelivered():
+            self.enqueue(task)
+
+    def start_recover(self) -> None:
+        if self.delegation is not None:
+            self._spawn(self._recover())
+
+    async def _recover(self) -> None:
+        assert self.delegation is not None
+        for task in await self.delegation.recover():
+            self.enqueue(task)
+
+    def start_delivery(
+        self, session: AgentSession[Any], sent: Callable[[], Awaitable[None]]
+    ) -> None:
+        if self.delegation is not None and self.deliverer is None and not self.stopped:
+            self.deliverer = asyncio.create_task(self._deliver_loop(session, sent))
+
+    async def _deliver_loop(
+        self, session: AgentSession[Any], sent: Callable[[], Awaitable[None]]
+    ) -> None:
+        while True:
+            key = await self.queue.get()
+            delivered = True
+            try:
+                while True:
+                    await self.present.wait()
+                    await sent()
+                    if self.present.is_set():
+                        break
+                delivered = await self._deliver(session, key)
+            except Exception:
+                logging.getLogger("voca.tasks").exception("delivery failed: %s", key)
+            finally:
+                self.queued.discard(key)
+            if not delivered:
+                return
+
+    async def _deliver(self, session: AgentSession[Any], key: str) -> bool:
+        assert self.delegation is not None
+        task = await self.delegation.repo.get(key)
+        if task is None or task.is_open or task.delivered_at is not None:
+            return True
+        try:
+            handle = session.say(
+                delivery_text(task), allow_interruptions=True, add_to_chat_ctx=True
+            )
+        except RuntimeError:
+            return False
+        await handle.wait_for_playout()
+        self.playout[key] = handle.interrupted
+        await self.delegation.mark_delivered(key)
+        return True
+
+    async def stop_delegation(self) -> None:
+        self.stopped = True
+        tasks = [*self.background]
+        if self.deliverer is not None:
+            tasks.append(self.deliverer)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     def maybe_compact(self) -> None:
         if (
@@ -313,9 +470,24 @@ class VocaAgent(Agent):
             self.session.say(text, add_to_chat_ctx=False)
 
     @function_tool
-    async def delegate(self, task: str) -> str:
+    async def delegate(self, context: RunContext[Any], task: str) -> str:
         """Поручить задачу основному агенту Hermes: работа с проектами, файлами, поиском, заметками и всё, что требует времени. task — полная формулировка поручения по-русски."""
-        raise ToolError("Делегирование сейчас недоступно")
+        if self.delegation is None:
+            raise ToolError(DELEGATE_UNAVAILABLE)
+        key = context.function_call.call_id
+        self.in_tool.add(key)
+        try:
+            found = await self.delegation.delegate(key, task)
+        except Unavailable:
+            await self.delegation.mark_delivered(key)
+            raise ToolError(DELEGATE_UNAVAILABLE) from None
+        finally:
+            self.in_tool.discard(key)
+        if found.is_open and found.status != TaskStatus.QUEUED:
+            self._spawn(self.delegation.watch(key))
+        else:
+            self.enqueue(found)
+        return DELEGATE_ACCEPTED
 
     async def llm_node(
         self,

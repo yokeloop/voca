@@ -12,10 +12,13 @@ from voca.session.store import Session, SessionStore
 class FakeParticipant:
     def __init__(self) -> None:
         self.sent: list[tuple[str, str, list[str]]] = []
+        self.gate: asyncio.Event | None = None
 
     async def send_text(
         self, text: str, *, topic: str, destination_identities: list[str]
     ) -> None:
+        if self.gate is not None:
+            await self.gate.wait()
         self.sent.append((text, topic, destination_identities))
 
 
@@ -162,6 +165,37 @@ def test_sends_in_chain_order(tmp_path: Path) -> None:
         history.send("user-b")
         assert history.sending is not None
         await history.sending
+        return room.local_participant.sent
+
+    sent = asyncio.run(main())
+    store.close()
+    assert [destinations for _, _, destinations in sent] == [["user-a"], ["user-b"]]
+
+
+def test_sent_waits_for_chain(tmp_path: Path) -> None:
+    store, session = archive(tmp_path)
+
+    async def main() -> list[tuple[str, str, list[str]]]:
+        room = FakeRoom()
+        room.local_participant.gate = asyncio.Event()
+        history = HistoryChannel(store, session.id, 5)
+        history.bind(room)  # type: ignore[arg-type]
+        history.send("user-a")
+        waiter = asyncio.create_task(history.sent())
+        await asyncio.sleep(0)
+        assert not waiter.done()
+        history.send("user-b")
+        cancelled = asyncio.create_task(history.sent())
+        await asyncio.sleep(0)
+        cancelled.cancel()
+        await asyncio.gather(cancelled, return_exceptions=True)
+        assert history.sending is not None
+        assert not history.sending.cancelled()
+        assert not history.sending.done()
+        room.local_participant.gate.set()
+        await asyncio.wait_for(waiter, 1)
+        assert history.sending.done()
+        assert not history.sending.cancelled()
         return room.local_participant.sent
 
     sent = asyncio.run(main())

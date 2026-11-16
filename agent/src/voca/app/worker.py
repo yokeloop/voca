@@ -29,6 +29,8 @@ from voca.clientio.metrics import bind_metrics
 from voca.config import Settings, config_path
 from voca.conversation.agent import VocaAgent, records
 from voca.conversation.instructions import InstructionError, InstructionLoader
+from voca.delegation.hermes import HermesBackend
+from voca.delegation.service import DelegationService
 from voca.delegation.sqlite import SqliteTaskRepository, TaskStoreError
 from voca.session.model import ArchiveRow
 from voca.session.store import SessionRecorder, SessionStore, StoreError
@@ -65,6 +67,19 @@ async def entrypoint(ctx: JobContext) -> None:
         logging.getLogger("voca.tasks").exception(
             "task store not opened: %s", settings.delegation.path
         )
+    backend: HermesBackend | None = None
+    delegation: DelegationService | None = None
+    if tasks is not None and settings.hermes_url and settings.hermes_key is not None:
+        backend = HermesBackend(
+            settings.hermes_url, settings.hermes_key.get_secret_value()
+        )
+        delegation = DelegationService(
+            tasks, backend, run_timeout=settings.delegation.run_timeout
+        )
+    elif tasks is not None:
+        logging.getLogger("voca.tasks").warning(
+            "delegation off: VOCA_HERMES_URL or VOCA_HERMES_KEY not set"
+        )
     restored = llm.ChatContext.from_dict(current.context)
     log.write(
         "session_restored",
@@ -93,7 +108,10 @@ async def entrypoint(ctx: JobContext) -> None:
         compacted_at=current.compacted_at
         if current.compacted_at is not None
         else current.started_at,
+        delegation=delegation,
     )
+    if delegation is not None:
+        delegation.on_change = agent.on_task_change
     recorder = SessionRecorder(store, current.id)
 
     def save() -> None:
@@ -165,10 +183,13 @@ async def entrypoint(ctx: JobContext) -> None:
     session.on("error", on_error)
 
     async def shutdown() -> None:
+        await agent.stop_delegation()
         await session.aclose()
         agent.cancel_compaction()
         await summarizer.close()
         save()
+        if backend is not None:
+            await backend.aclose()
         if tasks is not None:
             tasks.close()
         store.close()
@@ -183,16 +204,34 @@ async def entrypoint(ctx: JobContext) -> None:
         record=False,
     )
 
+    def users_present(leaving: str | None = None) -> bool:
+        return any(
+            identity.startswith("user-") and identity != leaving
+            for identity in ctx.room.remote_participants
+        )
+
     def on_participant(participant: rtc.RemoteParticipant) -> None:
         if participant.identity.startswith("user-"):
             log.device = participant.identity.removeprefix("user-")
+            agent.set_present(True)
             agent.check_due()
 
+    def on_left(participant: rtc.RemoteParticipant) -> None:
+        if participant.identity.startswith("user-") and not users_present(
+            participant.identity
+        ):
+            agent.set_present(False)
+
     ctx.room.on("participant_connected", on_participant)
+    ctx.room.on("participant_disconnected", on_left)
     participant = await send_on_wait(ctx, history)
     log.device = participant.identity.removeprefix("user-")
     cards.publish()
     cards.send_tasks(participant.identity)
+    agent.set_present(users_present())
+    agent.start_delivery(session, history.sent)
+    await agent.enqueue_undelivered()
+    agent.start_recover()
     agent.check_due()
 
 
