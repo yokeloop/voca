@@ -1,4 +1,5 @@
 import asyncio
+import re
 import time
 from collections.abc import AsyncGenerator, Callable
 from dataclasses import dataclass
@@ -23,6 +24,7 @@ from voca.conversation.compaction import (
 from voca.conversation.context import Item, approx_tokens, split_turns, trim_chat_ctx
 from voca.conversation.instructions import InstructionLoader, InstructionSet
 from voca.conversation.summarizer import Failure, Summarizer, Summary
+from voca.delegation.model import GATEWAY_RESTART, TIMEOUT, Task, TaskStatus
 from voca.speech.markup import scan
 from voca.telemetry.jsonl import JsonlLog
 
@@ -31,6 +33,13 @@ REFUSALS = {"stt": "не расслышал", "llm": "не могу ответи
 OnCompacted = Callable[[str, float, str, dict[str, object]], None]
 BLOCK_STRIKES = 2
 BLOCK_RETRY_S = 300
+DELEGATE_ACCEPTED = "Поручение принято, сообщу, когда будет результат"
+DELEGATE_UNAVAILABLE = "Делегирование сейчас недоступно"
+SPEECH_LIMIT = 300
+FAILURE_REASONS = {
+    TIMEOUT: "не дождался результата",
+    GATEWAY_RESTART: "Hermes перезапускался",
+}
 
 
 @dataclass
@@ -44,6 +53,26 @@ def refusal(component: str, *, tts_down: bool) -> str | None:
     if tts_down:
         return None
     return REFUSALS.get(component)
+
+
+def clip(text: str, limit: int = SPEECH_LIMIT) -> str:
+    text = " ".join(text.split())
+    if len(text) <= limit:
+        return text
+    head = text[: limit + 1]
+    found = re.match(r".*[.!?…](?= )", head)
+    if found is not None:
+        return found.group(0).rstrip()
+    space = head.rfind(" ")
+    return (head[:space] if space > 0 else text[:limit]).rstrip()
+
+
+def delivery_text(task: Task) -> str:
+    if task.status == TaskStatus.SUCCEEDED:
+        result = clip(task.result or "")
+        return f"Готово по поручению: {result}" if result else "Готово по поручению."
+    reason = FAILURE_REASONS.get(task.error or "", "Hermes вернул ошибку")
+    return f"Поручение не выполнено: {reason}."
 
 
 def records(ctx: llm.ChatContext) -> list[Item]:
