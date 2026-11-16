@@ -324,6 +324,8 @@ Exit codes: 0 succeeded, 1 failed or unavailable, 2 usage, config or missing var
 
 **Events.** `voca bench delegate` writes nothing to `.local/events.jsonl`.
 
+**Stand (VOCA-31, 2026-11-16).** Against `https://hermes.priney.com` (Hermes 0.22.2) on a temporary `VOCA_DELEGATION__PATH`: a simple task went `queued` → `running` → `succeeded` in about 4 s; the same `--key` again printed the same `run_id` with one row in `tasks`; a run interrupted by Ctrl-C (exit 130) stayed `running` and `--recover` carried it to `succeeded`. First observation of `/stop`: with `--timeout 20` VOCA sent `/stop` 20.2 s after the task was created; `/stop` answered `200` with `status: stopping` (not a final status); the run became `cancelled` about 0.5 s later (a direct probe), and the task saw it on the first poll of the 30 s window, 2 s after `/stop`: `failed`, `error: timeout`. Approval probe: the task «create `/tmp/voca-approval-once` with `a.txt` and remove it with `rm -r`» never reached `waiting_for_approval` — Hermes ran `rm -r` without asking and the run ended `completed` (`pending_controls` empty, `approval` null); there was nothing to answer, so `once` and `deny` were not exercised on the stand and the `deny` half of the probe was not run. The approval path is covered only by the tests until the Hermes profile asks for approval of such commands; that is the engineer's question.
+
 ## Contributing
 
 Open an issue or a pull request. Run the checks from [AGENTS.md](AGENTS.md#checks) before sending a change.
