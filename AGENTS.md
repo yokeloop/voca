@@ -14,8 +14,8 @@ Hermes. This file is the working contract for agents and contributors.
   (`VocaAgent`: the tool-call markup filter in `llm_node`, the `delegate`
   stub, instructions, accepting a finished summary and the emergency context
   trim in `on_user_turn_completed`, the threshold trigger `maybe_compact`,
-  failures spoken aloud; `instructions.py`: `InstructionLoader` with the last
-  valid set; `context.py`: `trim_chat_ctx` — the emergency path at
+  the idle and daily check `check_due`, failures spoken aloud;
+  `instructions.py`: `InstructionLoader` with the last valid set; `context.py`: `trim_chat_ctx` — the emergency path at
   `hard_limit`; `compaction.py`: the compaction plan and the summariser
   prompt; `summarizer.py`: the call to `[compression.model]`), `clientio/`
   (the `voca.cards`
@@ -121,9 +121,8 @@ a section) are no longer read.
 - `[compression]` — the compression triggers and the trim.
 - `[compression.model]` — the summariser.
 
-`[session].history_on_join`, `[compression].idle_hours` and `daily_at` are
-already validated, but the agent does not use them yet; `[session].path` is
-the session store («Session store»).
+`[session].history_on_join` is already validated, but the agent does not use
+it yet; `[session].path` is the session store («Session store»).
 
 Trim: above `hard_limit · context_tokens` estimated tokens (`len(text) // 3`)
 the oldest turns are dropped until `trim_to · context_tokens` remain. The rules
@@ -306,6 +305,24 @@ classes come from `livekit-api` in the `agent/` environment.
   the estimate `len(text) // 3` over the context is at least
   `threshold · context_tokens`; `threshold = 0` turns it off. At most one
   request runs at a time; a new trigger while one runs is ignored.
+- Idle and daily triggers:
+  - `idle_hours` (0 — off): the time since the last message (user,
+    assistant, tool call or result; the summary does not count) is at least
+    `idle_hours`;
+  - `daily_at` (`""` — off): the latest `HH:MM` boundary in the host's local
+    time (`datetime.fromtimestamp`, no time zone setting) is later than the
+    last compression, or the session start if there was none;
+  - both need a message newer than the last compression and a context above
+    `tail_ratio · threshold · context_tokens`; idle wins when both are due;
+  - checked at the start of a job after the first participant, on
+    `participant_connected` of `user-*` and at every turn boundary in
+    `on_user_turn_completed`, after the adoption and the trim; there is no
+    timer;
+  - the same background summary as the threshold, adopted one turn later;
+    the first reply after joining may still use the full context; `trigger`
+    is `idle` or `daily` in `compaction` and `compaction_failed`;
+  - the last message time comes from the restored context, so idle time
+    survives an agent restart (unlike Hermes, whose idle clock is in memory).
 - Plan: the head is the instructions; the previous summary is found by
   `extra.voca_summary`; the tail is the `split_turns` turns from the end
   within `tail_ratio · threshold · context_tokens`, at least `tail_turns_min`
@@ -342,7 +359,8 @@ classes come from `livekit-api` in the `agent/` environment.
   and one `compaction_blocked` line is written (`strikes`, `estimate`,
   `threshold`, `retry_in_s`), after 300 s of block one probe runs, the strikes
   live in memory per job, and the `hard_limit` trim works regardless (Hermes
-  anti-thrash).
+  anti-thrash). The idle and daily triggers bypass the guard: they neither
+  check nor change the strikes.
 
 ## Ports
 

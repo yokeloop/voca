@@ -1,9 +1,12 @@
-from datetime import date
+from datetime import date, datetime
+
+import pytest
 
 from voca.conversation.compaction import (
     END_MARKER,
     Limits,
     build_prompt,
+    due,
     plan,
     summary_budget,
     unwrap,
@@ -151,3 +154,63 @@ def test_wrap_unwrap() -> None:
     assert unwrap(wrapped) == "Тело\nвторая строка"
     assert wrapped.startswith("[СЖАТИЕ КОНТЕКСТА — ТОЛЬКО СПРАВКА]")
     assert wrapped.endswith(END_MARKER)
+
+
+def at(day: int, hour: int, minute: int = 0, second: int = 0) -> datetime:
+    return datetime(2026, 11, day, hour, minute, second)
+
+
+@pytest.mark.parametrize(
+    ("now", "last", "compacted", "idle_hours", "daily_at", "size", "floor", "expected"),
+    [
+        (at(15, 13, 59), at(15, 10), at(15, 9), 4, "", 1000, 300, None),
+        (at(15, 14), at(15, 10), at(15, 9), 4, "", 1000, 300, "idle"),
+        (at(15, 10, 1, 13), at(15, 10), at(15, 9), 0.02, "", 1000, 300, "idle"),
+        (at(15, 10, 1, 11), at(15, 10), at(15, 9), 0.02, "", 1000, 300, None),
+        (at(15, 4, 1), at(15, 3, 30), at(15, 3), 0, "04:00", 1000, 300, "daily"),
+        (at(15, 3, 59), at(15, 3, 30), at(15, 3), 0, "04:00", 1000, 300, None),
+        (at(15, 6), at(15, 5), at(15, 4, 30), 0, "04:00", 1000, 300, None),
+        (at(15, 0, 10), at(14, 23, 10), at(14, 23), 0, "23:30", 1000, 300, "daily"),
+        (at(15, 0, 10), at(14, 23, 10), at(14, 23), 0, "00:30", 1000, 300, None),
+        (at(15, 0, 31), at(14, 23, 10), at(14, 23), 0, "00:30", 1000, 300, "daily"),
+        (at(15, 14), at(15, 10), at(15, 9), 4, "", 300, 300, None),
+        (at(15, 15), at(15, 10), at(15, 10), 4, "", 1000, 300, None),
+        (at(15, 15), None, at(15, 10), 4, "", 1000, 300, None),
+        (at(15, 13), at(15, 3), at(15, 2), 0, "", 1000, 300, None),
+        (at(15, 14), at(15, 3), at(15, 2), 4, "04:00", 1000, 300, "idle"),
+    ],
+    ids=[
+        "idle_below",
+        "idle_above",
+        "idle_fraction",
+        "idle_fraction_below",
+        "daily_crossed",
+        "daily_not_crossed",
+        "daily_compacted_after_boundary",
+        "midnight_boundary_yesterday",
+        "midnight_boundary_ahead",
+        "midnight_boundary_ahead_crossed",
+        "small_context",
+        "no_new_message",
+        "no_message",
+        "both_off",
+        "idle_wins",
+    ],
+)
+def test_due(
+    now: datetime,
+    last: datetime | None,
+    compacted: datetime,
+    idle_hours: float,
+    daily_at: str,
+    size: int,
+    floor: int,
+    expected: str | None,
+) -> None:
+    assert due(now, last, compacted, idle_hours, daily_at, size, floor) == expected
+
+
+def test_limits_schedule_defaults_off() -> None:
+    limits = Limits(threshold=1, tail_budget=1, tail_turns_min=2)
+    assert limits.idle_hours == 0
+    assert limits.daily_at == ""

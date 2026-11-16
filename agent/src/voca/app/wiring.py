@@ -156,6 +156,8 @@ def compaction_limits(settings: Settings) -> Limits:
         threshold=int(c.threshold * window),
         tail_budget=int(c.tail_ratio * c.threshold * window),
         tail_turns_min=c.tail_turns_min,
+        idle_hours=c.idle_hours,
+        daily_at=c.daily_at,
     )
 
 

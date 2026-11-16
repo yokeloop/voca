@@ -76,6 +76,9 @@ async def entrypoint(ctx: JobContext) -> None:
         chat_ctx=restored,
         limits=compaction_limits(settings),
         summarizer=summarizer,
+        compacted_at=current.compacted_at
+        if current.compacted_at is not None
+        else current.started_at,
     )
     recorder = SessionRecorder(store, current.id)
 
@@ -167,11 +170,13 @@ async def entrypoint(ctx: JobContext) -> None:
     def on_participant(participant: rtc.RemoteParticipant) -> None:
         if participant.identity.startswith("user-"):
             log.device = participant.identity.removeprefix("user-")
+            agent.check_due()
 
     ctx.room.on("participant_connected", on_participant)
     participant = await ctx.wait_for_participant()
     log.device = participant.identity.removeprefix("user-")
     cards.publish()
+    agent.check_due()
 
 
 def server_options(settings: Settings) -> WorkerOptions:

@@ -227,14 +227,26 @@ def test_run_stops_on_broken_config(
         assert str(path) in err
 
 
-def test_compaction_limits() -> None:
+def test_compaction_limits(monkeypatch: pytest.MonkeyPatch) -> None:
     assert compaction_limits(Settings()) == Limits(
-        threshold=9830, tail_budget=1966, tail_turns_min=2
+        threshold=9830,
+        tail_budget=1966,
+        tail_turns_min=2,
+        idle_hours=4,
+        daily_at="04:00",
     )
     assert compaction_limits(Settings(compression={"threshold": 0})).threshold == 0
     low = compaction_limits(Settings(compression={"threshold": 0.08}))
     assert low.threshold == 1310
     assert low.tail_budget == 262
+    off = compaction_limits(Settings(compression={"idle_hours": 0, "daily_at": ""}))
+    assert off.idle_hours == 0
+    assert off.daily_at == ""
+    monkeypatch.setenv("VOCA_COMPRESSION__IDLE_HOURS", "0.02")
+    monkeypatch.setenv("VOCA_COMPRESSION__DAILY_AT", "")
+    stand = compaction_limits(Settings())
+    assert stand.idle_hours == 0.02
+    assert stand.daily_at == ""
 
 
 def test_make_summarizer(monkeypatch: pytest.MonkeyPatch) -> None:

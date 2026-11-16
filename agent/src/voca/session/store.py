@@ -26,6 +26,8 @@ class SearchError(StoreError):
 class Session:
     id: str
     context: dict[str, Any]
+    started_at: float
+    compacted_at: float | None
 
 
 @dataclass(frozen=True)
@@ -100,19 +102,30 @@ class SessionStore:
 
     def open_session(self) -> Session:
         row = self.db.execute(
-            "SELECT id, context_json FROM sessions WHERE ended_at IS NULL"
-            " ORDER BY started_at DESC LIMIT 1"
+            "SELECT id, context_json, started_at, compacted_at FROM sessions"
+            " WHERE ended_at IS NULL ORDER BY started_at DESC LIMIT 1"
         ).fetchone()
         if row is None:
             session_id = uuid.uuid4().hex
+            started_at = time.time()
             self.db.execute(
                 "INSERT INTO sessions (id, started_at) VALUES (?, ?)",
-                (session_id, time.time()),
+                (session_id, started_at),
             )
-            return Session(id=session_id, context={"items": []})
-        session_id, context_json = row
+            return Session(
+                id=session_id,
+                context={"items": []},
+                started_at=started_at,
+                compacted_at=None,
+            )
+        session_id, context_json, started_at, compacted_at = row
         context = {"items": []} if context_json is None else json.loads(context_json)
-        return Session(id=session_id, context=context)
+        return Session(
+            id=session_id,
+            context=context,
+            started_at=started_at,
+            compacted_at=compacted_at,
+        )
 
     def record(
         self,

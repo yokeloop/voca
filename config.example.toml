@@ -44,12 +44,15 @@ hard_limit = 0.85
 # Share of the window the trim goes down to (the former ctx_trim_low).
 trim_to = 0.40
 # Tail budget = tail_ratio × threshold × context_tokens.
+# The idle and daily triggers skip a context not above this budget.
 tail_ratio = 0.20
 # Turns kept in the tail at least.
 tail_turns_min = 2
-# Hours of silence after which the session is compressed; 0 turns it off.
+# Hours since the last message after which the session is compressed; 0 turns it off.
+# Checked when a page joins and at every reply, no timer; the summary is adopted one reply later.
 idle_hours = 4
-# Daily compression time HH:MM in the host's local time; "" turns it off.
+# Daily compression boundary HH:MM in the host's local time; "" turns it off.
+# Checked when a page joins and at every reply: if the boundary passed since the last compression.
 daily_at = "04:00"
 
 [compression.model]
