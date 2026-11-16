@@ -179,6 +179,27 @@ class SessionStore:
                 self.db.execute("ROLLBACK")
             raise
 
+    def recent(self, session_id: str, limit: int) -> list[ArchiveRow]:
+        rows = self.db.execute(
+            "SELECT kind, item_id, at, call_id, name, text, data_json"
+            " FROM messages"
+            " WHERE session_id = ? AND kind IN ('user', 'assistant', 'summary')"
+            " ORDER BY id DESC LIMIT ?",
+            (session_id, limit),
+        ).fetchall()
+        return [
+            ArchiveRow(
+                kind=kind,
+                item_id=item_id,
+                at=at,
+                call_id=call_id,
+                name=name,
+                text=text,
+                data=json.loads(data_json),
+            )
+            for kind, item_id, at, call_id, name, text, data_json in reversed(rows)
+        ]
+
     def search(self, query: str, limit: int) -> list[Hit]:
         try:
             rows = self.db.execute(
