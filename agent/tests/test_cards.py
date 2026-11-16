@@ -1,8 +1,10 @@
 import asyncio
 import json
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
+from livekit import rtc
 from livekit.agents import APIConnectionError
 from livekit.agents.llm import LLMError
 from livekit.agents.metrics import LLMMetrics
@@ -10,10 +12,24 @@ from livekit.agents.stt import STTError
 from livekit.agents.tts import TTSError
 from livekit.agents.voice import ErrorEvent, MetricsCollectedEvent
 
-from voca.clientio.cards import CardState, component_of
+from voca.clientio.cards import (
+    CardState,
+    bind_tasks,
+    component_of,
+    task_item,
+    tasks_response,
+)
 from voca.conversation.instructions import InstructionSet
+from voca.delegation.model import Task, TaskStatus
+from voca.delegation.sqlite import SqliteTaskRepository
 
 INSTRUCTIONS = InstructionSet("text", "a" * 64, "fresh", None)
+APPROVAL = {
+    "description": "d",
+    "command": "rm -r x",
+    "choices": ["once", "deny"],
+    "request_id": "r1",
+}
 
 
 def llm_metrics() -> LLMMetrics:
@@ -45,9 +61,13 @@ def llm_error(recoverable: bool) -> LLMError:
 class FakeParticipant:
     def __init__(self) -> None:
         self.sent: list[tuple[str, str]] = []
+        self.rpc: dict[str, Callable[..., Any]] = {}
 
     async def send_text(self, text: str, *, topic: str) -> None:
         self.sent.append((text, topic))
+
+    def register_rpc_method(self, name: str, handler: Callable[..., Any]) -> None:
+        self.rpc[name] = handler
 
 
 class FakeRoom:
@@ -108,3 +128,109 @@ def test_publish_to_room() -> None:
     assert all(topic == "voca.cards" for _, topic in sent)
     assert json.loads(sent[0][0])["components"]["llm"] == "down"
     assert json.loads(sent[1][0])["components"]["llm"] == "down"
+
+
+def test_task_item_schema() -> None:
+    done = Task(
+        "call_1",
+        "сделай",
+        TaskStatus.SUCCEEDED,
+        1.0,
+        result="готово",
+        delivered_at=5.0,
+    )
+    assert json.loads(json.dumps(task_item(done))) == {
+        "tool_call_id": "call_1",
+        "status": "succeeded",
+        "text": "сделай",
+        "result": "готово",
+        "error": None,
+        "created_at": 1.0,
+        "delivered_at": 5.0,
+        "approval": None,
+    }
+    waiting = Task(
+        "call_2",
+        "удали",
+        TaskStatus.WAITING_APPROVAL,
+        2.0,
+        run_id="run_1",
+        approval=APPROVAL,
+    )
+    item = task_item(waiting)
+    assert item["approval"] == {
+        "description": "d",
+        "command": "rm -r x",
+        "choices": ["once", "deny"],
+    }
+    assert "run_id" not in item
+    assert "stop_requested_at" not in item
+    assert "request_id" not in item
+    assert "request_id" not in item["approval"]
+    response = tasks_response([done, waiting])
+    assert "сделай" in response
+    assert "\\u" not in response
+
+
+def test_publish_task_order() -> None:
+    task = Task("call_1", "сделай", TaskStatus.RUNNING, 1.0, run_id="run_1")
+
+    async def main() -> list[tuple[str, str]]:
+        room = FakeRoom()
+        cards = CardState(INSTRUCTIONS)
+        cards.bind(room)  # type: ignore[arg-type]
+        cards.publish()
+        cards.publish_task(task)
+        assert cards.sending is not None
+        await cards.sending
+        return room.local_participant.sent
+
+    sent = asyncio.run(main())
+    assert len(sent) == 2
+    assert all(topic == "voca.cards" for _, topic in sent)
+    assert json.loads(sent[0][0])["type"] == "state"
+    second = json.loads(sent[1][0])
+    assert second["type"] == "task"
+    assert second["tool_call_id"] == "call_1"
+    unbound = CardState(INSTRUCTIONS)
+    unbound.publish_task(task)
+    assert unbound.sending is None
+
+
+def test_list_tasks_rpc(tmp_path: Path) -> None:
+    tasks = [
+        Task("call_a", "a", TaskStatus.SUCCEEDED, 2.0, result="готово"),
+        Task("call_b", "b", TaskStatus.FAILED, 1.0, error="timeout"),
+        Task(
+            "call_c",
+            "c",
+            TaskStatus.WAITING_APPROVAL,
+            3.0,
+            run_id="run_1",
+            approval=APPROVAL,
+        ),
+    ]
+
+    async def main() -> str:
+        repo = SqliteTaskRepository.open(tmp_path / "tasks.sqlite3")
+        try:
+            for task in tasks:
+                await repo.insert(task)
+            room = FakeRoom()
+            bind_tasks(room, repo)  # type: ignore[arg-type]
+            response: str = await room.local_participant.rpc["voca.list_tasks"](
+                rtc.RpcInvocationData(
+                    request_id="r",
+                    caller_identity="user-host",
+                    payload="",
+                    response_timeout=10.0,
+                )
+            )
+            return response
+        finally:
+            repo.close()
+
+    items = json.loads(asyncio.run(main()))["tasks"]
+    assert [item["created_at"] for item in items] == [3.0, 2.0, 1.0]
+    assert items[0]["approval"]["command"] == "rm -r x"
+    assert items[2]["error"] == "timeout"
