@@ -201,6 +201,8 @@ The runs on the E0 cases: LFM3-1.7B — [bench/report_lfm3_1_7b.md](bench/report
 - `VOCA_HERMES_URL` — `https://hermes.priney.com`.
 - `VOCA_HERMES_KEY` — the `API_SERVER_KEY` from the Hermes profile's `.env`; it stays in your `.env` and is never committed.
 
+Since VOCA-35 the stand's `.env` points at the Hermes profile `voca` ([1.3](#13-delegation)); to rerun G7 against the main profile, set these two variables to the main profile's URL and key.
+
 **Steps**, from the repository root:
 
 ```sh
@@ -307,7 +309,9 @@ scripts/down.sh
 
 **What it is.** VOCA gives a task to Hermes through the Runs API (`POST /v1/runs` with `Idempotency-Key` = the task key, `X-Hermes-Session-Key: voca`, `session_id` = the task key). It polls `GET /v1/runs/{id}` every 2 s. The task is written before the request is sent, so a repeated key gives the same task and no second run. The voice tool comes later; for now `voca bench delegate` drives the core.
 
-**Needs.** `VOCA_HERMES_URL` and `VOCA_HERMES_KEY` in the environment ([0.4](#04-hermes-preflight)); `set -a; . ./.env; set +a` before the command.
+**Needs.** `VOCA_HERMES_URL` = `https://hermes-voca.priney.com` and `VOCA_HERMES_KEY` = `API_SERVER_KEY` of the Hermes profile `voca`, in the environment; `set -a; . ./.env; set +a` before the command.
+
+**Hermes profile `voca`.** Delegation goes to a separate Hermes profile `voca`: an empty profile, not a clone, with its own gateway (a user service) and API server on port 8643, its own `API_SERVER_KEY`, behind `https://hermes-voca.priney.com` (Cloudflare DNS-only A record, Traefik, tailnet-only, like [0.4](#04-hermes-preflight)). Its `config.yaml` sets `approvals.mode: manual` (the default `smart` lets an LLM guardian approve by itself), `approvals.unattended_mode: deny`, `approvals.timeout: 300`, `command_allowlist: []`, `terminal.backend: local`, and only the MCP server `mypi` (its own write token). The model and its provider are the main profile's. Secrets (the provider key, the mypi token, the API key) are in the profile's `.env` and referenced as `${env:…}`. Why: the main profile's `command_allowlist` holds a permanent «recursive delete» approval, so `rm -r` ran there without asking (the VOCA-31 stand below). `/v1/models` of this profile lists the model id `voca`. Host, profile and Traefik details, and how to remove the profile, live in the owner's deployment documentation.
 
 **CLI.** `agent/.venv/bin/voca bench delegate "<text>"` — a new key `cli-<uuid>`, printed first, then every state change (`<key> <status> <run_id>`), then `result:` or `error:`. Other forms:
 
@@ -329,6 +333,8 @@ Exit codes: 0 succeeded, 1 failed or unavailable, 2 usage, config or missing var
 **Cards.** After «Подключиться» the agent sends the page every task (a `tasks` message on `voca.cards`) and the page shows them above the transcript, newest first: the status, the text, the full result, the error and «озвучено» once the result was delivered. A task waiting for approval shows what Hermes asks (`description`, `command`) and the hint «Скажите „Подтверждаю“ или „Отклоняю“». Tasks of `voca bench delegate` show up too; they are marked delivered by the CLI. A rejoin or a new `history` does not clear the cards. Format: [AGENTS.md](AGENTS.md#client-channel).
 
 **Stand (VOCA-31, 2026-11-16).** Against `https://hermes.priney.com` (Hermes 0.22.2) on a temporary `VOCA_DELEGATION__PATH`: a simple task went `queued` → `running` → `succeeded` in about 4 s; the same `--key` again printed the same `run_id` with one row in `tasks`; a run interrupted by Ctrl-C (exit 130) stayed `running` and `--recover` carried it to `succeeded`. First observation of `/stop`: with `--timeout 20` VOCA sent `/stop` 20.2 s after the task was created; `/stop` answered `200` with `status: stopping` (not a final status); the run became `cancelled` about 0.5 s later (a direct probe), and the task saw it on the first poll of the 30 s window, 2 s after `/stop`: `failed`, `error: timeout`. Approval probe: the task «create `/tmp/voca-approval-once` with `a.txt` and remove it with `rm -r`» never reached `waiting_for_approval` — Hermes ran `rm -r` without asking and the run ended `completed` (`pending_controls` empty, `approval` null); there was nothing to answer there. On the `voca` profile (`https://hermes-voca.priney.com`, Hermes `3cbe7b1`) the `rm -r` task reached `waiting_approval`, and both answers went through `voca bench delegate --approve` from a second process: `once` — the run ended `succeeded` and the directory was removed; `deny` — the run ended `succeeded` with the command not run and the directory kept.
+
+**Stand (VOCA-35, 2026-11-16).** Against `https://hermes-voca.priney.com` (Hermes `3cbe7b1`) on a temporary `VOCA_DELEGATION__PATH`: a simple task created the directory `/tmp/voca-approval-once` with `a.txt`, `queued` → `running` → `succeeded`; the task «`rm -r` that directory» gave `waiting_approval` with `description` «delete in root path» and `command` `rm -r /tmp/voca-approval-once` (choices once/deny/session/always); the answer `once` → `running` → `succeeded`, the directory is gone; on the second directory `/tmp/voca-approval-deny` the answer `deny` → `succeeded` with the command not run, one approval request and no repeat, the directory stays. In this probe `voca bench delegate --approve` still read only `approval` and printed «запрос подтверждения не активен», so both answers were sent to `POST /v1/runs/{id}/approval` directly; the CLI path was fixed in VOCA-31 and checked on this profile (the paragraph above).
 
 ## Contributing
 

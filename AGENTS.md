@@ -97,8 +97,8 @@ stand's downloads; it is a stand check, not a CI check.
 | `VOCA_LLM_URL` | `http://127.0.0.1:8081/v1` | llama-server API of the agent's LLM |
 | `VOCA_AGENT_PORT` | `8084` | Health port of the agent worker (127.0.0.1) |
 | `VOCA_STATE_DIR` | `$VOCA_ROOT/.local` | Directory of the agent's `events.jsonl` |
-| `VOCA_HERMES_URL` | empty | Hermes API server URL for `bench/hermes_runs.py` and the agent (`voca bench delegate`); `https://hermes.priney.com` on the stand |
-| `VOCA_HERMES_KEY` | empty | `API_SERVER_KEY` of the Hermes profile; read by `bench/hermes_runs.py` and the agent; a secret, only in `.env` |
+| `VOCA_HERMES_URL` | empty | Hermes API server URL for `bench/hermes_runs.py` and the agent (`voca bench delegate`); `https://hermes-voca.priney.com` (the Hermes profile `voca`) on the stand |
+| `VOCA_HERMES_KEY` | empty | `API_SERVER_KEY` of the Hermes profile `voca`; read by `bench/hermes_runs.py` and the agent; a secret, only in `.env` |
 | `VOCA_LITELLM_KEY` | empty | LiteLLM virtual key `voca` for `https://litellm.priney.com` (the session summariser); a secret, only in `.env` |
 
 Everything downloaded lives outside the clone, in the machine's shared
