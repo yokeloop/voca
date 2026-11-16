@@ -40,6 +40,31 @@ export interface HistoryItem {
   text: string;
 }
 
+export type TaskStatus =
+  | "queued"
+  | "running"
+  | "waiting_approval"
+  | "unknown"
+  | "succeeded"
+  | "failed";
+
+export interface TaskApproval {
+  description: string | null;
+  command: string | null;
+  choices: string[] | null;
+}
+
+export interface TaskCard {
+  tool_call_id: string;
+  status: TaskStatus;
+  text: string;
+  result: string | null;
+  error: string | null;
+  created_at: number;
+  delivered_at: number | null;
+  approval: TaskApproval | null;
+}
+
 export interface Handlers {
   transcript(transcript: Transcript): void;
   cards(state: CardsState): void;
