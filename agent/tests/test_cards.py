@@ -4,7 +4,6 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from livekit import rtc
 from livekit.agents import APIConnectionError
 from livekit.agents.llm import LLMError
 from livekit.agents.metrics import LLMMetrics
@@ -14,10 +13,9 @@ from livekit.agents.voice import ErrorEvent, MetricsCollectedEvent
 
 from voca.clientio.cards import (
     CardState,
-    bind_tasks,
     component_of,
     task_item,
-    tasks_response,
+    tasks_message,
 )
 from voca.conversation.instructions import InstructionSet
 from voca.delegation.model import Task, TaskStatus
@@ -58,16 +56,21 @@ def llm_error(recoverable: bool) -> LLMError:
     )
 
 
+Sent = list[tuple[str, str, list[str] | None]]
+
+
 class FakeParticipant:
     def __init__(self) -> None:
-        self.sent: list[tuple[str, str]] = []
-        self.rpc: dict[str, Callable[..., Any]] = {}
+        self.sent: Sent = []
 
-    async def send_text(self, text: str, *, topic: str) -> None:
-        self.sent.append((text, topic))
-
-    def register_rpc_method(self, name: str, handler: Callable[..., Any]) -> None:
-        self.rpc[name] = handler
+    async def send_text(
+        self,
+        text: str,
+        *,
+        topic: str,
+        destination_identities: list[str] | None = None,
+    ) -> None:
+        self.sent.append((text, topic, destination_identities))
 
 
 class FakeRoom:
@@ -77,6 +80,32 @@ class FakeRoom:
 
     def on(self, event: str, handler: Callable[..., Any]) -> None:
         self.handlers[event] = handler
+
+
+class FakeRemote:
+    def __init__(self, identity: str) -> None:
+        self.identity = identity
+
+
+TASKS = [
+    Task("call_a", "a", TaskStatus.SUCCEEDED, 2.0, result="готово"),
+    Task("call_b", "b", TaskStatus.FAILED, 1.0, error="timeout"),
+    Task(
+        "call_c",
+        "c",
+        TaskStatus.WAITING_APPROVAL,
+        3.0,
+        run_id="run_1",
+        approval=APPROVAL,
+    ),
+]
+
+
+async def task_repo(path: Path) -> SqliteTaskRepository:
+    repo = SqliteTaskRepository.open(path)
+    for task in TASKS:
+        await repo.insert(task)
+    return repo
 
 
 def test_message_schema() -> None:
@@ -111,12 +140,12 @@ def test_down_and_ok() -> None:
 
 
 def test_publish_to_room() -> None:
-    async def main() -> list[tuple[str, str]]:
+    async def main() -> Sent:
         room = FakeRoom()
         cards = CardState(INSTRUCTIONS)
         cards.bind(room)  # type: ignore[arg-type]
         cards.on_error(error_event(llm_error(False)))
-        room.handlers["participant_connected"](object())
+        room.handlers["participant_connected"](FakeRemote("user-phone"))
         assert cards.sending is not None
         await cards.sending
         cards.set_instructions(INSTRUCTIONS)
@@ -125,7 +154,7 @@ def test_publish_to_room() -> None:
 
     sent = asyncio.run(main())
     assert len(sent) == 2
-    assert all(topic == "voca.cards" for _, topic in sent)
+    assert all(topic == "voca.cards" for _, topic, _ in sent)
     assert json.loads(sent[0][0])["components"]["llm"] == "down"
     assert json.loads(sent[1][0])["components"]["llm"] == "down"
 
@@ -167,15 +196,20 @@ def test_task_item_schema() -> None:
     assert "stop_requested_at" not in item
     assert "request_id" not in item
     assert "request_id" not in item["approval"]
-    response = tasks_response([done, waiting])
-    assert "сделай" in response
-    assert "\\u" not in response
+    text = tasks_message([done, waiting])
+    assert json.loads(text)["type"] == "tasks"
+    assert [item["tool_call_id"] for item in json.loads(text)["tasks"]] == [
+        "call_1",
+        "call_2",
+    ]
+    assert "сделай" in text
+    assert "\\u" not in text
 
 
 def test_publish_task_order() -> None:
     task = Task("call_1", "сделай", TaskStatus.RUNNING, 1.0, run_id="run_1")
 
-    async def main() -> list[tuple[str, str]]:
+    async def main() -> Sent:
         room = FakeRoom()
         cards = CardState(INSTRUCTIONS)
         cards.bind(room)  # type: ignore[arg-type]
@@ -187,7 +221,7 @@ def test_publish_task_order() -> None:
 
     sent = asyncio.run(main())
     assert len(sent) == 2
-    assert all(topic == "voca.cards" for _, topic in sent)
+    assert all(topic == "voca.cards" for _, topic, _ in sent)
     assert json.loads(sent[0][0])["type"] == "state"
     second = json.loads(sent[1][0])
     assert second["type"] == "task"
@@ -197,40 +231,68 @@ def test_publish_task_order() -> None:
     assert unbound.sending is None
 
 
-def test_list_tasks_rpc(tmp_path: Path) -> None:
-    tasks = [
-        Task("call_a", "a", TaskStatus.SUCCEEDED, 2.0, result="готово"),
-        Task("call_b", "b", TaskStatus.FAILED, 1.0, error="timeout"),
-        Task(
-            "call_c",
-            "c",
-            TaskStatus.WAITING_APPROVAL,
-            3.0,
-            run_id="run_1",
-            approval=APPROVAL,
-        ),
-    ]
-
-    async def main() -> str:
-        repo = SqliteTaskRepository.open(tmp_path / "tasks.sqlite3")
+def test_sends_tasks_to_connected_participant(tmp_path: Path) -> None:
+    async def main() -> Sent:
+        repo = await task_repo(tmp_path / "tasks.sqlite3")
         try:
-            for task in tasks:
-                await repo.insert(task)
             room = FakeRoom()
-            bind_tasks(room, repo)  # type: ignore[arg-type]
-            response: str = await room.local_participant.rpc["voca.list_tasks"](
-                rtc.RpcInvocationData(
-                    request_id="r",
-                    caller_identity="user-host",
-                    payload="",
-                    response_timeout=10.0,
-                )
-            )
-            return response
+            cards = CardState(INSTRUCTIONS)
+            cards.bind(room)  # type: ignore[arg-type]
+            cards.bind_tasks(repo)
+            room.handlers["participant_connected"](FakeRemote("user-phone"))
+            assert cards.sending is not None
+            await cards.sending
+            return room.local_participant.sent
         finally:
             repo.close()
 
-    items = json.loads(asyncio.run(main()))["tasks"]
+    sent = asyncio.run(main())
+    assert len(sent) == 2
+    assert all(topic == "voca.cards" for _, topic, _ in sent)
+    assert json.loads(sent[0][0])["type"] == "state"
+    assert sent[0][2] is None
+    text, _, destinations = sent[1]
+    assert destinations == ["user-phone"]
+    message = json.loads(text)
+    assert message["type"] == "tasks"
+    items = message["tasks"]
     assert [item["created_at"] for item in items] == [3.0, 2.0, 1.0]
     assert items[0]["approval"]["command"] == "rm -r x"
     assert items[2]["error"] == "timeout"
+
+
+def test_sends_tasks_after_wait(tmp_path: Path) -> None:
+    async def main() -> Sent:
+        repo = await task_repo(tmp_path / "tasks.sqlite3")
+        try:
+            room = FakeRoom()
+            cards = CardState(INSTRUCTIONS)
+            cards.bind(room)  # type: ignore[arg-type]
+            cards.bind_tasks(repo)
+            cards.publish()
+            cards.send_tasks("user-host")
+            assert cards.sending is not None
+            await cards.sending
+            return room.local_participant.sent
+        finally:
+            repo.close()
+
+    sent = asyncio.run(main())
+    assert [json.loads(text)["type"] for text, _, _ in sent] == ["state", "tasks"]
+    assert sent[1][2] == ["user-host"]
+    assert len(json.loads(sent[1][0])["tasks"]) == 3
+
+
+def test_no_tasks_without_store() -> None:
+    async def main() -> Sent:
+        room = FakeRoom()
+        cards = CardState(INSTRUCTIONS)
+        cards.bind(room)  # type: ignore[arg-type]
+        room.handlers["participant_connected"](FakeRemote("user-phone"))
+        cards.send_tasks("user-phone")
+        assert cards.sending is not None
+        await cards.sending
+        return room.local_participant.sent
+
+    sent = asyncio.run(main())
+    assert [json.loads(text)["type"] for text, _, _ in sent] == ["state"]

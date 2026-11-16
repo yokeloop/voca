@@ -23,7 +23,7 @@ from voca.app.wiring import (
     compaction_limits,
     make_summarizer,
 )
-from voca.clientio.cards import CardState, bind_tasks
+from voca.clientio.cards import CardState
 from voca.clientio.history import HistoryChannel, send_on_wait
 from voca.clientio.metrics import bind_metrics
 from voca.config import Settings, config_path
@@ -75,7 +75,7 @@ async def entrypoint(ctx: JobContext) -> None:
     cards = CardState(instructions)
     cards.bind(ctx.room)
     if tasks is not None:
-        bind_tasks(ctx.room, tasks)
+        cards.bind_tasks(tasks)
     history = HistoryChannel(store, current.id, settings.session.history_on_join)
     history.bind(ctx.room)
     bind_metrics(ctx.room, log.write)
@@ -192,6 +192,7 @@ async def entrypoint(ctx: JobContext) -> None:
     participant = await send_on_wait(ctx, history)
     log.device = participant.identity.removeprefix("user-")
     cards.publish()
+    cards.send_tasks(participant.identity)
     agent.check_due()
 
 

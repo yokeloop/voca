@@ -13,7 +13,6 @@ from voca.delegation.model import Task
 from voca.delegation.ports import TaskRepository
 
 TOPIC = "voca.cards"
-LIST_TASKS = "voca.list_tasks"
 COMPONENTS = ("stt", "llm", "tts")
 
 
@@ -48,15 +47,10 @@ def task_item(task: Task) -> dict[str, Any]:
     }
 
 
-def tasks_response(tasks: Sequence[Task]) -> str:
-    return json.dumps({"tasks": [task_item(t) for t in tasks]}, ensure_ascii=False)
-
-
-def bind_tasks(room: rtc.Room, repo: TaskRepository) -> None:
-    async def list_tasks(_data: rtc.RpcInvocationData) -> str:
-        return tasks_response(await repo.list_all())
-
-    room.local_participant.register_rpc_method(LIST_TASKS, list_tasks)
+def tasks_message(tasks: Sequence[Task]) -> str:
+    return json.dumps(
+        {"type": "tasks", "tasks": [task_item(t) for t in tasks]}, ensure_ascii=False
+    )
 
 
 class CardState:
@@ -64,6 +58,7 @@ class CardState:
         self.components = {"stt": "ok", "llm": "ok", "tts": "ok"}
         self.instructions = instructions
         self.room: rtc.Room | None = None
+        self.repo: TaskRepository | None = None
         self.sending: asyncio.Task[None] | None = None
 
     def message(self) -> str:
@@ -112,7 +107,14 @@ class CardState:
 
     def bind(self, room: rtc.Room) -> None:
         self.room = room
-        room.on("participant_connected", lambda _participant: self.publish())
+        room.on("participant_connected", self.on_participant)
+
+    def bind_tasks(self, repo: TaskRepository) -> None:
+        self.repo = repo
+
+    def on_participant(self, participant: rtc.RemoteParticipant) -> None:
+        self.publish()
+        self.send_tasks(participant.identity)
 
     def publish(self) -> None:
         if self.room is None:
@@ -128,6 +130,28 @@ class CardState:
                 self.sending,
             )
         )
+
+    def send_tasks(self, identity: str) -> None:
+        if self.room is None or self.repo is None:
+            return
+        self.sending = asyncio.create_task(
+            self._send_tasks(self.repo, identity, self.sending)
+        )
+
+    async def _send_tasks(
+        self, repo: TaskRepository, identity: str, previous: asyncio.Task[None] | None
+    ) -> None:
+        if previous is not None:
+            await previous
+        try:
+            assert self.room is not None
+            await self.room.local_participant.send_text(
+                tasks_message(await repo.list_all()),
+                topic=TOPIC,
+                destination_identities=[identity],
+            )
+        except Exception:
+            logging.getLogger("voca.cards").exception("send tasks failed")
 
     async def _send(self, text: str, previous: asyncio.Task[None] | None) -> None:
         if previous is not None:
