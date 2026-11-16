@@ -529,6 +529,22 @@ def test_stop_delegation_cancels(tmp_path: Path) -> None:
     asyncio.run(main())
 
 
+def test_no_background_after_stop_delegation(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path)
+        stand.backend.created = ["run_1"]
+        stand.backend.runs["run_1"] = [RunState("run_1", TaskStatus.RUNNING)]
+        await stand.agent.stop_delegation()
+        assert await stand.agent.delegate(ctx("call-1"), "сделай")
+        stand.agent.start_recover()
+        stand.start(FakeSession())
+        assert stand.agent.background == set()
+        assert stand.agent.deliverer is None
+        assert stand.repo.tasks["call-1"].is_open
+
+    asyncio.run(main())
+
+
 def done(result: str | None) -> Task:
     return Task("k", "t", TaskStatus.SUCCEEDED, created_at=0.0, result=result)
 

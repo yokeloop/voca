@@ -175,6 +175,7 @@ class VocaAgent(Agent):
         self.queued: set[str] = set()
         self.present = asyncio.Event()
         self.playout: dict[str, bool] = {}
+        self.stopped = False
 
     def set_present(self, present: bool) -> None:
         if present:
@@ -183,6 +184,9 @@ class VocaAgent(Agent):
             self.present.clear()
 
     def _spawn(self, coro: Coroutine[Any, Any, Any]) -> None:
+        if self.stopped:
+            coro.close()
+            return
         task = asyncio.create_task(coro)
         self.background.add(task)
         task.add_done_callback(self._finished)
@@ -239,7 +243,7 @@ class VocaAgent(Agent):
     def start_delivery(
         self, session: AgentSession[Any], sent: Callable[[], Awaitable[None]]
     ) -> None:
-        if self.delegation is not None and self.deliverer is None:
+        if self.delegation is not None and self.deliverer is None and not self.stopped:
             self.deliverer = asyncio.create_task(self._deliver_loop(session, sent))
 
     async def _deliver_loop(
@@ -279,6 +283,7 @@ class VocaAgent(Agent):
         return True
 
     async def stop_delegation(self) -> None:
+        self.stopped = True
         tasks = [*self.background]
         if self.deliverer is not None:
             tasks.append(self.deliverer)
