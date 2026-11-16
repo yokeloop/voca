@@ -14,7 +14,6 @@ const DEVICE_KEY = "voca-device";
 const AGENT_STATE = "lk.agent.state";
 const METRICS_TOPIC = "voca.metrics";
 const HISTORY_TOPIC = "voca.history";
-const LIST_TASKS = "voca.list_tasks";
 
 export interface Transcript {
   segment: string;
@@ -112,22 +111,6 @@ function reportAgent(
   }
 }
 
-function listTasks(room: Room, identity: string, handlers: Handlers): void {
-  room.localParticipant
-    .performRpc({
-      destinationIdentity: identity,
-      method: LIST_TASKS,
-      payload: "",
-    })
-    .then((response) => {
-      const message = JSON.parse(response);
-      if (Array.isArray(message.tasks)) {
-        handlers.tasks(message.tasks as TaskCard[]);
-      }
-    })
-    .catch((error) => console.warn(LIST_TASKS, error));
-}
-
 async function requestToken(
   device: string,
 ): Promise<{ token: string; url: string }> {
@@ -207,16 +190,13 @@ export async function connect(
       });
     },
   );
-  const asked = new Set<string>();
-  room.registerTextStreamHandler("voca.cards", async (reader, { identity }) => {
+  room.registerTextStreamHandler("voca.cards", async (reader) => {
     try {
       const message = JSON.parse(await reader.readAll());
       if (message.type === "state") {
         handlers.cards(message as CardsState);
-        if (!asked.has(identity)) {
-          asked.add(identity);
-          listTasks(room, identity, handlers);
-        }
+      } else if (message.type === "tasks" && Array.isArray(message.tasks)) {
+        handlers.tasks(message.tasks as TaskCard[]);
       } else if (message.type === "task") {
         handlers.task(message as TaskCard);
       }
