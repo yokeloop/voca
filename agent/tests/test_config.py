@@ -40,6 +40,10 @@ def test_defaults_without_file(monkeypatch: pytest.MonkeyPatch) -> None:
     assert settings.session.path == Path.home() / ".voca" / "sessions.sqlite3"
     assert settings.compression.model.url == "https://litellm.priney.com/v1"
     assert settings.litellm_key is None
+    assert settings.delegation.path == Path.home() / ".voca" / "tasks.sqlite3"
+    assert settings.delegation.run_timeout == 900
+    assert settings.hermes_url == ""
+    assert settings.hermes_key is None
     monkeypatch.setenv("VOCA_AGENT_PORT", "9999")
     assert Settings().agent_port == 9999
     monkeypatch.setenv("VOCA_INSTRUCTIONS_DIR", "~/x")
@@ -84,6 +88,39 @@ def test_key_only_from_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
         Settings()
     write_config(tmp_path, monkeypatch, 'litellm_key = "x"\n')
     with pytest.raises(ValueError, match="VOCA_LITELLM_KEY"):
+        Settings()
+
+
+def test_delegation_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("VOCA_DELEGATION__RUN_TIMEOUT", "20")
+    assert Settings().delegation.run_timeout == 20
+    monkeypatch.setenv("VOCA_DELEGATION__PATH", "~/t.sqlite3")
+    assert Settings().delegation.path == Path.home() / "t.sqlite3"
+    monkeypatch.delenv("VOCA_DELEGATION__RUN_TIMEOUT")
+    monkeypatch.delenv("VOCA_DELEGATION__PATH")
+    write_config(tmp_path, monkeypatch, "[delegation]\nrun_timeout = 0\n")
+    with pytest.raises(ValueError):
+        Settings()
+    write_config(tmp_path, monkeypatch, "[delegation]\nunknown = 1\n")
+    with pytest.raises(pydantic.ValidationError):
+        Settings()
+
+
+def test_hermes_key_only_from_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("VOCA_HERMES_KEY", "abc")
+    key = Settings().hermes_key
+    assert key is not None
+    assert key.get_secret_value() == "abc"
+    monkeypatch.setenv("VOCA_HERMES_KEY", "")
+    assert Settings().hermes_key is None
+    monkeypatch.delenv("VOCA_HERMES_KEY")
+    monkeypatch.setenv("VOCA_HERMES_URL", "https://h.example")
+    assert Settings().hermes_url == "https://h.example"
+    monkeypatch.delenv("VOCA_HERMES_URL")
+    write_config(tmp_path, monkeypatch, 'hermes_key = "x"\n')
+    with pytest.raises(ValueError, match="VOCA_HERMES_KEY"):
         Settings()
 
 

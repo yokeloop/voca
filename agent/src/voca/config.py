@@ -105,6 +105,18 @@ class CompressionConfig(BaseModel):
         return self
 
 
+class DelegationConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: Path = Field(default=Path("~/.voca/tasks.sqlite3"), validate_default=True)
+    run_timeout: float = Field(default=900.0, gt=0)
+
+    @field_validator("path")
+    @classmethod
+    def expand_path(cls, value: Path) -> Path:
+        return value.expanduser()
+
+
 class ConfigFile(TomlConfigSettingsSource):
     def __call__(self) -> dict[str, Any]:
         data = super().__call__()
@@ -112,6 +124,11 @@ class ConfigFile(TomlConfigSettingsSource):
             raise ValueError(
                 f"{config_path()}: litellm_key в файле не читается — "
                 "ключ только в VOCA_LITELLM_KEY"
+            )
+        if "hermes_key" in data:
+            raise ValueError(
+                f"{config_path()}: hermes_key в файле не читается — "
+                "ключ только в VOCA_HERMES_KEY"
             )
         return data
 
@@ -134,17 +151,20 @@ class Settings(BaseSettings):
     state_dir: Path = Field(default_factory=default_state_dir)
     instructions_dir: Path = Path("~/.voca/instructions")
     litellm_key: SecretStr | None = None
+    hermes_url: str = ""
+    hermes_key: SecretStr | None = None
     model: ModelConfig = Field(default_factory=ModelConfig)
     agent: AgentConfig = Field(default_factory=AgentConfig)
     session: SessionConfig = Field(default_factory=SessionConfig)
     compression: CompressionConfig = Field(default_factory=CompressionConfig)
+    delegation: DelegationConfig = Field(default_factory=DelegationConfig)
 
     @field_validator("instructions_dir")
     @classmethod
     def expand_instructions_dir(cls, value: Path) -> Path:
         return value.expanduser()
 
-    @field_validator("litellm_key", mode="before")
+    @field_validator("litellm_key", "hermes_key", mode="before")
     @classmethod
     def empty_key_is_none(cls, value: object) -> object:
         return None if value == "" else value

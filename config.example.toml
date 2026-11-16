@@ -63,3 +63,10 @@ url = "https://litellm.priney.com/v1"
 model = "glm-5.3-flash"
 # Request timeout in seconds.
 timeout_s = 60
+
+[delegation]
+# Hermes URL and key are not written here: VOCA_HERMES_URL and VOCA_HERMES_KEY in .env only.
+# Tasks given to Hermes (voca bench delegate, later the agent's delegate tool).
+path = "~/.voca/tasks.sqlite3"
+# Seconds from the task's creation after which VOCA sends /stop to the run.
+run_timeout = 900
