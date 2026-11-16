@@ -12,8 +12,8 @@ Hermes. This file is the working contract for agents and contributors.
   (prewarm, entrypoint, `WorkerOptions`), `app/wiring.py` (the plugins,
   `PreparedTTS`, `build_session`, `SpeechLanguageClient`), `conversation/`
   (`VocaAgent`: the tool-call markup filter in `llm_node`, the `delegate`
-  stub, instructions, accepting a finished summary and the emergency context
-  trim in `on_user_turn_completed`, the threshold trigger `maybe_compact`,
+  tool and the delivery of its results, instructions, accepting a finished
+  summary and the emergency context trim in `on_user_turn_completed`, the threshold trigger `maybe_compact`,
   the idle and daily check `check_due`, failures spoken aloud;
   `instructions.py`: `InstructionLoader` with the last valid set; `context.py`: `trim_chat_ctx` — the emergency path at
   `hard_limit`; `compaction.py`: the compaction plan and the summariser
@@ -97,7 +97,7 @@ stand's downloads; it is a stand check, not a CI check.
 | `VOCA_LLM_URL` | `http://127.0.0.1:8081/v1` | llama-server API of the agent's LLM |
 | `VOCA_AGENT_PORT` | `8084` | Health port of the agent worker (127.0.0.1) |
 | `VOCA_STATE_DIR` | `$VOCA_ROOT/.local` | Directory of the agent's `events.jsonl` |
-| `VOCA_HERMES_URL` | empty | Hermes API server URL for `bench/hermes_runs.py` and the agent (`voca bench delegate`); `https://hermes-voca.priney.com` (the Hermes profile `voca`) on the stand |
+| `VOCA_HERMES_URL` | empty | Hermes API server URL for `bench/hermes_runs.py` and the agent (`voca bench delegate`, the `delegate` tool); `https://hermes-voca.priney.com` (the Hermes profile `voca`) on the stand |
 | `VOCA_HERMES_KEY` | empty | `API_SERVER_KEY` of the Hermes profile `voca`; read by `bench/hermes_runs.py` and the agent; a secret, only in `.env` |
 | `VOCA_LITELLM_KEY` | empty | LiteLLM virtual key `voca` for `https://litellm.priney.com` (the session summariser); a secret, only in `.env` |
 
@@ -267,8 +267,8 @@ classes come from `livekit-api` in the `agent/` environment.
   "delivered_at": number|null, "approval": {"description", "command",
   "choices"}|null}`. `approval` is set only while the task is
   `waiting_approval`. `task`, `state` and `tasks` share one send chain, so
-  their order is kept. Live `task` messages start with the `delegate` tool
-  (VOCA-33).
+  their order is kept. The agent sends them from the `delegate` tool, its
+  watchers and the delivery.
 - The agent sends a JSON `tasks` message on `voca.cards` to one participant
   (`destination_identities`): `{"type": "tasks", "tasks": [...]}` — the same
   objects without `type`, every task in `[delegation].path`, newest first, no
@@ -437,8 +437,8 @@ Further deviations from `derive:eb1id854` (E1 research, VOCA-11):
   endpoint, not `dev` and a log line.
 - О5: the worker reads `VOCA_LIVEKIT_URL` and `VOCA_LIVEKIT_API_*`, not
   `LIVEKIT_*`; `ws_url` is passed to the worker explicitly.
-- О7: the agent has a `delegate` stub that raises
-  `ToolError("Делегирование сейчас недоступно")`, not «1.1 without delegate».
+- О7 (closed in VOCA-33): the stub is gone; the `delegate` tool gives the
+  task to Hermes.
 
 Deviation from `derive:8kki4ynb:§6` and `derive:eb1id854:§5` (VOCA-32): the
 page gets the task list as an addressed `tasks` message on `voca.cards`, not
