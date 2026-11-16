@@ -40,10 +40,37 @@ export interface HistoryItem {
   text: string;
 }
 
+export type TaskStatus =
+  | "queued"
+  | "running"
+  | "waiting_approval"
+  | "unknown"
+  | "succeeded"
+  | "failed";
+
+export interface TaskApproval {
+  description: string | null;
+  command: string | null;
+  choices: string[] | null;
+}
+
+export interface TaskCard {
+  tool_call_id: string;
+  status: TaskStatus;
+  text: string;
+  result: string | null;
+  error: string | null;
+  created_at: number;
+  delivered_at: number | null;
+  approval: TaskApproval | null;
+}
+
 export interface Handlers {
   transcript(transcript: Transcript): void;
   cards(state: CardsState): void;
   history(items: HistoryItem[]): void;
+  tasks(cards: TaskCard[]): void;
+  task(card: TaskCard): void;
   agentState(state: string | undefined): void;
   connection(state: ConnectionState): void;
   disconnected(reason: DisconnectReason | undefined): void;
@@ -168,6 +195,10 @@ export async function connect(
       const message = JSON.parse(await reader.readAll());
       if (message.type === "state") {
         handlers.cards(message as CardsState);
+      } else if (message.type === "tasks" && Array.isArray(message.tasks)) {
+        handlers.tasks(message.tasks as TaskCard[]);
+      } else if (message.type === "task") {
+        handlers.task(message as TaskCard);
       }
     } catch (error) {
       console.warn("voca.cards", error);

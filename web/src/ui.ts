@@ -1,5 +1,5 @@
 import { ConnectionState } from "livekit-client";
-import type { CardsState, HistoryItem, Transcript } from "./room";
+import type { CardsState, HistoryItem, TaskCard, Transcript } from "./room";
 
 const AGENT_LABELS: Record<string, string> = {
   initializing: "агент запускается",
@@ -12,8 +12,10 @@ let button: HTMLButtonElement;
 let status: HTMLParagraphElement;
 let components: HTMLParagraphElement;
 let errors: HTMLParagraphElement;
+let tasks: HTMLOListElement;
 let transcript: HTMLOListElement;
 const rows = new Map<string, HTMLLIElement>();
+const taskRows = new Map<string, HTMLLIElement>();
 
 export function render(app: HTMLElement): HTMLButtonElement {
   const title = document.createElement("h1");
@@ -23,8 +25,17 @@ export function render(app: HTMLElement): HTMLButtonElement {
   status = document.createElement("p");
   components = document.createElement("p");
   errors = document.createElement("p");
+  tasks = document.createElement("ol");
   transcript = document.createElement("ol");
-  app.replaceChildren(title, button, status, components, errors, transcript);
+  app.replaceChildren(
+    title,
+    button,
+    status,
+    components,
+    errors,
+    tasks,
+    transcript,
+  );
   setConnected(false);
   setCards(undefined);
   return button;
@@ -116,4 +127,76 @@ export function upsertSegment({ segment, who, text, final }: Transcript): void {
   }
   row.textContent = `${who}: ${text}`;
   row.style.opacity = final ? "1" : "0.6";
+}
+
+const TASK_LABELS: Record<TaskCard["status"], string> = {
+  queued: "в очереди",
+  running: "выполняется",
+  waiting_approval: "ждёт подтверждения",
+  unknown: "статус неизвестен",
+  succeeded: "готово",
+  failed: "не выполнено",
+};
+
+function paragraph(text: string): HTMLParagraphElement {
+  const element = document.createElement("p");
+  element.textContent = text;
+  return element;
+}
+
+function preformatted(text: string): HTMLPreElement {
+  const element = document.createElement("pre");
+  element.textContent = text;
+  element.style.whiteSpace = "pre-wrap";
+  element.style.overflowWrap = "anywhere";
+  return element;
+}
+
+function fillTask(row: HTMLLIElement, card: TaskCard): void {
+  const parts: HTMLElement[] = [
+    paragraph(
+      card.delivered_at !== null
+        ? `${TASK_LABELS[card.status]} · озвучено`
+        : TASK_LABELS[card.status],
+    ),
+    paragraph(card.text),
+  ];
+  if (card.status === "waiting_approval" && card.approval !== null) {
+    parts.push(
+      paragraph(`Hermes просит: ${card.approval.description ?? ""}`),
+      preformatted(card.approval.command ?? ""),
+      paragraph("Скажите „Подтверждаю“ или „Отклоняю“"),
+    );
+  }
+  if (card.result !== null) {
+    parts.push(preformatted(card.result));
+  }
+  if (card.error !== null) {
+    parts.push(paragraph(`ошибка: ${card.error}`));
+  }
+  row.replaceChildren(...parts);
+}
+
+export function replaceTasks(cards: TaskCard[]): void {
+  taskRows.clear();
+  tasks.replaceChildren(
+    ...cards.map((card) => {
+      const row = document.createElement("li");
+      fillTask(row, card);
+      taskRows.set(card.tool_call_id, row);
+      return row;
+    }),
+  );
+}
+
+export function upsertTask(card: TaskCard): void {
+  const existing = taskRows.get(card.tool_call_id);
+  if (existing !== undefined) {
+    fillTask(existing, card);
+    return;
+  }
+  const row = document.createElement("li");
+  fillTask(row, card);
+  taskRows.set(card.tool_call_id, row);
+  tasks.prepend(row);
 }

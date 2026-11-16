@@ -3,12 +3,14 @@ import { connect, deviceName, disconnect, type Handlers } from "./room";
 import {
   render,
   replaceHistory,
+  replaceTasks,
   setCards,
   setConnected,
   setErrorLine,
   setState,
   stateLabel,
   upsertSegment,
+  upsertTask,
 } from "./ui";
 
 const DELAYS = [1000, 2000, 4000, 8000, 15000];
@@ -75,6 +77,16 @@ if (app) {
       history(items) {
         if (live()) {
           replaceHistory(items);
+        }
+      },
+      tasks(cards) {
+        if (live()) {
+          replaceTasks(cards);
+        }
+      },
+      task(card) {
+        if (live()) {
+          upsertTask(card);
         }
       },
       agentState(state) {
