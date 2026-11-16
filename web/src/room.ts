@@ -14,6 +14,7 @@ const DEVICE_KEY = "voca-device";
 const AGENT_STATE = "lk.agent.state";
 const METRICS_TOPIC = "voca.metrics";
 const HISTORY_TOPIC = "voca.history";
+const LIST_TASKS = "voca.list_tasks";
 
 export interface Transcript {
   segment: string;
@@ -69,6 +70,8 @@ export interface Handlers {
   transcript(transcript: Transcript): void;
   cards(state: CardsState): void;
   history(items: HistoryItem[]): void;
+  tasks(cards: TaskCard[]): void;
+  task(card: TaskCard): void;
   agentState(state: string | undefined): void;
   connection(state: ConnectionState): void;
   disconnected(reason: DisconnectReason | undefined): void;
@@ -107,6 +110,22 @@ function reportAgent(
     handlers.agentState(state);
     onState(state);
   }
+}
+
+function listTasks(room: Room, identity: string, handlers: Handlers): void {
+  room.localParticipant
+    .performRpc({
+      destinationIdentity: identity,
+      method: LIST_TASKS,
+      payload: "",
+    })
+    .then((response) => {
+      const message = JSON.parse(response);
+      if (Array.isArray(message.tasks)) {
+        handlers.tasks(message.tasks as TaskCard[]);
+      }
+    })
+    .catch((error) => console.warn(LIST_TASKS, error));
 }
 
 async function requestToken(
@@ -188,11 +207,18 @@ export async function connect(
       });
     },
   );
-  room.registerTextStreamHandler("voca.cards", async (reader) => {
+  const asked = new Set<string>();
+  room.registerTextStreamHandler("voca.cards", async (reader, { identity }) => {
     try {
       const message = JSON.parse(await reader.readAll());
       if (message.type === "state") {
         handlers.cards(message as CardsState);
+        if (!asked.has(identity)) {
+          asked.add(identity);
+          listTasks(room, identity, handlers);
+        }
+      } else if (message.type === "task") {
+        handlers.task(message as TaskCard);
       }
     } catch (error) {
       console.warn("voca.cards", error);
