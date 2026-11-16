@@ -117,6 +117,18 @@ APPROVAL = {
     "choices": ["once", "deny"],
     "request_id": "r1",
 }
+AUTHORITY_APPROVAL = {**APPROVAL, "request_id": "p1", "execution_generation": 3}
+PENDING_CONTROLS = [
+    {"kind": "clarify", "prompt_id": "c1", "execution_generation": 3},
+    {
+        "kind": "approval",
+        "prompt_id": "p1",
+        "execution_generation": 3,
+        "command": "rm -r x",
+        "description": "d",
+        "choices": ["once", "deny"],
+    },
+]
 
 
 @pytest.mark.parametrize(
@@ -130,6 +142,16 @@ APPROVAL = {
             {"status": "waiting_for_approval", "approval": APPROVAL},
             False,
             RunState("r", TaskStatus.WAITING_APPROVAL, approval=APPROVAL),
+        ),
+        (
+            {
+                "status": "waiting_for_approval",
+                "approval": None,
+                "pending_controls": PENDING_CONTROLS,
+                "execution_generation": 3,
+            },
+            False,
+            RunState("r", TaskStatus.WAITING_APPROVAL, approval=AUTHORITY_APPROVAL),
         ),
         (
             {"status": "completed", "output": "готово"},
@@ -221,20 +243,39 @@ def test_approve_requests() -> None:
     client, requests = backend(reply(200, {"ok": True}))
 
     async def main() -> None:
-        await client.approve("run_1", "once", "r1")
-        await client.approve("run_1", "deny", None)
+        await client.approve("run_1", "once", APPROVAL)
+        await client.approve("run_1", "deny", {"description": "d"})
+        await client.approve("run_1", "once", AUTHORITY_APPROVAL)
         await client.aclose()
 
     asyncio.run(main())
     assert [request.url.path for request in requests] == [
         "/v1/runs/run_1/approval",
         "/v1/runs/run_1/approval",
+        "/v1/runs/run_1/approval",
     ]
     assert json.loads(requests[0].content) == {"choice": "once", "request_id": "r1"}
     assert json.loads(requests[1].content) == {"choice": "deny"}
+    assert json.loads(requests[2].content) == {
+        "request_id": "p1",
+        "execution_generation": 3,
+        "choice": "once",
+    }
     client, _ = backend(reply(409, error_body("approval_not_pending")))
     with pytest.raises(ApprovalNotActive):
-        asyncio.run(closing(client, client.approve("run_1", "once", "r1")))
+        asyncio.run(closing(client, client.approve("run_1", "once", APPROVAL)))
+
+
+def test_approve_authority_resolved() -> None:
+    client, requests = backend(
+        reply(200, {"run_id": "run_1", "status": "resolved", "prompt_id": "p1"})
+    )
+    asyncio.run(closing(client, client.approve("run_1", "deny", AUTHORITY_APPROVAL)))
+    assert json.loads(requests[0].content) == {
+        "request_id": "p1",
+        "execution_generation": 3,
+        "choice": "deny",
+    }
 
 
 def test_resolve_unknown_body() -> None:
