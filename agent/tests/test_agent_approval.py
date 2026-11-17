@@ -200,6 +200,7 @@ class FakeSession:
         self.gates = gates or []
         self.calls: list[tuple[str, bool, bool]] = []
         self.events: list[tuple[str, str]] = []
+        self.handles: list[FakeHandle] = []
 
     def say(
         self, text: str, *, allow_interruptions: bool, add_to_chat_ctx: bool
@@ -210,9 +211,11 @@ class FakeSession:
         self.events.append(("say", text))
         gate = self.gates.pop(0) if self.gates else opened()
         interrupted = self.interrupts.pop(0) if self.interrupts else False
-        return FakeHandle(
+        handle = FakeHandle(
             text, add_to_chat_ctx, self.events, self.agent, interrupted, gate
         )
+        self.handles.append(handle)
+        return handle
 
 
 async def tick(_: float) -> None:
@@ -339,8 +342,24 @@ async def stopped(agent: VocaAgent, text: str) -> None:
         await answer(agent, text)
 
 
+def facts(ctx: llm.ChatContext) -> list[tuple[str, dict[str, Any]]]:
+    return [
+        (item.name, json.loads(item.output))
+        for item in ctx.items
+        if item.type == "function_call_output"
+    ]
+
+
+def events_of(ctx: llm.ChatContext) -> list[object]:
+    return [output.get("event") for _, output in facts(ctx)]
+
+
 def summaries(agent: VocaAgent) -> int:
-    return sum(1 for item in agent.chat_ctx.items if item.extra.get("voca_summary"))
+    return sum(
+        1
+        for item in agent.chat_ctx.items
+        if item.type == "message" and item.extra.get("voca_summary")
+    )
 
 
 def approvals(stand: Stand, key: str) -> list[object]:
@@ -367,22 +386,123 @@ def test_announcement_text() -> None:
     )
 
 
-def test_interrupted_announcement_not_active(tmp_path: Path) -> None:
+def test_interrupted_announcement_still_active(tmp_path: Path) -> None:
     async def main() -> None:
         stand = Stand(tmp_path)
         session = FakeSession(interrupts=[True, True])
         stand.agent.on_task_change(stand.put(waiting("a")))
         stand.start(session)
         stand.open()
-        await until(lambda: len(session.calls) == 2)
-        await settle()
+        await until(lambda: stand.agent.active is not None)
         assert spoken(session) == [announcement_text(waiting("a"))] * 2
-        assert stand.agent.active is None
+        assert stand.agent.active is not None
+        assert stand.agent.active.key == "a"
         rows = [row for row in stand.rows("a") if row.get("announced")]
         assert [row["interrupted"] for row in rows] == [True, True]
-        await answer(stand.agent, "Подтверждаю")
-        assert stand.backend.approved == []
+        await stopped(stand.agent, "Подтверждаю")
+        assert stand.backend.approved == [("run_a", "once", APPROVAL)]
         await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_announcement_fact_not_spoken_text(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path)
+        session = FakeSession(agent=stand.agent)
+        await activate(stand, session, waiting("a"))
+        assert session.calls[0][2] is False
+        ctx = stand.agent.chat_ctx
+        texts = [
+            item.text_content or "" for item in ctx.items if item.type == "message"
+        ]
+        assert not any("Hermes просит подтверждения" in text for text in texts)
+        calls = [item.name for item in ctx.items if item.type == "function_call"]
+        assert calls == ["list_tasks"]
+        [(name, output)] = facts(ctx)
+        assert name == "list_tasks"
+        assert output == {
+            "id": "a",
+            "event": "approval_requested",
+            "text": "Удали каталог /tmp/x",
+            "request": "удаление в корневом каталоге",
+            "command": "rm -r /tmp/x",
+            "interrupted": False,
+        }
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_expiry_fact(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path)
+        session = FakeSession()
+        task = waiting("a")
+        await activate(stand, session, task)
+        expired = stand.put(replace(task, status=TaskStatus.RUNNING, approval=None))
+        stand.agent.on_task_change(expired)
+        await until(lambda: "approval_expired" in events_of(stand.agent.chat_ctx))
+        assert facts(stand.agent.chat_ctx)[-1] == (
+            "list_tasks",
+            {"id": "a", "event": "approval_expired", "by": "hermes"},
+        )
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_answered_not_reannounced(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path)
+        session = FakeSession()
+        task = waiting("a")
+        await activate(stand, session, task)
+        await stopped(stand.agent, "Подтверждаю")
+        stand.agent.on_task_change(task)
+        await settle()
+        assert not stand.agent.announcements
+        assert stand.agent.active is None
+        assert spoken(session) == [announcement_text(task), "Подтверждено"]
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_facts_survive_restore(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path)
+        session = FakeSession()
+        await activate(stand, session, waiting("a"))
+        await stopped(stand.agent, "Отклоняю")
+        await stand.agent.stop_delegation()
+        data = stand.agent.chat_ctx.to_dict(
+            exclude_function_call=False, exclude_timestamp=False
+        )
+        restored = llm.ChatContext.from_dict(data)
+        directory = tmp_path / "instructions"
+        loader = InstructionLoader(directory)
+        instructions = loader.load()
+        agent = VocaAgent(
+            loader=loader,
+            instructions=instructions,
+            log=JsonlLog(tmp_path / "second.jsonl", session="t2"),
+            cards=CardState(instructions),
+            ctx_high=13926,
+            ctx_low=6553,
+            chat_ctx=restored,
+        )
+        ctx = agent.chat_ctx
+        calls = [
+            (item.name, json.loads(item.arguments))
+            for item in ctx.items
+            if item.type == "function_call"
+        ]
+        assert calls == [("list_tasks", {}), ("deny_approval", {"id": "a"})]
+        assert [(name, output["event"]) for name, output in facts(ctx)] == [
+            ("list_tasks", "approval_requested"),
+            ("deny_approval", "denied"),
+        ]
 
     asyncio.run(main())
 
@@ -400,18 +520,19 @@ def test_interrupted_announcement_repeated_once(tmp_path: Path) -> None:
     asyncio.run(main())
 
 
-def test_last_played_is_active(tmp_path: Path) -> None:
+def test_interrupted_first_holds_queue(tmp_path: Path) -> None:
     async def main() -> None:
         stand = Stand(tmp_path)
         session = FakeSession(interrupts=[True, True, False])
         await activate(stand, session, waiting("a"), waiting("b", created_at=2.0))
-        assert spoken(session) == [announcement_text(waiting("a"))] * 2 + [
-            announcement_text(waiting("b"))
-        ]
+        await settle()
+        assert spoken(session) == [announcement_text(waiting("a"))] * 2
         assert stand.agent.active is not None
-        assert stand.agent.active.key == "b"
+        assert stand.agent.active.key == "a"
         await stopped(stand.agent, "Подтверждаю")
-        assert stand.backend.approved == [("run_b", "once", APPROVAL)]
+        assert stand.backend.approved == [("run_a", "once", APPROVAL)]
+        await until(lambda: len(session.calls) == 4)
+        assert spoken(session)[-1] == announcement_text(waiting("b", created_at=2.0))
         await stand.agent.stop_delegation()
 
     asyncio.run(main())
@@ -525,11 +646,19 @@ def test_phrase_with_active_request_approves(
 ) -> None:
     async def main() -> None:
         stand = Stand(tmp_path)
-        session = FakeSession()
+        session = FakeSession(agent=stand.agent)
         await activate(stand, session, waiting("a"))
         await stopped(stand.agent, text)
         assert stand.backend.approved == [("run_a", choice, APPROVAL)]
         assert session.calls[-1] == (reply, True, True)
+        await session.handles[-1].wait_for_playout()
+        event = {"once": "approved", "deny": "denied"}[choice]
+        tail = [
+            item.output if item.type == "function_call_output" else item.text_content
+            for item in stand.agent.chat_ctx.items[-2:]
+        ]
+        assert json.loads(str(tail[0])) == {"id": "a", "event": event, "by": "voice"}
+        assert tail[1] == reply
         assert stand.agent.active is None
         rows = [row for row in stand.rows("a") if "approval" in row]
         assert [(row["approval"], row["status"]) for row in rows] == [

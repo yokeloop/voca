@@ -3,6 +3,7 @@ import json
 import logging
 import re
 import time
+import uuid
 from collections import deque
 from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine
 from dataclasses import dataclass
@@ -264,6 +265,7 @@ class VocaAgent(Agent):
         self.active: Announcement | None = None
         self.wake = asyncio.Event()
         self.speaker: AgentSession[Any] | None = None
+        self.heard_at = 0.0
         self.answered: dict[str, dict[str, Any]] = {}
 
     def set_present(self, present: bool) -> None:
@@ -304,6 +306,8 @@ class VocaAgent(Agent):
         if task.status != TaskStatus.WAITING_APPROVAL or task.approval is None:
             return
         key = task.tool_call_id
+        if self.answered.get(key) == task.approval:
+            return
         for item in (self.active, self.speaking, *self.announcements):
             if item is not None and item.key == key and item.approval == task.approval:
                 return
@@ -316,11 +320,26 @@ class VocaAgent(Agent):
     def _release(self, task: Task) -> None:
         key = task.tool_call_id
         waiting = task.status == TaskStatus.WAITING_APPROVAL
+        answered = key in self.answered
+        if not waiting or task.approval != self.answered.get(key):
+            self.answered.pop(key, None)
         if (
             self.active is not None
             and self.active.key == key
             and (not waiting or task.approval != self.active.approval)
         ):
+            if task.status == TaskStatus.RUNNING and not answered:
+                self._spawn(
+                    self._fact(
+                        "list_tasks",
+                        {},
+                        {
+                            "id": short_id(key),
+                            "event": "approval_expired",
+                            "by": "hermes",
+                        },
+                    )
+                )
             self.active = None
             self.wake.set()
         if not waiting:
@@ -428,22 +447,37 @@ class VocaAgent(Agent):
                 handle = session.say(
                     announcement_text(task),
                     allow_interruptions=True,
-                    add_to_chat_ctx=True,
+                    add_to_chat_ctx=False,
                 )
             except RuntimeError:
                 return False
             await handle.wait_for_playout()
         finally:
             self.speaking = None
+        self.heard_at = time.time()
         item.attempts += 1
         self._task_row(task, announced=True, interrupted=handle.interrupted)
-        if not handle.interrupted:
+        approval = task.approval or {}
+        await self._fact(
+            "list_tasks",
+            {},
+            {
+                "id": short_id(item.key),
+                "event": "approval_requested",
+                "text": clip(task.text, APPROVAL_LIMIT),
+                "request": describe(approval.get("description")),
+                "command": approval.get("command"),
+                "interrupted": handle.interrupted,
+            },
+        )
+        if not handle.interrupted or item.attempts >= ANNOUNCE_ATTEMPTS:
             current = await self.delegation.repo.get(item.key)
             if (
                 current is not None
                 and current.status == TaskStatus.WAITING_APPROVAL
                 and current.approval == item.approval
                 and self.active is None
+                and self.answered.get(item.key) != item.approval
             ):
                 self.active = item
         elif item.attempts < ANNOUNCE_ATTEMPTS:
@@ -495,10 +529,45 @@ class VocaAgent(Agent):
         )
         await self.update_chat_ctx(ctx)
 
-    async def _answer(self, active: Announcement, choice: Choice) -> None:
+    async def _fact(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        output: dict[str, Any],
+        *,
+        is_error: bool = False,
+    ) -> None:
+        call_id = f"voca_{uuid.uuid4().hex[:16]}"
+        at = time.time()
+        ctx = self.chat_ctx.copy()
+        ctx.insert(
+            [
+                llm.FunctionCall(
+                    id=call_id,
+                    call_id=call_id,
+                    name=name,
+                    arguments=json.dumps(arguments, ensure_ascii=False),
+                    created_at=at - 2e-6,
+                ),
+                llm.FunctionCallOutput(
+                    id=f"{call_id}_output",
+                    call_id=call_id,
+                    name=name,
+                    output=json.dumps(output, ensure_ascii=False),
+                    is_error=is_error,
+                    created_at=at - 1e-6,
+                ),
+            ]
+        )
+        await self.update_chat_ctx(ctx)
+
+    async def _answer(
+        self, active: Announcement, choice: Choice, *, speak: bool
+    ) -> None:
         assert self.delegation is not None and self.speaker is not None
         task = await self.delegation.repo.get(active.key)
         approved = False
+        id = short_id(active.key)
         try:
             await self.delegation.approve(active.key, choice, expected=active.approval)
             text = APPROVAL_REPLIES[choice]
@@ -509,15 +578,36 @@ class VocaAgent(Agent):
         except DelegationError:
             text = APPROVAL_FAILED
             release = False
-        try:
-            self.speaker.say(text, allow_interruptions=True, add_to_chat_ctx=True)
-        except RuntimeError:
-            pass
-        if release and self.active is active:
+        if approved:
+            if choice == "once":
+                await self._fact(
+                    "list_tasks", {}, {"id": id, "event": "approved", "by": "voice"}
+                )
+            else:
+                await self._fact(
+                    "deny_approval",
+                    {"id": id},
+                    {"id": id, "event": "denied", "by": "voice"},
+                )
+        else:
+            await self._fact(
+                "list_tasks",
+                {},
+                {"id": id, "event": "approval_failed", "by": "voice", "error": text},
+                is_error=True,
+            )
+        if speak:
+            try:
+                self.speaker.say(text, allow_interruptions=True, add_to_chat_ctx=True)
+            except RuntimeError:
+                pass
+        if approved:
+            self._settled(active.key, active.approval)
+        elif release and self.active is active:
             self.active = None
             self.wake.set()
         if approved and task is not None:
-            self._task_row(task, approval=choice)
+            self._task_row(task, approval=choice, by="voice")
 
     def _settled(self, key: str, approval: dict[str, Any]) -> None:
         self.answered[key] = approval
@@ -698,7 +788,7 @@ class VocaAgent(Agent):
     ) -> None:
         parsed = parse(new_message.text_content)
         if isinstance(parsed, Phrase) and not parsed.tail and self.active is not None:
-            await self._answer(self.active, parsed.choice)
+            await self._answer(self.active, parsed.choice, speak=True)
             raise StopResponse()
         changed = False
         loaded = self.loader.load()
