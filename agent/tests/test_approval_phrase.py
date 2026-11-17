@@ -1,4 +1,11 @@
-from voca.conversation.approval import NearMiss, Phrase, distance, normalize, parse
+from voca.conversation.approval import (
+    NearMiss,
+    Phrase,
+    distance,
+    normalize,
+    parse,
+    refuses,
+)
 
 
 def test_parse_whole_phrase() -> None:
@@ -42,3 +49,26 @@ def test_distance() -> None:
 
 def test_normalize() -> None:
     assert normalize("  Ёлка!? ") == "елка"
+
+
+def test_refuses() -> None:
+    for text in (
+        "Отклони запрос",
+        "Откажись",
+        "Не подтверждай",
+        "не надо",
+        "Нельзя это делать",
+        "Запрещаю",
+        "Нет.",
+        "Ну нет, конечно",
+    ):
+        assert refuses(text), text
+    for text in (
+        "Ну окей, давай подтвердим его.",
+        "Подтверждаю",
+        "Нетрудно, давай",
+        "А что там за скрипт?",
+        "",
+        None,
+    ):
+        assert not refuses(text), text

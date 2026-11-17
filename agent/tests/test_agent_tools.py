@@ -10,6 +10,7 @@ from tests.test_agent_approval import (
     FakeSession,
     Stand,
     activate,
+    answer,
     facts,
     finished,
     settle,
@@ -20,7 +21,9 @@ from tests.test_agent_approval import (
 )
 from voca.conversation.agent import (
     APPROVAL_GONE,
+    DENIED_NOTE,
     NO_REQUEST,
+    NOT_DENIED_REASON,
     NOT_STEERABLE,
     TASK_AMBIGUOUS,
     TASK_CLOSED,
@@ -172,8 +175,9 @@ def test_deny_approval_active(tmp_path: Path) -> None:
         session = FakeSession()
         await activate(stand, session, waiting("a"), waiting("b", created_at=2.0))
         await settle()
+        await answer(stand.agent, "Не надо это выполнять")
         output = json.loads(await stand.agent.deny_approval())
-        assert output == {"id": "a", "event": "denied"}
+        assert output == {"id": "a", "event": "denied", "note": DENIED_NOTE}
         assert stand.backend.approved == [("run_a", "deny", APPROVAL)]
         await until(lambda: len(session.calls) == 2)
         assert spoken(session)[-1] == announcement_text(waiting("b", created_at=2.0))
@@ -312,5 +316,45 @@ def test_deny_wrong_state_with_id(tmp_path: Path) -> None:
         with pytest.raises(ToolError, match=NO_REQUEST):
             await stand.agent.deny_approval("a")
         assert stand.backend.approved == []
+
+    asyncio.run(main())
+
+
+@pytest.mark.parametrize(
+    "text", ["Ну окей, давай подтвердим его.", "А что там за скрипт?", "Да"]
+)
+def test_deny_approval_without_refusal(tmp_path: Path, text: str) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path)
+        session = FakeSession()
+        await activate(stand, session, waiting("a"))
+        await answer(stand.agent, text)
+        output = json.loads(await stand.agent.deny_approval())
+        assert output == {
+            "id": "a",
+            "event": "not_denied",
+            "reason": NOT_DENIED_REASON,
+        }
+        assert stand.backend.approved == []
+        assert stand.agent.active is not None
+        assert stand.agent.active.key == "a"
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+@pytest.mark.parametrize(
+    "text", ["Нет, не надо", "Откажись от этого", "Это нельзя делать", "нет"]
+)
+def test_deny_approval_after_refusal(tmp_path: Path, text: str) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path)
+        session = FakeSession()
+        await activate(stand, session, waiting("a"))
+        await answer(stand.agent, text)
+        output = json.loads(await stand.agent.deny_approval())
+        assert output["event"] == "denied"
+        assert stand.backend.approved == [("run_a", "deny", APPROVAL)]
+        await stand.agent.stop_delegation()
 
     asyncio.run(main())

@@ -6,6 +6,17 @@ from typing import Literal
 Choice = Literal["once", "deny"]
 PHRASES: dict[str, Choice] = {"подтверждаю": "once", "отклоняю": "deny"}
 NEAR = 2
+REFUSAL_STEMS = (
+    "отклон",
+    "отказ",
+    "откаж",
+    "не подтверж",
+    "не надо",
+    "нельзя",
+    "запрет",
+    "запрещ",
+)
+REFUSAL_WORDS = frozenset({"нет"})
 
 
 @dataclass(frozen=True)
@@ -67,3 +78,11 @@ def parse(text: str | None) -> Phrase | NearMiss | None:
     if any(0 < distance(first, key) <= NEAR for key in PHRASES):
         return NearMiss()
     return None
+
+
+def refuses(text: str | None) -> bool:
+    words = re.findall(r"\w+", normalize(text or ""))
+    joined = " ".join(words)
+    return any(stem in joined for stem in REFUSAL_STEMS) or any(
+        word in REFUSAL_WORDS for word in words
+    )

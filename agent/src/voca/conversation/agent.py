@@ -21,7 +21,7 @@ from livekit.agents import (
 from livekit.agents.voice import Agent, AgentSession, ModelSettings, SpeechHandle
 
 from voca.clientio.cards import CardState
-from voca.conversation.approval import Choice, NearMiss, parse
+from voca.conversation.approval import Choice, NearMiss, parse, refuses
 from voca.conversation.compaction import (
     SUMMARY_KEY,
     Limits,
@@ -73,6 +73,8 @@ TASK_CLOSED = "Поручение уже завершено"
 NOT_STEERABLE = "Поручение сейчас не принимает уточнений"
 NO_REQUEST = "Сейчас нет запроса подтверждения"
 ACTION_FAILED = "Не удалось связаться с Hermes"
+DENIED_NOTE = "Отклонена только команда; поручение продолжает выполняться"
+NOT_DENIED_REASON = "пользователь не просил отклонять; подтвердить можно только кнопкой «Подтвердить» или словом «Подтверждаю»"
 APPROVAL_LIMIT = 60
 APPROVAL_PROMPT = "Подтвердите на экране или скажите „Подтверждаю“ или „Отклоняю“."
 APPROVAL_REPLIES = {"once": "Подтверждено", "deny": "Отклонено"}
@@ -267,6 +269,7 @@ class VocaAgent(Agent):
         self.wake = asyncio.Event()
         self.speaker: AgentSession[Any] | None = None
         self.heard_at = 0.0
+        self.last_user_text = ""
         self.answered: dict[str, dict[str, Any]] = {}
 
     def set_present(self, present: bool) -> None:
@@ -879,6 +882,7 @@ class VocaAgent(Agent):
     async def on_user_turn_completed(
         self, turn_ctx: llm.ChatContext, new_message: llm.ChatMessage
     ) -> None:
+        self.last_user_text = new_message.text_content or ""
         parsed = parse(new_message.text_content)
         changed = False
         if parsed is not None and self.active is not None:
@@ -1011,7 +1015,7 @@ class VocaAgent(Agent):
 
     @function_tool
     async def deny_approval(self, id: str | None = None) -> str:
-        """Отклонить запрос подтверждения Hermes. Подтвердить запрос может только пользователь."""
+        """Отклонить запрос подтверждения Hermes, только когда пользователь сам отказывается. Отклоняется только команда, поручение продолжает выполняться. Подтвердить запрос может только пользователь; на просьбу подтвердить вызывай repeat_approval."""
         if self.delegation is None:
             raise ToolError(DELEGATE_UNAVAILABLE)
         if id is None and self.active is not None:
@@ -1029,6 +1033,13 @@ class VocaAgent(Agent):
                 NO_REQUEST,
             )
         key = task.tool_call_id
+        if not refuses(self.last_user_text):
+            output = {
+                "id": short_id(key),
+                "event": "not_denied",
+                "reason": NOT_DENIED_REASON,
+            }
+            return json.dumps(output, ensure_ascii=False)
         try:
             await self.delegation.approve(key, "deny", expected=task.approval)
         except (ApprovalNotActive, TaskNotFound):
@@ -1037,7 +1048,8 @@ class VocaAgent(Agent):
             raise ToolError(APPROVAL_FAILED) from None
         self._settled(key, task.approval or {})
         self._task_row(task, approval="deny", by="model")
-        return json.dumps({"id": short_id(key), "event": "denied"}, ensure_ascii=False)
+        output = {"id": short_id(key), "event": "denied", "note": DENIED_NOTE}
+        return json.dumps(output, ensure_ascii=False)
 
     @function_tool
     async def repeat_approval(self) -> None:
