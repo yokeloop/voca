@@ -11,16 +11,14 @@
       "phrase": "Ну окей, давай подтвердим его.",
       "expect": [
         "approve"
-      ],
-      "extra": false
+      ]
     },
     {
       "id": "d02",
       "phrase": "Подтверждаю.",
       "expect": [
         "approve"
-      ],
-      "extra": false
+      ]
     },
     {
       "id": "d03",
@@ -28,8 +26,7 @@
       "expect": [
         "unclear",
         "approve"
-      ],
-      "extra": null
+      ]
     },
     {
       "id": "d04",
@@ -37,48 +34,42 @@
       "expect": [
         "unclear",
         "approve"
-      ],
-      "extra": null
+      ]
     },
     {
       "id": "d05",
       "phrase": "Не надо это подтверждать",
       "expect": [
         "deny"
-      ],
-      "extra": false
+      ]
     },
     {
       "id": "d06",
       "phrase": "Отклоняю, отмени вообще задачу",
       "expect": [
-        "deny"
-      ],
-      "extra": true
+        "deny_more"
+      ]
     },
     {
       "id": "d07",
       "phrase": "А что он хочет удалить?",
       "expect": [
         "unrelated"
-      ],
-      "extra": true
+      ]
     },
     {
       "id": "d08",
       "phrase": "Повтори запрос",
       "expect": [
         "repeat"
-      ],
-      "extra": false
+      ]
     },
     {
       "id": "d09",
       "phrase": "Мне надо, чтобы ты его подтвердил",
       "expect": [
         "approve"
-      ],
-      "extra": false
+      ]
     },
     {
       "id": "d10",
@@ -86,64 +77,56 @@
       "expect": [
         "unrelated",
         "unclear"
-      ],
-      "extra": true
+      ]
     },
     {
       "id": "d11",
       "phrase": "Давай, разрешаю",
       "expect": [
         "approve"
-      ],
-      "extra": false
+      ]
     },
     {
       "id": "d12",
       "phrase": "Стоп, не надо",
       "expect": [
         "deny"
-      ],
-      "extra": false
+      ]
     },
     {
       "id": "d13",
       "phrase": "Отклоняю",
       "expect": [
         "deny"
-      ],
-      "extra": false
+      ]
     },
     {
       "id": "d14",
       "phrase": "Да",
       "expect": [
         "approve"
-      ],
-      "extra": false
+      ]
     },
     {
       "id": "d15",
       "phrase": "Нет",
       "expect": [
         "deny"
-      ],
-      "extra": false
+      ]
     },
     {
       "id": "d16",
       "phrase": "Подтверждаю, и скажи потом, сколько времени",
       "expect": [
-        "approve"
-      ],
-      "extra": true
+        "approve_more"
+      ]
     },
     {
       "id": "d17",
       "phrase": "Что с поручениями?",
       "expect": [
         "unrelated"
-      ],
-      "extra": true
+      ]
     },
     {
       "id": "d18",
@@ -151,8 +134,7 @@
       "expect": [
         "repeat",
         "unrelated"
-      ],
-      "extra": null
+      ]
     },
     {
       "id": "d19",
@@ -160,16 +142,14 @@
       "expect": [
         "unclear",
         "unrelated"
-      ],
-      "extra": null
+      ]
     },
     {
       "id": "d20",
       "phrase": "Какая сегодня погода?",
       "expect": [
         "unrelated"
-      ],
-      "extra": true
+      ]
     }
   ]
 }

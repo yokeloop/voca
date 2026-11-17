@@ -214,11 +214,9 @@ def test_decision_defaults() -> None:
     assert decision.timeout_s == 1.5
     prompt = decision.prompt()
     assert prompt.threshold == 0.6
-    assert prompt.extra_threshold == 0.5
     assert set(prompt.verdicts) == set(VERDICTS)
     assert all(text.strip() for text in prompt.verdicts.values())
     assert prompt.instructions.strip()
-    assert prompt.extra.strip()
 
 
 def test_decision_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -235,22 +233,22 @@ def test_decision_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.mark.parametrize(
     "text",
     [
-        '[decision.verdicts]\napprove = "a"\ndeny = "d"\nrepeat = "r"\nunrelated = "u"\n',
+        '[decision.verdicts]\napprove = "a"\ndeny = "d"\nrepeat = "r"\nunrelated = "u"\nunclear = "c"\n',
         (
-            '[decision.verdicts]\napprove = "a"\ndeny = "d"\nrepeat = "r"\n'
-            'unrelated = "u"\nunclear = "c"\nmaybe = "m"\n'
+            '[decision.verdicts]\napprove = "a"\napprove_more = "am"\ndeny = "d"\n'
+            'deny_more = "dm"\nrepeat = "r"\nunrelated = "u"\nunclear = "c"\nmaybe = "m"\n'
         ),
         (
-            '[decision.verdicts]\napprove = " "\ndeny = "d"\nrepeat = "r"\n'
-            'unrelated = "u"\nunclear = "c"\n'
+            '[decision.verdicts]\napprove = " "\napprove_more = "am"\ndeny = "d"\n'
+            'deny_more = "dm"\nrepeat = "r"\nunrelated = "u"\nunclear = "c"\n'
         ),
         '[decision]\ninstructions = ""\n',
-        '[decision]\nextra = " "\n',
+        "[decision]\nextra_threshold = 0.5\n",
         '[decision]\nurl = ""\n',
         '[decision]\nmodel = ""\n',
         "[decision]\nthreshold = 0\n",
         "[decision]\nthreshold = 1.5\n",
-        "[decision]\nextra_threshold = 1\n",
+        '[decision]\nextra = "x"\n',
         "[decision]\ntimeout_s = 0\n",
     ],
 )

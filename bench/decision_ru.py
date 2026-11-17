@@ -26,9 +26,7 @@ def situation_of(base: dict[str, Any], phrase: str) -> Situation:
 
 
 def passed(case: dict[str, Any], result: Decision | DecisionFailure) -> bool:
-    if not isinstance(result, Decision) or result.verdict not in case["expect"]:
-        return False
-    return case["extra"] is None or result.extra == case["extra"]
+    return isinstance(result, Decision) and result.verdict in case["expect"]
 
 
 def percentile(values: list[int], share: float) -> int:
@@ -50,7 +48,6 @@ def entry(case: dict[str, Any], result: Decision | DecisionFailure) -> dict[str,
             "verdict": result.verdict,
             "picked": result.picked,
             "confidence": result.confidence,
-            "extra": result.extra,
             "ms": result.ms,
         }
     return {
@@ -88,7 +85,6 @@ async def run(rounds: int) -> int:
                         row.get("verdict", row.get("failure")),
                         row.get("picked", "-"),
                         round(row.get("confidence", 0.0), 3),
-                        row.get("extra", "-"),
                         row["ms"],
                         flush=True,
                     )

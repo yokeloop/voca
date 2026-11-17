@@ -1,17 +1,25 @@
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
-Verdict = Literal["approve", "deny", "repeat", "unrelated", "unclear"]
-VERDICTS: tuple[Verdict, ...] = ("approve", "deny", "repeat", "unrelated", "unclear")
+Verdict = Literal[
+    "approve", "approve_more", "deny", "deny_more", "repeat", "unrelated", "unclear"
+]
+VERDICTS: tuple[Verdict, ...] = (
+    "approve",
+    "approve_more",
+    "deny",
+    "deny_more",
+    "repeat",
+    "unrelated",
+    "unclear",
+)
 
 
 @dataclass(frozen=True)
 class Prompt:
     instructions: str
     verdicts: dict[str, str]
-    extra: str
     threshold: float
-    extra_threshold: float
 
 
 @dataclass(frozen=True)
@@ -28,7 +36,6 @@ class Decision:
     verdict: Verdict
     picked: str
     confidence: float
-    extra: bool
     ms: int
 
 
@@ -60,7 +67,6 @@ def request_body(prompt: Prompt, situation: Situation, model: str) -> dict[str, 
                 "instructions": prompt.instructions,
                 "criteria": {name: prompt.verdicts[name] for name in VERDICTS},
             },
-            "extra": {"type": "noul", "instructions": prompt.extra},
         },
     }
 
@@ -79,18 +85,14 @@ def read_answer(data: object, prompt: Prompt, ms: int) -> Decision | DecisionFai
     if not isinstance(answers, dict):
         return failure
     verdict = answers.get("verdict")
-    extra = answers.get("extra")
-    if not isinstance(verdict, dict) or not isinstance(extra, dict):
+    if not isinstance(verdict, dict):
         return failure
     picked = verdict.get("choice")
     confidence = _share(verdict.get("confidence"))
-    noul = _share(extra.get("noul"))
-    if confidence is None or noul is None:
+    if confidence is None:
         return failure
     for name in VERDICTS:
         if picked == name:
             chosen: Verdict = name if confidence >= prompt.threshold else "unclear"
-            return Decision(
-                chosen, name, confidence, noul >= prompt.extra_threshold, ms
-            )
+            return Decision(chosen, name, confidence, ms)
     return failure

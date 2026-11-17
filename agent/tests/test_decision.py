@@ -25,13 +25,10 @@ SITUATION = Situation(
 Handler = Callable[[httpx.Request], httpx.Response]
 
 
-def answer(
-    choice: str = "approve", confidence: float = 0.9, noul: float = 0.1
-) -> dict[str, object]:
+def answer(choice: str = "approve", confidence: float = 0.9) -> dict[str, object]:
     return {
         "answers": {
             "verdict": {"type": "choice", "choice": choice, "confidence": confidence},
-            "extra": {"type": "noul", "noul": noul},
         }
     }
 
@@ -67,13 +64,12 @@ def test_decide_posts_body() -> None:
 
 
 def test_decide_ok() -> None:
-    result = decide(lambda _: httpx.Response(200, json=answer("deny", 0.8, 0.7)))
+    result = decide(lambda _: httpx.Response(200, json=answer("deny_more", 0.8)))
     assert isinstance(result, Decision)
-    assert (result.verdict, result.picked, result.confidence, result.extra) == (
-        "deny",
-        "deny",
+    assert (result.verdict, result.picked, result.confidence) == (
+        "deny_more",
+        "deny_more",
         0.8,
-        True,
     )
 
 

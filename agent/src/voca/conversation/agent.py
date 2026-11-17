@@ -942,7 +942,6 @@ class VocaAgent(Agent):
                 verdict=decided.verdict,
                 picked=decided.picked,
                 confidence=decided.confidence,
-                extra=decided.extra,
                 ms=decided.ms,
             )
         else:
@@ -967,15 +966,15 @@ class VocaAgent(Agent):
             return True
         if decided.verdict in ("approve", "deny"):
             choice: Choice = "once" if decided.verdict == "approve" else "deny"
-            await self._answer(active, choice, speak=not decided.extra)
-            if not decided.extra:
-                raise StopResponse()
+            await self._answer(active, choice, speak=True)
+            raise StopResponse()
+        if decided.verdict in ("approve_more", "deny_more"):
+            more: Choice = "once" if decided.verdict == "approve_more" else "deny"
+            await self._answer(active, more, speak=False)
             return True
         if decided.verdict == "repeat":
             self._repeat(active)
-            if not decided.extra:
-                raise StopResponse()
-            return False
+            raise StopResponse()
         if decided.verdict == "unclear":
             await self._unclear(active)
             raise StopResponse()

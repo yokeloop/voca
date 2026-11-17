@@ -96,36 +96,32 @@ class DecisionConfig(BaseModel):
     model: str = "d1-2B"
     timeout_s: float = Field(default=1.5, gt=0)
     threshold: float = Field(default=0.6, gt=0, le=1)
-    extra_threshold: float = Field(default=0.5, gt=0, lt=1)
     instructions: str = (
         "Ассистент озвучил запрос подтверждения команды и ждёт ответа "
         "пользователя. Что пользователь отвечает этой фразой на запрос?"
     )
     verdicts: dict[str, str] = {
         "approve": "Пользователь разрешает выполнить команду: подтверждает, "
-        "соглашается, разрешает",
+        "соглашается, разрешает, и больше ничего не просит",
+        "approve_more": "Пользователь разрешает выполнить команду, и во фразе "
+        "есть ещё вопрос, просьба или поручение",
         "deny": "Пользователь запрещает команду: отклоняет, отказывается, "
-        "просит не выполнять или отменить её",
+        "просит не выполнять её, и больше ничего не просит",
+        "deny_more": "Пользователь запрещает команду, и во фразе есть ещё "
+        "вопрос, просьба или поручение",
         "repeat": "Пользователь просит повторить или ещё раз озвучить запрос",
         "unrelated": "Фраза не отвечает на запрос: вопрос, просьба, новое "
         "поручение или разговор о другом",
         "unclear": "Ответ неясен: колебание, оговорка, противоречие или обрывок, "
         "по которому решение не понять",
     }
-    extra: str = (
-        "Есть ли во фразе пользователя, кроме ответа на запрос, ещё вопрос, "
-        "просьба или поручение?"
-    )
 
     @model_validator(mode="after")
     def complete(self) -> Self:
         if set(self.verdicts) != set(VERDICTS):
-            raise ValueError(
-                "decision.verdicts: нужны approve, deny, repeat, unrelated, unclear"
-            )
+            raise ValueError("decision.verdicts: нужны " + ", ".join(VERDICTS))
         texts = {
             "instructions": self.instructions,
-            "extra": self.extra,
             "url": self.url,
             "model": self.model,
             **{f"verdicts.{name}": text for name, text in self.verdicts.items()},
@@ -139,9 +135,7 @@ class DecisionConfig(BaseModel):
         return Prompt(
             instructions=self.instructions,
             verdicts=dict(self.verdicts),
-            extra=self.extra,
             threshold=self.threshold,
-            extra_threshold=self.extra_threshold,
         )
 
 

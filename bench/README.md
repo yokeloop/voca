@@ -22,7 +22,7 @@ Scripts:
   twenty phrases of `corpus/decision.json` against `scripts/decision.sh`
   (`scripts/up.sh decision`) through the agent's `make_decider`, one warm-up
   call and `--rounds` (3) rounds; prints `PASS|FAIL id verdict picked
-  confidence extra ms` and `decision N/20 p50 … ms p95 … ms`, writes
+  confidence ms` and `decision N/20 p50 … ms p95 … ms`, writes
   `.local/bench/decision/decision.json`.
 - `llm_ru_tools.py` (VOCA-4) — G3: `dialogs`, `delegate`, `all` (the default),
   `dialogs-thinking` (the twenty dialogs with thinking on, VOCA-7),

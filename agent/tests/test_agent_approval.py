@@ -240,10 +240,8 @@ async def settle() -> None:
         await asyncio.sleep(0)
 
 
-def decided(
-    verdict: Verdict, confidence: float = 0.9, extra: bool = False, picked: str = ""
-) -> Decision:
-    return Decision(verdict, picked or verdict, confidence, extra, 12)
+def decided(verdict: Verdict, confidence: float = 0.9, picked: str = "") -> Decision:
+    return Decision(verdict, picked or verdict, confidence, 12)
 
 
 class FakeDecider:
@@ -913,7 +911,7 @@ def test_echo_window_unclear(tmp_path: Path) -> None:
 
 def test_other_phrase_with_active_goes_to_llm(tmp_path: Path) -> None:
     async def main() -> None:
-        decider = FakeDecider({"А что он удалит?": decided("unrelated", extra=True)})
+        decider = FakeDecider({"А что он удалит?": decided("unrelated")})
         stand = Stand(tmp_path, decider=decider)
         session = FakeSession()
         await activate(stand, session, waiting("a"))
@@ -929,7 +927,7 @@ def test_other_phrase_with_active_goes_to_llm(tmp_path: Path) -> None:
 
 def test_queue_waits_for_answer(tmp_path: Path) -> None:
     async def main() -> None:
-        decider = FakeDecider({"А что он удалит?": decided("unrelated", extra=True)})
+        decider = FakeDecider({"А что он удалит?": decided("unrelated")})
         stand = Stand(tmp_path, decider=decider)
         session = FakeSession()
         await activate(stand, session, waiting("a"), waiting("b", created_at=2.0))
@@ -1108,11 +1106,11 @@ def test_decision_approve(tmp_path: Path) -> None:
     asyncio.run(main())
 
 
-def test_decision_deny_with_extra(tmp_path: Path) -> None:
+def test_decision_deny_more(tmp_path: Path) -> None:
     text = "Отклоняю, отмени вообще задачу"
 
     async def main() -> None:
-        decider = FakeDecider({text: decided("deny", extra=True)})
+        decider = FakeDecider({text: decided("deny_more")})
         stand = Stand(tmp_path, decider=decider)
         session = FakeSession()
         await activate(stand, session, waiting("a"))
@@ -1186,7 +1184,7 @@ def test_decision_unrelated_goes_to_llm(tmp_path: Path) -> None:
     text = "А что он хочет удалить?"
 
     async def main() -> None:
-        decider = FakeDecider({text: decided("unrelated", extra=True)})
+        decider = FakeDecider({text: decided("unrelated")})
         stand = Stand(tmp_path, decider=decider)
         session = FakeSession()
         await activate(stand, session, waiting("a"))
@@ -1280,7 +1278,7 @@ def test_decision_logged(tmp_path: Path) -> None:
         assert found[0]["phrase"] == PHRASE_OK
         assert found[0]["verdict"] == "approve"
         assert found[0]["confidence"] == 0.9
-        assert found[0]["extra"] is False
+        assert "extra" not in found[0]
         assert found[0]["ms"] == 12
         await stand.agent.stop_delegation()
 
@@ -1316,5 +1314,25 @@ def test_echo_rejected_before_decision(tmp_path: Path) -> None:
         assert decider.seen == []
         assert spoken(session)[-1] == unclear_text(VOCABULARY)
         await agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_decision_approve_more(tmp_path: Path) -> None:
+    text = "Подтверждаю, и скажи потом, сколько времени"
+
+    async def main() -> None:
+        decider = FakeDecider({text: decided("approve_more")})
+        stand = Stand(tmp_path, decider=decider)
+        session = FakeSession()
+        await activate(stand, session, waiting("a"))
+        turn_ctx, message = await turn(stand.agent, text)
+        assert stand.backend.approved == [("run_a", "once", APPROVAL)]
+        assert "Подтверждено" not in spoken(session)
+        assert message.text_content == text
+        assert ("list_tasks", {"id": "a", "event": "approved", "by": "voice"}) in (
+            facts(turn_ctx)
+        )
+        await stand.agent.stop_delegation()
 
     asyncio.run(main())
