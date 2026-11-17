@@ -136,6 +136,7 @@ Reports, one per measurement task:
 - `report_tts_prepare.md` (VOCA-12)
 - `report_g5.md` (VOCA-14)
 - `report_g6.md` (VOCA-16)
+- `report_delegation_tools.md` (VOCA-36)
 
 Corpora are plain text or JSON in `bench/corpus/`. Voice recordings stay out of the
 repository, in `.local/bench/`; each report names the recordings it used with
