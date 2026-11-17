@@ -211,7 +211,7 @@ def test_decision_defaults() -> None:
     assert decision.enabled is True
     assert decision.url == "http://127.0.0.1:8086"
     assert decision.model == "d1-2B"
-    assert decision.timeout_s == 4.0
+    assert decision.timeout_s == 1.5
     prompt = decision.prompt()
     assert prompt.threshold == 0.6
     assert prompt.extra_threshold == 0.5

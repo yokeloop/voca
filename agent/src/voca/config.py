@@ -94,7 +94,7 @@ class DecisionConfig(BaseModel):
     enabled: bool = True
     url: str = "http://127.0.0.1:8086"
     model: str = "d1-2B"
-    timeout_s: float = Field(default=4.0, gt=0)
+    timeout_s: float = Field(default=1.5, gt=0)
     threshold: float = Field(default=0.6, gt=0, le=1)
     extra_threshold: float = Field(default=0.5, gt=0, lt=1)
     instructions: str = (

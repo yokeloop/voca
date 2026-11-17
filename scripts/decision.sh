@@ -16,6 +16,6 @@ if [ "${1:-}" = "--check" ]; then
   exit 0
 fi
 
-CUDA_VISIBLE_DEVICES= exec "$VOCA_LLAMA_BIN" -m "$VOCA_DECISION_MODEL" --alias d1-2B \
+exec "$VOCA_LLAMA_BIN" -m "$VOCA_DECISION_MODEL" --alias d1-2B \
   --host 127.0.0.1 --port "$VOCA_DECISION_PORT" \
-  -c 2048 --parallel 1 -t "$VOCA_DECISION_THREADS" -ngl 0 --cache-ram 256 "$@"
+  -c 2048 --parallel 1 -t "$VOCA_DECISION_THREADS" -ngl "$VOCA_DECISION_NGL" --cache-ram 256 "$@"
