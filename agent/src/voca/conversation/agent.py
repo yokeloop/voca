@@ -283,7 +283,7 @@ class VocaAgent(Agent):
         self.speaker: AgentSession[Any] | None = None
         self.heard_at = 0.0
         self.barged: Announcement | None = None
-        self.announced_text = ""
+        self.announced: dict[str, str] = {}
         self.last_user_text = ""
         self.answered: dict[str, dict[str, Any]] = {}
 
@@ -368,6 +368,7 @@ class VocaAgent(Agent):
         ):
             self.barged = None
         if not waiting:
+            self.announced.pop(key, None)
             self.announcements = deque(
                 item for item in self.announcements if item.key != key
             )
@@ -477,7 +478,7 @@ class VocaAgent(Agent):
                 )
             except RuntimeError:
                 return False
-            self.announced_text = text
+            self.announced[item.key] = text
             await handle.wait_for_playout()
         finally:
             self.speaking = None
@@ -664,6 +665,7 @@ class VocaAgent(Agent):
 
     def _settled(self, key: str, approval: dict[str, Any]) -> None:
         self.answered[key] = approval
+        self.announced.pop(key, None)
         if self.barged is not None and self.barged.key == key:
             self.barged = None
         self.announcements = deque(
@@ -918,15 +920,18 @@ class VocaAgent(Agent):
             active = self.barged
         if parsed is not None and active is not None:
             started = new_message.metrics.get("started_speaking_at")
+            early = started is not None and started < self.heard_at
+            barged = self.barged is active
             if (
                 isinstance(parsed, NearMiss)
-                or echoes(
-                    new_message.text_content, self.announced_text, self.vocabulary
-                )
+                or (early and not barged)
                 or (
-                    started is not None
-                    and started < self.heard_at
-                    and self.barged is not active
+                    (early or barged)
+                    and echoes(
+                        new_message.text_content,
+                        self.announced.get(active.key, ""),
+                        self.vocabulary,
+                    )
                 )
             ):
                 await self._unclear(active)

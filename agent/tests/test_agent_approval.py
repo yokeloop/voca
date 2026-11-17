@@ -1032,3 +1032,19 @@ def test_configured_keywords(tmp_path: Path) -> None:
         await stand.agent.stop_delegation()
 
     asyncio.run(main())
+
+
+def test_echo_checked_only_near_the_announcement(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path)
+        session = FakeSession()
+        await activate(stand, session, waiting("a"))
+        agent = stand.agent
+        message = said("Подтверждаю, удали каталог /tmp/x в файл", agent.heard_at + 1)
+        await agent.on_user_turn_completed(agent.chat_ctx.copy(), message)
+        assert stand.backend.approved == [("run_a", "once", APPROVAL)]
+        assert message.text_content == "удали каталог /tmp/x в файл"
+        assert "a" not in agent.announced
+        await agent.stop_delegation()
+
+    asyncio.run(main())
