@@ -20,7 +20,15 @@ Scripts:
   no llama-server needed.
 - `llm_ru_tools.py` (VOCA-4) — G3: `dialogs`, `delegate`, `all` (the default),
   `dialogs-thinking` (the twenty dialogs with thinking on, VOCA-7),
-  `delegate-thinking` (the ten scenarios with thinking on).
+  `delegate-thinking` (the ten scenarios with thinking on);
+  `tools` (VOCA-36) — the nine cases of `corpus/llm_tools.json`: a context of
+  messages and delegation facts, then one user turn; the first tool call must be
+  the expected one (`delegate`, `steer_task`, `cancel_task`, `repeat_approval`,
+  `deny_approval`, `list_tasks`), and a `none` case passes with no call (only
+  `list_tasks` in `c08`, `c09`) and a Russian answer without a claimed action
+  or the announcement text. The tools and instructions come from `VocaAgent`
+  with `instructions.example`, the model from the agent's `make_llm`; the
+  result goes to `tools.json`.
 - `llm_speed.py` (VOCA-4) — G4: `turns`, `points`, `all` (the default);
   `--thinking` (VOCA-7) sends the thinking kwargs with `max_tokens` 1024,
   measures TTFT to the first output (reasoning or content), also records the

@@ -1,0 +1,236 @@
+[
+  {
+    "id": "c01",
+    "history": [],
+    "user": "Отправь Hermes задачу: создай каталог /tmp/voca-c01 с файлом a.txt",
+    "expect": "delegate"
+  },
+  {
+    "id": "c02",
+    "history": [
+      {
+        "role": "user",
+        "content": "Отправь Hermes задачу: создай каталог /tmp/voca-c02 с файлом a.txt"
+      },
+      {
+        "call": "delegate",
+        "arguments": {
+          "task": "Создай каталог /tmp/voca-c02 с файлом a.txt"
+        },
+        "output": "Поручение принято, сообщу, когда будет результат"
+      },
+      {
+        "role": "assistant",
+        "content": "Поручение отправлено."
+      }
+    ],
+    "user": "Уточни поручение: пусть ещё создаст b.txt",
+    "expect": "steer_task"
+  },
+  {
+    "id": "c03",
+    "history": [
+      {
+        "role": "user",
+        "content": "Отправь Hermes задачу: создай каталог /tmp/voca-c02 с файлом a.txt"
+      },
+      {
+        "call": "delegate",
+        "arguments": {
+          "task": "Создай каталог /tmp/voca-c02 с файлом a.txt"
+        },
+        "output": "Поручение принято, сообщу, когда будет результат"
+      },
+      {
+        "role": "assistant",
+        "content": "Поручение отправлено."
+      }
+    ],
+    "user": "Отмени это поручение",
+    "expect": "cancel_task"
+  },
+  {
+    "id": "c04",
+    "history": [
+      {
+        "role": "user",
+        "content": "Поручи Hermes удалить каталог /tmp/voca-c04 командой rm -r"
+      },
+      {
+        "call": "delegate",
+        "arguments": {
+          "task": "Удали каталог /tmp/voca-c04 командой rm -r"
+        },
+        "output": "Поручение принято, сообщу, когда будет результат"
+      },
+      {
+        "role": "assistant",
+        "content": "Поручение отправлено."
+      },
+      {
+        "call": "list_tasks",
+        "arguments": {},
+        "output": {
+          "id": "call_c04",
+          "event": "approval_requested",
+          "text": "Удали каталог /tmp/voca-c04 командой rm -r",
+          "request": "удаление в корневом каталоге",
+          "command": "rm -r /tmp/voca-c04",
+          "interrupted": false
+        }
+      }
+    ],
+    "user": "Повтори запрос",
+    "expect": "repeat_approval"
+  },
+  {
+    "id": "c05",
+    "history": [
+      {
+        "role": "user",
+        "content": "Поручи Hermes удалить каталог /tmp/voca-c04 командой rm -r"
+      },
+      {
+        "call": "delegate",
+        "arguments": {
+          "task": "Удали каталог /tmp/voca-c04 командой rm -r"
+        },
+        "output": "Поручение принято, сообщу, когда будет результат"
+      },
+      {
+        "role": "assistant",
+        "content": "Поручение отправлено."
+      },
+      {
+        "call": "list_tasks",
+        "arguments": {},
+        "output": {
+          "id": "call_c04",
+          "event": "approval_requested",
+          "text": "Удали каталог /tmp/voca-c04 командой rm -r",
+          "request": "удаление в корневом каталоге",
+          "command": "rm -r /tmp/voca-c04",
+          "interrupted": false
+        }
+      }
+    ],
+    "user": "Отклони запрос",
+    "expect": "deny_approval"
+  },
+  {
+    "id": "c06",
+    "history": [],
+    "user": "Что с поручениями?",
+    "expect": "list_tasks"
+  },
+  {
+    "id": "c07",
+    "history": [
+      {
+        "role": "user",
+        "content": "Поручи Hermes удалить каталог /tmp/voca-c04 командой rm -r"
+      },
+      {
+        "call": "delegate",
+        "arguments": {
+          "task": "Удали каталог /tmp/voca-c04 командой rm -r"
+        },
+        "output": "Поручение принято, сообщу, когда будет результат"
+      },
+      {
+        "role": "assistant",
+        "content": "Поручение отправлено."
+      },
+      {
+        "call": "list_tasks",
+        "arguments": {},
+        "output": {
+          "id": "call_c04",
+          "event": "approval_requested",
+          "text": "Удали каталог /tmp/voca-c04 командой rm -r",
+          "request": "удаление в корневом каталоге",
+          "command": "rm -r /tmp/voca-c04",
+          "interrupted": false
+        }
+      }
+    ],
+    "user": "Подтверди запрос",
+    "expect": "none"
+  },
+  {
+    "id": "c08",
+    "history": [
+      {
+        "role": "user",
+        "content": "Поручи Hermes удалить каталог /tmp/voca-c04 командой rm -r"
+      },
+      {
+        "call": "delegate",
+        "arguments": {
+          "task": "Удали каталог /tmp/voca-c04 командой rm -r"
+        },
+        "output": "Поручение принято, сообщу, когда будет результат"
+      },
+      {
+        "role": "assistant",
+        "content": "Поручение отправлено."
+      },
+      {
+        "call": "list_tasks",
+        "arguments": {},
+        "output": {
+          "id": "call_c04",
+          "event": "approval_requested",
+          "text": "Удали каталог /tmp/voca-c04 командой rm -r",
+          "request": "удаление в корневом каталоге",
+          "command": "rm -r /tmp/voca-c04",
+          "interrupted": false
+        }
+      }
+    ],
+    "user": "А что он хочет удалить?",
+    "expect": "none"
+  },
+  {
+    "id": "c09",
+    "history": [
+      {
+        "role": "user",
+        "content": "Поручи Hermes подождать 60 секунд и ответить готово"
+      },
+      {
+        "call": "delegate",
+        "arguments": {
+          "task": "Подожди 60 секунд и ответь готово"
+        },
+        "output": "Поручение принято, сообщу, когда будет результат"
+      },
+      {
+        "role": "assistant",
+        "content": "Поручение отправлено."
+      },
+      {
+        "role": "user",
+        "content": "Отмени это поручение"
+      },
+      {
+        "call": "cancel_task",
+        "arguments": {
+          "id": null
+        },
+        "output": {
+          "id": "call_c09",
+          "text": "Подожди 60 секунд и ответь готово",
+          "status": "failed",
+          "error": "отменено пользователем"
+        }
+      },
+      {
+        "role": "assistant",
+        "content": "Поручение отменено."
+      }
+    ],
+    "user": "Что с той задачей?",
+    "expect": "none"
+  }
+]
