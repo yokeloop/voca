@@ -194,6 +194,7 @@ def test_task_item_schema() -> None:
     }
     assert "run_id" not in item
     assert "stop_requested_at" not in item
+    assert "stop_reason" not in item
     assert "request_id" not in item
     assert "request_id" not in item["approval"]
     text = tasks_message([done, waiting])

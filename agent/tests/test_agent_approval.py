@@ -70,8 +70,8 @@ class FakeBackend:
         self.stops: list[Any] = [None]
         self.approvals: list[Any] = [None]
         self.posts: list[tuple[str, str]] = []
-        self.gets: list[tuple[str, bool]] = []
-        self.stopped: list[str] = []
+        self.gets: list[tuple[str, str | None]] = []
+        self.stopped: list[tuple[str, str]] = []
         self.approved: list[tuple[str, str, dict[str, Any]]] = []
         self.resolved: list[tuple[str, dict[str, Any]]] = []
 
@@ -80,13 +80,13 @@ class FakeBackend:
         run_id: str = take(self.created)
         return run_id
 
-    async def get_run(self, run_id: str, stop_requested: bool) -> RunState:
-        self.gets.append((run_id, stop_requested))
+    async def get_run(self, run_id: str, stop_reason: str | None) -> RunState:
+        self.gets.append((run_id, stop_reason))
         state: RunState = take(self.runs[run_id])
         return state
 
-    async def stop(self, run_id: str) -> RunState | None:
-        self.stopped.append(run_id)
+    async def stop(self, run_id: str, reason: str) -> RunState | None:
+        self.stopped.append((run_id, reason))
         state: RunState | None = take(self.stops)
         return state
 

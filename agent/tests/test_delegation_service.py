@@ -71,8 +71,8 @@ class FakeBackend:
         self.stops: list[Any] = [None]
         self.approvals: list[Any] = [None]
         self.posts: list[tuple[str, str]] = []
-        self.gets: list[tuple[str, bool]] = []
-        self.stopped: list[str] = []
+        self.gets: list[tuple[str, str | None]] = []
+        self.stopped: list[tuple[str, str]] = []
         self.approved: list[tuple[str, str, dict[str, Any]]] = []
         self.resolved: list[tuple[str, dict[str, Any]]] = []
 
@@ -81,13 +81,13 @@ class FakeBackend:
         run_id: str = take(self.created)
         return run_id
 
-    async def get_run(self, run_id: str, stop_requested: bool) -> RunState:
-        self.gets.append((run_id, stop_requested))
+    async def get_run(self, run_id: str, stop_reason: str | None) -> RunState:
+        self.gets.append((run_id, stop_reason))
         state: RunState = take(self.runs[run_id])
         return state
 
-    async def stop(self, run_id: str) -> RunState | None:
-        self.stopped.append(run_id)
+    async def stop(self, run_id: str, reason: str) -> RunState | None:
+        self.stopped.append((run_id, reason))
         state: RunState | None = take(self.stops)
         return state
 
@@ -237,13 +237,13 @@ def test_deadline_stops_and_times_out() -> None:
         return await service.watch("k")
 
     task = asyncio.run(main())
-    assert backend.stopped == ["run_1"]
+    assert backend.stopped == [("run_1", "timeout")]
     assert task.stop_requested_at is not None
     assert task.stop_requested_at > 10
     assert task.status == TaskStatus.FAILED
     assert task.error == "timeout"
     assert clock.now - task.stop_requested_at <= 30
-    assert ("run_1", True) in backend.gets
+    assert ("run_1", "timeout") in backend.gets
 
 
 def test_deadline_completed_in_stop_response() -> None:
@@ -260,7 +260,7 @@ def test_deadline_completed_in_stop_response() -> None:
     assert task.status == TaskStatus.SUCCEEDED
     assert task.result == "успел"
     assert task.stop_requested_at is not None
-    assert backend.stopped == ["run_1"]
+    assert backend.stopped == [("run_1", "timeout")]
 
 
 def test_deadline_completed_within_window() -> None:
@@ -282,7 +282,7 @@ def test_deadline_completed_within_window() -> None:
     task = asyncio.run(main())
     assert task.status == TaskStatus.SUCCEEDED
     assert task.result == "в окне"
-    assert backend.stopped == ["run_1"]
+    assert backend.stopped == [("run_1", "timeout")]
 
 
 def test_run_not_found_is_lost() -> None:
@@ -404,7 +404,7 @@ def test_recover_queued_unavailable_stops() -> None:
     backend.created = ["run_9"]
     asyncio.run(service.recover())
     assert backend.posts == [("k", "a")]
-    assert backend.stopped == ["run_9"]
+    assert backend.stopped == [("run_9", "timeout")]
     task = repo.tasks["k"]
     assert task.status == TaskStatus.FAILED
     assert task.error == "unavailable"
@@ -438,8 +438,8 @@ def test_recover_running_and_waiting() -> None:
     assert repo.tasks["r"].status == TaskStatus.SUCCEEDED
     assert repo.tasks["w"].status == TaskStatus.SUCCEEDED
     assert repo.tasks["w"].approval is None
-    assert backend.stopped == ["run_x"]
-    assert ("run_x", False) not in backend.gets
+    assert backend.stopped == [("run_x", "timeout")]
+    assert ("run_x", None) not in backend.gets
     assert repo.tasks["x"].status == TaskStatus.FAILED
     assert repo.tasks["x"].error == "timeout"
 

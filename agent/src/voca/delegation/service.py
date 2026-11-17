@@ -7,6 +7,7 @@ from typing import Any, Literal
 from voca.delegation.model import (
     LOST,
     LOST_BEFORE_LAUNCH,
+    STOP_TIMEOUT,
     TERMINAL,
     TIMEOUT,
     UNAVAILABLE,
@@ -94,9 +95,7 @@ class DelegationService:
             run_id = task.run_id
             assert run_id is not None
             try:
-                state = await self.backend.get_run(
-                    run_id, stop_requested=task.stop_requested_at is not None
-                )
+                state = await self.backend.get_run(run_id, stop_reason=task.stop_reason)
             except RunNotFound:
                 return await self._save(task.transition(TaskStatus.FAILED, error=LOST))
             except DelegationError:
@@ -132,9 +131,11 @@ class DelegationService:
     async def _expire(self, task: Task) -> Task:
         run_id = task.run_id
         assert run_id is not None
-        task = await self._save(replace(task, stop_requested_at=self.clock()))
+        task = await self._save(
+            replace(task, stop_requested_at=self.clock(), stop_reason=STOP_TIMEOUT)
+        )
         try:
-            state = await self.backend.stop(run_id)
+            state = await self.backend.stop(run_id, STOP_TIMEOUT)
         except DelegationError:
             state = None
         if state is not None and state.status in TERMINAL:
@@ -143,7 +144,7 @@ class DelegationService:
         while self.clock() < deadline:
             await self.sleep(POLL_S)
             try:
-                state = await self.backend.get_run(run_id, stop_requested=True)
+                state = await self.backend.get_run(run_id, stop_reason=STOP_TIMEOUT)
             except RunNotFound:
                 return await self._save(task.transition(TaskStatus.FAILED, error=LOST))
             except DelegationError:
@@ -163,7 +164,7 @@ class DelegationService:
                 await self._save(task.transition(TaskStatus.FAILED, error=UNAVAILABLE))
             return
         try:
-            await self.backend.stop(run_id)
+            await self.backend.stop(run_id, STOP_TIMEOUT)
         except DelegationError:
             pass
         await self._save(

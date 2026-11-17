@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from voca.delegation.model import Task, TaskStatus
-from voca.delegation.sqlite import SqliteTaskRepository, TaskStoreError
+from voca.delegation.sqlite import MIGRATIONS, SqliteTaskRepository, TaskStoreError
 
 
 def test_file_and_dir_modes(tmp_path: Path) -> None:
@@ -23,15 +23,43 @@ def test_wal_and_user_version(tmp_path: Path) -> None:
     SqliteTaskRepository.open(path).close()
     with closing(sqlite3.connect(path)) as db:
         assert db.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 1
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 2
 
 
 def test_newer_schema_refused(tmp_path: Path) -> None:
     path = tmp_path / "tasks.sqlite3"
     with closing(sqlite3.connect(path)) as db:
-        db.execute("PRAGMA user_version = 2")
+        db.execute("PRAGMA user_version = 3")
     with pytest.raises(TaskStoreError):
         SqliteTaskRepository.open(path)
+
+
+def test_migrates_v1_to_v2(tmp_path: Path) -> None:
+    path = tmp_path / "tasks.sqlite3"
+    with closing(sqlite3.connect(path, autocommit=True)) as db:
+        db.executescript(MIGRATIONS[0].read_text(encoding="utf-8"))
+        db.execute("PRAGMA user_version = 1")
+        db.execute(
+            "INSERT INTO tasks (tool_call_id, text, status, created_at, stop_requested_at) "
+            "VALUES ('stopped', 'a', 'failed', 1.0, 2.0)"
+        )
+        db.execute(
+            "INSERT INTO tasks (tool_call_id, text, status, created_at) "
+            "VALUES ('plain', 'b', 'running', 1.0)"
+        )
+    repo = SqliteTaskRepository.open(path)
+
+    async def main() -> tuple[Task | None, Task | None]:
+        return await repo.get("stopped"), await repo.get("plain")
+
+    stopped, plain = asyncio.run(main())
+    repo.close()
+    with closing(sqlite3.connect(path)) as db:
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert stopped is not None
+    assert stopped.stop_reason == "timeout"
+    assert plain is not None
+    assert plain.stop_reason is None
 
 
 def test_insert_or_get(tmp_path: Path) -> None:
@@ -72,7 +100,10 @@ def test_save_and_lists(tmp_path: Path) -> None:
             three.transition(TaskStatus.FAILED, error="unavailable", delivered_at=5.0)
         )
         waiting = one.transition(TaskStatus.RUNNING, run_id="r1").transition(
-            TaskStatus.WAITING_APPROVAL, approval=approval, stop_requested_at=9.0
+            TaskStatus.WAITING_APPROVAL,
+            approval=approval,
+            stop_requested_at=9.0,
+            stop_reason="user",
         )
         await repo.save(waiting)
         stored = await repo.get("1")
@@ -90,6 +121,7 @@ def test_save_and_lists(tmp_path: Path) -> None:
     assert stored.approval == approval
     assert stored.status == TaskStatus.WAITING_APPROVAL
     assert stored.stop_requested_at == 9.0
+    assert stored.stop_reason == "user"
     assert [task.tool_call_id for task in open_tasks] == ["1"]
     assert open_tasks[0].approval is None
     assert [task.tool_call_id for task in undelivered] == ["2"]
