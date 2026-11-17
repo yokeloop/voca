@@ -19,6 +19,7 @@ from pydantic_settings import (
 )
 
 from voca.conversation.approval import Vocabulary, distance, normalize
+from voca.conversation.verdict import VERDICTS, Prompt
 
 WORD = re.compile(r"^\w+$")
 DAILY_AT = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
@@ -117,6 +118,63 @@ class ApprovalConfig(BaseModel):
             negations=tuple(self.negations),
             near=self.near,
             echo_words=self.echo_words,
+        )
+
+
+class DecisionConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    url: str = "http://127.0.0.1:8086"
+    model: str = "d1-2B"
+    timeout_s: float = Field(default=4.0, gt=0)
+    threshold: float = Field(default=0.6, gt=0, le=1)
+    extra_threshold: float = Field(default=0.5, gt=0, lt=1)
+    instructions: str = (
+        "Ассистент озвучил запрос подтверждения команды и ждёт ответа "
+        "пользователя. Что пользователь отвечает этой фразой на запрос?"
+    )
+    verdicts: dict[str, str] = {
+        "approve": "Пользователь разрешает выполнить команду: подтверждает, "
+        "соглашается, разрешает",
+        "deny": "Пользователь запрещает команду: отклоняет, отказывается, "
+        "просит не выполнять или отменить её",
+        "repeat": "Пользователь просит повторить или ещё раз озвучить запрос",
+        "unrelated": "Фраза не отвечает на запрос: вопрос, просьба, новое "
+        "поручение или разговор о другом",
+        "unclear": "Ответ неясен: колебание, оговорка, противоречие или обрывок, "
+        "по которому решение не понять",
+    }
+    extra: str = (
+        "Есть ли во фразе пользователя, кроме ответа на запрос, ещё вопрос, "
+        "просьба или поручение?"
+    )
+
+    @model_validator(mode="after")
+    def complete(self) -> Self:
+        if set(self.verdicts) != set(VERDICTS):
+            raise ValueError(
+                "decision.verdicts: нужны approve, deny, repeat, unrelated, unclear"
+            )
+        texts = {
+            "instructions": self.instructions,
+            "extra": self.extra,
+            "url": self.url,
+            "model": self.model,
+            **{f"verdicts.{name}": text for name, text in self.verdicts.items()},
+        }
+        for name, text in texts.items():
+            if not text.strip():
+                raise ValueError(f"decision.{name}: пустой текст")
+        return self
+
+    def prompt(self) -> Prompt:
+        return Prompt(
+            instructions=self.instructions,
+            verdicts=dict(self.verdicts),
+            extra=self.extra,
+            threshold=self.threshold,
+            extra_threshold=self.extra_threshold,
         )
 
 
@@ -226,6 +284,7 @@ class Settings(BaseSettings):
     compression: CompressionConfig = Field(default_factory=CompressionConfig)
     delegation: DelegationConfig = Field(default_factory=DelegationConfig)
     approval: ApprovalConfig = Field(default_factory=ApprovalConfig)
+    decision: DecisionConfig = Field(default_factory=DecisionConfig)
 
     @field_validator("instructions_dir")
     @classmethod

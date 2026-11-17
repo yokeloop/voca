@@ -1,9 +1,11 @@
+import json
 from pathlib import Path
 
 import pydantic
 import pytest
 
 from voca.config import Settings
+from voca.conversation.verdict import VERDICTS
 
 EXAMPLE = Path(__file__).resolve().parents[2] / "config.example.toml"
 
@@ -207,3 +209,59 @@ def test_approval_words_far_apart(
         '[approval]\nconfirm = ["Принимаю"]\ndeny = ["Запрещаю"]\nnear = 2\n',
     )
     assert Settings().approval.vocabulary().deny == ("Запрещаю",)
+
+
+def test_decision_defaults() -> None:
+    decision = Settings().decision
+    assert decision.enabled is True
+    assert decision.url == "http://127.0.0.1:8086"
+    assert decision.model == "d1-2B"
+    assert decision.timeout_s == 4.0
+    prompt = decision.prompt()
+    assert prompt.threshold == 0.6
+    assert prompt.extra_threshold == 0.5
+    assert set(prompt.verdicts) == set(VERDICTS)
+    assert all(text.strip() for text in prompt.verdicts.values())
+    assert prompt.instructions.strip()
+    assert prompt.extra.strip()
+
+
+def test_decision_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("VOCA_DECISION__URL", "http://127.0.0.1:9999")
+    monkeypatch.setenv("VOCA_DECISION__ENABLED", "false")
+    verdicts = {name: f"свой текст {name}" for name in VERDICTS}
+    monkeypatch.setenv("VOCA_DECISION__VERDICTS", json.dumps(verdicts))
+    decision = Settings().decision
+    assert decision.url == "http://127.0.0.1:9999"
+    assert decision.enabled is False
+    assert decision.prompt().verdicts == verdicts
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        '[decision.verdicts]\napprove = "a"\ndeny = "d"\nrepeat = "r"\nunrelated = "u"\n',
+        (
+            '[decision.verdicts]\napprove = "a"\ndeny = "d"\nrepeat = "r"\n'
+            'unrelated = "u"\nunclear = "c"\nmaybe = "m"\n'
+        ),
+        (
+            '[decision.verdicts]\napprove = " "\ndeny = "d"\nrepeat = "r"\n'
+            'unrelated = "u"\nunclear = "c"\n'
+        ),
+        '[decision]\ninstructions = ""\n',
+        '[decision]\nextra = " "\n',
+        '[decision]\nurl = ""\n',
+        '[decision]\nmodel = ""\n',
+        "[decision]\nthreshold = 0\n",
+        "[decision]\nthreshold = 1.5\n",
+        "[decision]\nextra_threshold = 1\n",
+        "[decision]\ntimeout_s = 0\n",
+    ],
+)
+def test_decision_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, text: str
+) -> None:
+    write_config(tmp_path, monkeypatch, text)
+    with pytest.raises(pydantic.ValidationError):
+        Settings()
