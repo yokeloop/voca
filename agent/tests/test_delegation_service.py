@@ -368,6 +368,18 @@ def test_approve_conflict() -> None:
         asyncio.run(service.approve("missing", "once"))
 
 
+def test_approve_expected() -> None:
+    service, repo, backend, _, _ = make()
+    waiting_task(repo)
+    with pytest.raises(ApprovalNotActive):
+        asyncio.run(
+            service.approve("k", "once", expected={**APPROVAL, "request_id": "other"})
+        )
+    assert backend.approved == []
+    asyncio.run(service.approve("k", "once", expected=APPROVAL))
+    assert backend.approved == [("run_1", "once", APPROVAL)]
+
+
 def test_recover_queued() -> None:
     service, repo, backend, clock, _ = make(run_timeout=100)
     clock.now = 150
