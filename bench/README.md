@@ -18,6 +18,12 @@ Scripts:
   and the `VocaAgent` tools) sent to a fake server on loopback:
   `thinking_budget_tokens`, `tools` with `delegate`, no `chat_template_kwargs`;
   no llama-server needed.
+- `decision_ru.py` (VOCA-36) — the decision model of voice approval: the
+  twenty phrases of `corpus/decision.json` against `scripts/decision.sh`
+  (`scripts/up.sh decision`) through the agent's `make_decider`, one warm-up
+  call and `--rounds` (3) rounds; prints `PASS|FAIL id verdict picked
+  confidence extra ms` and `decision N/20 p50 … ms p95 … ms`, writes
+  `.local/bench/decision/decision.json`.
 - `llm_ru_tools.py` (VOCA-4) — G3: `dialogs`, `delegate`, `all` (the default),
   `dialogs-thinking` (the twenty dialogs with thinking on, VOCA-7),
   `delegate-thinking` (the ten scenarios with thinking on);
@@ -138,6 +144,7 @@ Reports, one per measurement task:
 - `report_g5.md` (VOCA-14)
 - `report_g6.md` (VOCA-16)
 - `report_delegation_tools.md` (VOCA-36)
+- `report_decision.md` (VOCA-36)
 
 Corpora are plain text or JSON in `bench/corpus/`. Voice recordings stay out of the
 repository, in `.local/bench/`; each report names the recordings it used with
