@@ -351,7 +351,8 @@ def test_announcement_text() -> None:
     text = announcement_text(waiting("a"))
     assert text == (
         "Hermes просит подтверждения по поручению «Удали каталог /tmp/x»: "
-        "delete in root path. Скажите „Подтверждаю“ или „Отклоняю“."
+        "удаление в корневом каталоге. Подтвердите на экране или скажите "
+        "„Подтверждаю“ или „Отклоняю“."
     )
     assert "rm -r" not in text
     long = ("слово " * 20)[:100]
@@ -360,8 +361,9 @@ def test_announcement_text() -> None:
     assert 0 < len(quoted.split("«")[1].split("»")[0]) <= 60
     bare = waiting("c", {"command": "rm -r /tmp/x", "request_id": "p1"})
     assert announcement_text(bare) == (
-        "Hermes просит подтверждения по поручению «Удали каталог /tmp/x». "
-        "Скажите „Подтверждаю“ или „Отклоняю“."
+        "Hermes просит подтверждения по поручению «Удали каталог /tmp/x»: "
+        "опасная команда. Подтвердите на экране или скажите "
+        "„Подтверждаю“ или „Отклоняю“."
     )
 
 

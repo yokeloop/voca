@@ -9,6 +9,7 @@ PURE_MODULES = (
     "conversation/context",
     "conversation/compaction",
     "conversation/approval",
+    "conversation/descriptions",
     "conversation/instructions",
     "session/model",
     "speech/markup",

@@ -34,6 +34,7 @@ from voca.conversation.compaction import (
     wrap,
 )
 from voca.conversation.context import Item, approx_tokens, split_turns, trim_chat_ctx
+from voca.conversation.descriptions import describe
 from voca.conversation.instructions import InstructionLoader, InstructionSet
 from voca.conversation.summarizer import Failure, Summarizer, Summary
 from voca.delegation.model import GATEWAY_RESTART, TIMEOUT, Task, TaskStatus
@@ -60,7 +61,7 @@ FAILURE_REASONS = {
     GATEWAY_RESTART: "Hermes перезапускался",
 }
 APPROVAL_LIMIT = 60
-APPROVAL_PROMPT = "Скажите „Подтверждаю“ или „Отклоняю“."
+APPROVAL_PROMPT = "Подтвердите на экране или скажите „Подтверждаю“ или „Отклоняю“."
 APPROVAL_REPLIES = {"once": "Подтверждено", "deny": "Отклонено"}
 APPROVAL_GONE = "Запрос подтверждения уже не активен"
 APPROVAL_FAILED = "Не удалось передать подтверждение"
@@ -120,10 +121,8 @@ def result_outcome(task: Task) -> str:
 
 def announcement_text(task: Task) -> str:
     head = clip(task.text, APPROVAL_LIMIT)
-    description = clip(str((task.approval or {}).get("description") or "")).rstrip(".")
-    if description:
-        return f"Hermes просит подтверждения по поручению «{head}»: {description}. {APPROVAL_PROMPT}"
-    return f"Hermes просит подтверждения по поручению «{head}». {APPROVAL_PROMPT}"
+    description = describe((task.approval or {}).get("description"))
+    return f"Hermes просит подтверждения по поручению «{head}»: {description}. {APPROVAL_PROMPT}"
 
 
 def records(ctx: llm.ChatContext) -> list[Item]:
