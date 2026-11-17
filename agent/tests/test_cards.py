@@ -191,12 +191,12 @@ def test_task_item_schema() -> None:
         "description": "d",
         "command": "rm -r x",
         "choices": ["once", "deny"],
+        "request_id": "r1",
     }
     assert "run_id" not in item
     assert "stop_requested_at" not in item
     assert "stop_reason" not in item
     assert "request_id" not in item
-    assert "request_id" not in item["approval"]
     text = tasks_message([done, waiting])
     assert json.loads(text)["type"] == "tasks"
     assert [item["tool_call_id"] for item in json.loads(text)["tasks"]] == [

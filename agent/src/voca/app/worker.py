@@ -23,6 +23,7 @@ from voca.app.wiring import (
     compaction_limits,
     make_summarizer,
 )
+from voca.clientio.actions import bind_actions
 from voca.clientio.cards import CardState
 from voca.clientio.history import HistoryChannel, send_on_wait
 from voca.clientio.metrics import bind_metrics
@@ -112,6 +113,7 @@ async def entrypoint(ctx: JobContext) -> None:
     )
     if delegation is not None:
         delegation.on_change = agent.on_task_change
+        bind_actions(ctx.room, agent.approve_from_page, agent.cancel_from_page)
     recorder = SessionRecorder(store, current.id)
 
     def save() -> None:

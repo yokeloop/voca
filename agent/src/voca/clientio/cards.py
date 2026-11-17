@@ -33,6 +33,7 @@ def task_item(task: Task) -> dict[str, Any]:
             "description": a.get("description"),
             "command": a.get("command"),
             "choices": a.get("choices"),
+            "request_id": a.get("request_id"),
         }
     )
     return {

@@ -10,13 +10,16 @@ from tests.test_agent_approval import (
     FakeSession,
     Stand,
     activate,
+    facts,
     finished,
     settle,
     spoken,
+    stopped,
     until,
     waiting,
 )
 from voca.conversation.agent import (
+    APPROVAL_GONE,
     NO_REQUEST,
     NOT_STEERABLE,
     TASK_AMBIGUOUS,
@@ -202,5 +205,88 @@ def test_repeat_without_request(tmp_path: Path) -> None:
         stand = Stand(tmp_path)
         with pytest.raises(ToolError, match=NO_REQUEST):
             await stand.agent.repeat_approval()
+
+    asyncio.run(main())
+
+
+def test_approve_from_page(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path)
+        session = FakeSession()
+        await activate(stand, session, waiting("a"))
+        result = await stand.agent.approve_from_page("a", "p1", "once")
+        assert result == {"ok": True}
+        assert stand.backend.approved == [("run_a", "once", APPROVAL)]
+        assert stand.agent.active is None
+        assert facts(stand.agent.chat_ctx)[-1] == (
+            "list_tasks",
+            {"id": "a", "event": "approved", "by": "button"},
+        )
+        rows = [row for row in stand.rows("a") if "approval" in row]
+        assert [(row["approval"], row["by"]) for row in rows] == [("once", "button")]
+        await settle()
+        assert len(session.calls) == 1
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_approve_from_page_queued_request(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path)
+        session = FakeSession()
+        await activate(stand, session, waiting("a"), waiting("b", created_at=2.0))
+        result = await stand.agent.approve_from_page("b", "p1", "deny")
+        assert result == {"ok": True}
+        assert stand.backend.approved == [("run_b", "deny", APPROVAL)]
+        assert not stand.agent.announcements
+        assert stand.agent.active is not None
+        assert stand.agent.active.key == "a"
+        await stopped(stand.agent, "Подтверждаю")
+        await settle()
+        assert spoken(session) == [announcement_text(waiting("a")), "Подтверждено"]
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_approve_from_page_wrong_request(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path)
+        stand.put(waiting("a"))
+        result = await stand.agent.approve_from_page("a", "old", "once")
+        assert result == {"ok": False, "error": APPROVAL_GONE}
+        assert stand.backend.approved == []
+
+    asyncio.run(main())
+
+
+def test_cancel_from_page(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path)
+        session = FakeSession()
+        stand.start(session)
+        stand.open()
+        stand.put(running("a"))
+        stand.backend.stops = [RunState("run_a", TaskStatus.FAILED, error="cancelled")]
+        assert await stand.agent.cancel_from_page("a") == {"ok": True}
+        assert facts(stand.agent.chat_ctx)[-1] == (
+            "list_tasks",
+            {
+                "id": "a",
+                "event": "cancelled",
+                "by": "button",
+                "status": "failed",
+                "error": "отменено пользователем",
+            },
+        )
+        assert stand.repo.tasks["a"].delivered_at is not None
+        await settle()
+        assert session.calls == []
+        assert await stand.agent.cancel_from_page("a") == {
+            "ok": False,
+            "error": TASK_CLOSED,
+        }
+        await stand.agent.stop_delegation()
 
     asyncio.run(main())

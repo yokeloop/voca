@@ -637,6 +637,59 @@ class VocaAgent(Agent):
             self.active = None
         self.wake.set()
 
+    async def approve_from_page(
+        self, key: str, request_id: str, choice: Choice
+    ) -> dict[str, Any]:
+        if self.delegation is None:
+            return {"ok": False, "error": DELEGATE_UNAVAILABLE}
+        task = await self.delegation.repo.get(key)
+        if (
+            task is None
+            or task.status != TaskStatus.WAITING_APPROVAL
+            or task.approval is None
+            or task.approval.get("request_id") != request_id
+        ):
+            return {"ok": False, "error": APPROVAL_GONE}
+        try:
+            await self.delegation.approve(key, choice, expected=task.approval)
+        except (ApprovalNotActive, TaskNotFound):
+            return {"ok": False, "error": APPROVAL_GONE}
+        except DelegationError:
+            return {"ok": False, "error": APPROVAL_FAILED}
+        self._settled(key, task.approval)
+        event = "approved" if choice == "once" else "denied"
+        await self._fact(
+            "list_tasks", {}, {"id": short_id(key), "event": event, "by": "button"}
+        )
+        self._task_row(task, approval=choice, by="button")
+        return {"ok": True}
+
+    async def cancel_from_page(self, key: str) -> dict[str, Any]:
+        if self.delegation is None:
+            return {"ok": False, "error": DELEGATE_UNAVAILABLE}
+        self.in_tool.add(key)
+        try:
+            final = await self.delegation.cancel(key)
+        except TaskNotOpen:
+            return {"ok": False, "error": TASK_CLOSED}
+        except TaskNotFound:
+            return {"ok": False, "error": TASK_UNKNOWN}
+        except DelegationError:
+            return {"ok": False, "error": ACTION_FAILED}
+        finally:
+            self.in_tool.discard(key)
+        view = task_view(final, self.active)
+        output = {"id": view["id"], "event": "cancelled", "by": "button"}
+        output.update(
+            {
+                field: view[field]
+                for field in ("status", "error", "result")
+                if field in view
+            }
+        )
+        await self._fact("list_tasks", {}, output)
+        return {"ok": True}
+
     async def _pick_task(self, id: str | None, allowed: Callable[[Task], bool]) -> Task:
         assert self.delegation is not None
         candidates = [
