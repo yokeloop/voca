@@ -2,6 +2,7 @@ import asyncio
 import logging
 import re
 import time
+from collections import deque
 from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -57,6 +58,13 @@ class Pending:
     plan: Plan
     task: asyncio.Task[Summary | Failure]
     trigger: str
+
+
+@dataclass
+class Announcement:
+    key: str
+    approval: dict[str, Any]
+    attempts: int = 0
 
 
 def refusal(component: str, *, tts_down: bool) -> str | None:
@@ -190,6 +198,11 @@ class VocaAgent(Agent):
         self.present = asyncio.Event()
         self.playout: dict[str, bool] = {}
         self.stopped = False
+        self.announcements: deque[Announcement] = deque()
+        self.speaking: Announcement | None = None
+        self.active: Announcement | None = None
+        self.wake = asyncio.Event()
+        self.speaker: AgentSession[Any] | None = None
 
     def set_present(self, present: bool) -> None:
         if present:
@@ -223,26 +236,64 @@ class VocaAgent(Agent):
             return
         self.queued.add(key)
         self.queue.put_nowait(key)
+        self.wake.set()
 
-    def on_task_change(self, task: Task) -> None:
+    def announce(self, task: Task) -> None:
+        if task.status != TaskStatus.WAITING_APPROVAL or task.approval is None:
+            return
         key = task.tool_call_id
-        self.cards.publish_task(task)
-        extra = {"interrupted": self.playout.pop(key)} if key in self.playout else {}
+        for item in (self.active, self.speaking, *self.announcements):
+            if item is not None and item.key == key and item.approval == task.approval:
+                return
+        self.announcements = deque(
+            item for item in self.announcements if item.key != key
+        )
+        self.announcements.append(Announcement(key, task.approval))
+        self.wake.set()
+
+    def _release(self, task: Task) -> None:
+        key = task.tool_call_id
+        waiting = task.status == TaskStatus.WAITING_APPROVAL
+        if (
+            self.active is not None
+            and self.active.key == key
+            and (not waiting or task.approval != self.active.approval)
+        ):
+            self.active = None
+            self.wake.set()
+        if not waiting:
+            self.announcements = deque(
+                item for item in self.announcements if item.key != key
+            )
+
+    def _task_row(self, task: Task, **extra: object) -> None:
         self.log.write(
             "task",
-            tool_call_id=key,
+            tool_call_id=task.tool_call_id,
             status=task.status.value,
             run_id=task.run_id,
             error=task.error,
             delivered=task.delivered_at is not None,
             **extra,
         )
+
+    def on_task_change(self, task: Task) -> None:
+        key = task.tool_call_id
+        self.cards.publish_task(task)
+        extra = {"interrupted": self.playout.pop(key)} if key in self.playout else {}
+        self._task_row(task, **extra)
         self.enqueue(task)
+        self._release(task)
+        self.announce(task)
 
     async def enqueue_undelivered(self) -> None:
         if self.delegation is None:
             return
-        for task in await self.delegation.repo.list_undelivered():
+        undelivered = await self.delegation.repo.list_undelivered()
+        waiting = await self.delegation.repo.list_open()
+        for task in waiting:
+            self.announce(task)
+        for task in undelivered:
             self.enqueue(task)
 
     def start_recover(self) -> None:
@@ -258,27 +309,85 @@ class VocaAgent(Agent):
         self, session: AgentSession[Any], sent: Callable[[], Awaitable[None]]
     ) -> None:
         if self.delegation is not None and self.deliverer is None and not self.stopped:
+            self.speaker = session
             self.deliverer = asyncio.create_task(self._deliver_loop(session, sent))
+
+    async def _ready(self, sent: Callable[[], Awaitable[None]]) -> None:
+        while True:
+            await self.present.wait()
+            await sent()
+            if self.present.is_set():
+                return
+
+    def _pick(self) -> Announcement | str | None:
+        if self.active is None and self.announcements:
+            return self.announcements.popleft()
+        if not self.queue.empty():
+            return self.queue.get_nowait()
+        return None
 
     async def _deliver_loop(
         self, session: AgentSession[Any], sent: Callable[[], Awaitable[None]]
     ) -> None:
         while True:
-            key = await self.queue.get()
-            delivered = True
+            await self._ready(sent)
+            item = self._pick()
+            if item is None:
+                self.wake.clear()
+                await self.wake.wait()
+                continue
+            ok = True
             try:
-                while True:
-                    await self.present.wait()
-                    await sent()
-                    if self.present.is_set():
-                        break
-                delivered = await self._deliver(session, key)
+                if isinstance(item, Announcement):
+                    ok = await self._announce(session, item)
+                else:
+                    ok = await self._deliver(session, item)
             except Exception:
+                key = item.key if isinstance(item, Announcement) else item
                 logging.getLogger("voca.tasks").exception("delivery failed: %s", key)
             finally:
-                self.queued.discard(key)
-            if not delivered:
+                if isinstance(item, str):
+                    self.queued.discard(item)
+            if not ok:
                 return
+
+    async def _announce(self, session: AgentSession[Any], item: Announcement) -> bool:
+        assert self.delegation is not None
+        task = await self.delegation.repo.get(item.key)
+        if (
+            task is None
+            or task.status != TaskStatus.WAITING_APPROVAL
+            or task.approval != item.approval
+        ):
+            return True
+        self.speaking = item
+        try:
+            try:
+                handle = session.say(
+                    announcement_text(task),
+                    allow_interruptions=True,
+                    add_to_chat_ctx=True,
+                )
+            except RuntimeError:
+                return False
+            await handle.wait_for_playout()
+        finally:
+            self.speaking = None
+        item.attempts += 1
+        self._task_row(task, announced=True, interrupted=handle.interrupted)
+        if not handle.interrupted:
+            current = await self.delegation.repo.get(item.key)
+            if (
+                current is not None
+                and current.status == TaskStatus.WAITING_APPROVAL
+                and current.approval == item.approval
+                and self.active is None
+            ):
+                self.active = item
+        elif item.attempts < ANNOUNCE_ATTEMPTS:
+            self.announcements.appendleft(item)
+            self.wake.set()
+        return True
 
     async def _deliver(self, session: AgentSession[Any], key: str) -> bool:
         assert self.delegation is not None
