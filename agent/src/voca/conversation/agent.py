@@ -20,7 +20,7 @@ from livekit.agents import (
 from livekit.agents.voice import Agent, AgentSession, ModelSettings
 
 from voca.clientio.cards import CardState
-from voca.conversation.approval import Choice, match
+from voca.conversation.approval import Choice, Phrase, parse
 from voca.conversation.compaction import (
     SUMMARY_KEY,
     Limits,
@@ -628,9 +628,9 @@ class VocaAgent(Agent):
     async def on_user_turn_completed(
         self, turn_ctx: llm.ChatContext, new_message: llm.ChatMessage
     ) -> None:
-        choice = match(new_message.text_content)
-        if choice is not None and self.active is not None:
-            await self._answer(self.active, choice)
+        parsed = parse(new_message.text_content)
+        if isinstance(parsed, Phrase) and not parsed.tail and self.active is not None:
+            await self._answer(self.active, parsed.choice)
             raise StopResponse()
         changed = False
         loaded = self.loader.load()
