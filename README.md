@@ -103,7 +103,7 @@ uv run --project agent python bench/tts_pipeline.py think
 
 ### 0.3 LLM stand
 
-llama-server with the agent's model LFM2.5-2.6B (profile `lfm2.5-2.6b`, the default since VOCA-9, 0.3.1). Gates G3 and G4 were measured on Bolt-E4B in profile B (the per-layer embeddings stay in RAM) on b11869: [bench/report_g3_g4.md](bench/report_g3_g4.md). LFM2.5-2.6B on the E0 cases: [bench/report_lfm2_5_2_6b.md](bench/report_lfm2_5_2_6b.md).
+llama-server with the agent's model Nemotron Bolt-E4B (profile `bolt-e4b`, the default since VOCA-36, 0.3.1); LFM2.5-2.6B (`lfm2.5-2.6b`) is an alternative. Gates G3 and G4 were measured on Bolt-E4B in profile B (the per-layer embeddings stay in RAM) on b11869: [bench/report_g3_g4.md](bench/report_g3_g4.md). LFM2.5-2.6B on the E0 cases: [bench/report_lfm2_5_2_6b.md](bench/report_lfm2_5_2_6b.md).
 
 **llama.cpp.** CUDA release `b12167` (`build 12167, commit 240d68fcf`), build `ubuntu-cuda-13.4-x64`, two archives:
 
@@ -127,28 +127,28 @@ scripts/fetch.sh --check
 (cd agent && uv sync --locked)
 scripts/up.sh llm
 curl http://127.0.0.1:8081/health
-curl -fsS http://127.0.0.1:8081/v1/models   # "id": "lfm2.5-2.6b"
+curl -fsS http://127.0.0.1:8081/v1/models   # "id": "bolt-e4b"
 ```
 
 These measurements belong to `bolt-e4b`; the LFM2.5-2.6B runs and their commands are in [bench/report_lfm2_5_2_6b.md](bench/report_lfm2_5_2_6b.md). Repeating G3/G4 of [bench/report_g3_g4.md](bench/report_g3_g4.md) on `bolt-e4b`:
 
 ```sh
 scripts/down.sh llm
-VOCA_LLM_PROFILE=bolt-e4b scripts/up.sh llm
+scripts/up.sh llm
 uv run --project agent python bench/llm_template.py
 uv run --project agent python bench/llm_ru_tools.py
 uv run --project agent python bench/llm_speed.py
 scripts/down.sh llm
 ```
 
-`scripts/up.sh llm` runs `scripts/llama.sh`, which loads the profile `VOCA_LLM_PROFILE` (0.3.1), checks the binary, the model and port 8081, then starts; for the default profile `lfm2.5-2.6b`:
+`scripts/up.sh llm` runs `scripts/llama.sh`, which loads the profile `VOCA_LLM_PROFILE` (0.3.1), checks the binary, the model and port 8081, then starts; for the default profile `bolt-e4b`:
 
 ```sh
-~/Apps/llama.cpp/llama-b12167/llama-server -m ~/models/LiquidAI/LFM2.5-2.6B-Q4_K_M.gguf --alias lfm2.5-2.6b \
+~/Apps/llama.cpp/llama-b12167/llama-server -m ~/models/unsloth/NVIDIA-Nemotron-3.5-Bolt-E4B-UD-Q4_K_XL.gguf --alias bolt-e4b \
   --jinja --host 127.0.0.1 --port 8081 \
   -c 16384 -fa on -ctk q8_0 -ctv q8_0 \
   --parallel 1 -t 2 -ngl 99 \
-  --temp 0.1 --top-k 50 --repeat-penalty 1.1
+  --cache-reuse 256 --override-tensor 'per_layer.*=CPU' --temp 1.0 --top-p 0.95
 ```
 
 It waits up to 120 s for `/health`. Port 8081 listens on `127.0.0.1` only. The client sends `thinking_budget_tokens` (`[model].thinking_budget`, 128) in `extra_body` and no chat template kwargs. Sampling comes from the profile on the server; the client sends only the sampling values set in `[model]` of the agent config (`temperature`, `top_k`, `top_p`, `repeat_penalty`; [AGENTS.md](AGENTS.md#agent-config)). LFM2.5-2.6B always thinks: its template opens `<think>` and does not read `enable_thinking` ([bench/report_lfm2_5_2_6b.md](bench/report_lfm2_5_2_6b.md)).
@@ -157,15 +157,15 @@ It waits up to 120 s for `/health`. Port 8081 listens on `127.0.0.1` only. The c
 
 ### 0.3.1 LLM profiles
 
-`VOCA_LLM_PROFILE` (default `lfm2.5-2.6b`, set in `.env` or the environment) picks the model llama-server loads. A profile is the bash file `scripts/llm-profiles/<name>.sh` with two variables: `model` (the GGUF path) and `args` (the profile's own flags: sampling from the model card and special flags). The shared flags (`--jinja`, `127.0.0.1:8081`, `-c 16384`, `-fa on`, q8_0 KV cache, `--parallel 1`, `-t 2`, `-ngl 99`) stay in `scripts/llama.sh`, and `--alias` is the profile name, so `GET /v1/models` names the profile. An unknown profile stops `scripts/llama.sh` with «профиль VOCA_LLM_PROFILE=<name> не найден» and nothing starts.
+`VOCA_LLM_PROFILE` (default `bolt-e4b`, set in `.env` or the environment) picks the model llama-server loads. A profile is the bash file `scripts/llm-profiles/<name>.sh` with two variables: `model` (the GGUF path) and `args` (the profile's own flags: sampling from the model card and special flags). The shared flags (`--jinja`, `127.0.0.1:8081`, `-c 16384`, `-fa on`, q8_0 KV cache, `--parallel 1`, `-t 2`, `-ngl 99`) stay in `scripts/llama.sh`, and `--alias` is the profile name, so `GET /v1/models` names the profile. An unknown profile stops `scripts/llama.sh` with «профиль VOCA_LLM_PROFILE=<name> не найден» and nothing starts.
 
-`lfm2.5-2.6b` is the agent's model: the engineer's decision of 2026-11-11 recorded in mypi home `projects/yokeloop/voca/INDEX.md` («Решения инженера по стеку»), measurements in [bench/report_lfm2_5_2_6b.md](bench/report_lfm2_5_2_6b.md); the architecture documents derive:8kki4ynb and derive:eb1id854 are updated separately. `bolt-e4b` (Nemotron, the main model until VOCA-9) and `lfm3-1.7b` remain alternatives and start only with an explicit `VOCA_LLM_PROFILE=<name>`.
+`bolt-e4b` (Nemotron) is the agent's model: the engineer's decision of 2026-11-17 (VOCA-36, the E3 acceptance) recorded in mypi home `projects/yokeloop/voca/INDEX.md` («Решения инженера по стеку»); it revises the decision of 2026-11-11, which made `lfm2.5-2.6b` the agent's model (measurements in [bench/report_lfm2_5_2_6b.md](bench/report_lfm2_5_2_6b.md)); the architecture documents derive:8kki4ynb and derive:eb1id854 are updated separately. `lfm2.5-2.6b` and `lfm3-1.7b` remain alternatives and start only with an explicit `VOCA_LLM_PROFILE=<name>`.
 
 | Profile | Model | Sampling (model card) | Special flags |
 | --- | --- | --- | --- |
-| `bolt-e4b` (alternative) | HF `unsloth/NVIDIA-Nemotron-3.5-Bolt-E4B-GGUF`, revision `b738967d6da3441a7d1c71fcec15e49e32e16ecd`, `NVIDIA-Nemotron-3.5-Bolt-E4B-UD-Q4_K_XL.gguf`, 5.06 GB, sha256 `84ff34f5834b929043f5ae74799e8d562d4056998f6a5923ceb44831e8ad84d6` | `--temp 1.0 --top-p 0.95` | `--cache-reuse 256`, `--override-tensor 'per_layer.*=CPU'` (profile B) |
+| `bolt-e4b` (default, the agent's model) | HF `unsloth/NVIDIA-Nemotron-3.5-Bolt-E4B-GGUF`, revision `b738967d6da3441a7d1c71fcec15e49e32e16ecd`, `NVIDIA-Nemotron-3.5-Bolt-E4B-UD-Q4_K_XL.gguf`, 5.06 GB, sha256 `84ff34f5834b929043f5ae74799e8d562d4056998f6a5923ceb44831e8ad84d6` | `--temp 1.0 --top-p 0.95` | `--cache-reuse 256`, `--override-tensor 'per_layer.*=CPU'` (profile B) |
 | `lfm3-1.7b` | HF `LiquidAI/LFM3-1.7B-GGUF`, revision `cd0c74c575b5c416f3011b5b4c298077f26ca8c2`, `LFM3-1.7B-Q4_K_M.gguf`, 1 099 627 808 bytes, sha256 `3793e1e6e2266919d6e015287221b41100175a98eddaba92e111aed3b05c93c4` | General preset: `--temp 0.1 --top-k 50 --repeat-penalty 1.1` | none: no `--cache-reuse` (unsupported by this context, checkpoints are used), no `per_layer` override; ≈ 1.4 GB VRAM |
-| `lfm2.5-2.6b` (default, the agent's model) | HF `LiquidAI/LFM2.5-2.6B-GGUF`, revision `e7caca5d835a3901a8e0d63e94009429bafafdfc`, `LFM2.5-2.6B-Q4_K_M.gguf`, 1 674 455 040 bytes, sha256 `02a8b7e17487d326e46d68ce0ba24211e1b80a14c4cd0597fa73c1cd697f52ed` | card: `--temp 0.1 --top-k 50 --repeat-penalty 1.1` | none: no `--cache-reuse` (shifted prefixes are not reused; the prefix cache is), no `per_layer` override; always thinks; ≈ 2.0 GB VRAM |
+| `lfm2.5-2.6b` (alternative) | HF `LiquidAI/LFM2.5-2.6B-GGUF`, revision `e7caca5d835a3901a8e0d63e94009429bafafdfc`, `LFM2.5-2.6B-Q4_K_M.gguf`, 1 674 455 040 bytes, sha256 `02a8b7e17487d326e46d68ce0ba24211e1b80a14c4cd0597fa73c1cd697f52ed` | card: `--temp 0.1 --top-k 50 --repeat-penalty 1.1` | none: no `--cache-reuse` (shifted prefixes are not reused; the prefix cache is), no `per_layer` override; always thinks; ≈ 2.0 GB VRAM |
 
 `scripts/fetch.sh` places the models of all profiles in `$VOCA_MODELS_DIR` (`unsloth/`, `LiquidAI/`).
 
@@ -173,12 +173,12 @@ It waits up to 120 s for `/health`. Port 8081 listens on `127.0.0.1` only. The c
 
 ```sh
 scripts/down.sh llm
-VOCA_LLM_PROFILE=bolt-e4b scripts/up.sh llm   # or VOCA_LLM_PROFILE=bolt-e4b in .env
+VOCA_LLM_PROFILE=lfm2.5-2.6b scripts/up.sh llm   # or VOCA_LLM_PROFILE=lfm2.5-2.6b in .env
 curl -fsS http://127.0.0.1:8081/health
-curl -fsS http://127.0.0.1:8081/v1/models       # "id": "bolt-e4b"
+curl -fsS http://127.0.0.1:8081/v1/models          # "id": "lfm2.5-2.6b"
 ```
 
-`scripts/up.sh llm` without `VOCA_LLM_PROFILE` goes back to `lfm2.5-2.6b`.
+`scripts/up.sh llm` without `VOCA_LLM_PROFILE` goes back to `bolt-e4b`.
 
 Exactly one model is loaded at a time: there is one `llm` service on one port, 8081.
 

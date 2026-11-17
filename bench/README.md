@@ -103,9 +103,9 @@ Scripts:
   lives in `voca.app.wiring`, `audio_stand.py` re-exports it), WAV helpers, the
   server health check.
 
-`scripts/up.sh llm` starts the default profile `lfm2.5-2.6b`, the agent's
-model (VOCA-9). The G3/G4 baselines of `report_g3_g4.md` were measured on
-`bolt-e4b`; to repeat them, start `VOCA_LLM_PROFILE=bolt-e4b scripts/up.sh llm`
+`scripts/up.sh llm` starts the default profile `bolt-e4b`, the agent's
+model (VOCA-36); the G3/G4 baselines of `report_g3_g4.md` were measured on it.
+LFM2.5-2.6B starts with `VOCA_LLM_PROFILE=lfm2.5-2.6b scripts/up.sh llm`
 (README 0.3).
 
 The `llm_*` scripts need `scripts/up.sh llm`; their corpora are
