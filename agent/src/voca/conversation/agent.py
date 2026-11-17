@@ -8,10 +8,18 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any
 
-from livekit.agents import FlushSentinel, RunContext, ToolError, function_tool, llm
+from livekit.agents import (
+    FlushSentinel,
+    RunContext,
+    StopResponse,
+    ToolError,
+    function_tool,
+    llm,
+)
 from livekit.agents.voice import Agent, AgentSession, ModelSettings
 
 from voca.clientio.cards import CardState
+from voca.conversation.approval import Choice, match
 from voca.conversation.compaction import (
     SUMMARY_KEY,
     Limits,
@@ -28,7 +36,12 @@ from voca.conversation.context import Item, approx_tokens, split_turns, trim_cha
 from voca.conversation.instructions import InstructionLoader, InstructionSet
 from voca.conversation.summarizer import Failure, Summarizer, Summary
 from voca.delegation.model import GATEWAY_RESTART, TIMEOUT, Task, TaskStatus
-from voca.delegation.ports import Unavailable
+from voca.delegation.ports import (
+    ApprovalNotActive,
+    DelegationError,
+    TaskNotFound,
+    Unavailable,
+)
 from voca.delegation.service import DelegationService
 from voca.speech.markup import scan
 from voca.telemetry.jsonl import JsonlLog
@@ -405,6 +418,30 @@ class VocaAgent(Agent):
         await self.delegation.mark_delivered(key)
         return True
 
+    async def _answer(self, active: Announcement, choice: Choice) -> None:
+        assert self.delegation is not None and self.speaker is not None
+        task = await self.delegation.repo.get(active.key)
+        approved = False
+        try:
+            await self.delegation.approve(active.key, choice, expected=active.approval)
+            text = APPROVAL_REPLIES[choice]
+            release = approved = True
+        except (ApprovalNotActive, TaskNotFound):
+            text = APPROVAL_GONE
+            release = True
+        except DelegationError:
+            text = APPROVAL_FAILED
+            release = False
+        try:
+            self.speaker.say(text, allow_interruptions=True, add_to_chat_ctx=True)
+        except RuntimeError:
+            pass
+        if release and self.active is active:
+            self.active = None
+            self.wake.set()
+        if approved and task is not None:
+            self._task_row(task, approval=choice)
+
     async def stop_delegation(self) -> None:
         self.stopped = True
         tasks = [*self.background]
@@ -551,6 +588,10 @@ class VocaAgent(Agent):
     async def on_user_turn_completed(
         self, turn_ctx: llm.ChatContext, new_message: llm.ChatMessage
     ) -> None:
+        choice = match(new_message.text_content)
+        if choice is not None and self.active is not None:
+            await self._answer(self.active, choice)
+            raise StopResponse()
         changed = False
         loaded = self.loader.load()
         if (loaded.sha256, loaded.source, loaded.error) != (
