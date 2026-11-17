@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import re
 import time
@@ -104,6 +105,15 @@ def delivery_text(task: Task) -> str:
         return f"Готово по поручению: {result}" if result else "Готово по поручению."
     reason = FAILURE_REASONS.get(task.error or "", "Hermes вернул ошибку")
     return f"Поручение не выполнено: {reason}."
+
+
+def result_outcome(task: Task) -> str:
+    if task.status == TaskStatus.SUCCEEDED:
+        outcome = {"status": task.status.value, "result": task.result or ""}
+    else:
+        reason = FAILURE_REASONS.get(task.error or "", "Hermes вернул ошибку")
+        outcome = {"status": task.status.value, "error": reason}
+    return json.dumps(outcome, ensure_ascii=False)
 
 
 def announcement_text(task: Task) -> str:
@@ -415,8 +425,36 @@ class VocaAgent(Agent):
             return False
         await handle.wait_for_playout()
         self.playout[key] = handle.interrupted
+        await self._remember(task, handle.chat_items)
         await self.delegation.mark_delivered(key)
         return True
+
+    async def _remember(self, task: Task, spoken: list[llm.ChatItem]) -> None:
+        call_id = f"delivery_{task.tool_call_id}"
+        ctx = self.chat_ctx.copy()
+        if ctx.get_by_id(call_id) is not None:
+            return
+        at = spoken[0].created_at if spoken else time.time()
+        ctx.insert(
+            [
+                llm.FunctionCall(
+                    id=call_id,
+                    call_id=call_id,
+                    name="delegate",
+                    arguments=json.dumps({"task": task.text}, ensure_ascii=False),
+                    created_at=at - 2e-6,
+                ),
+                llm.FunctionCallOutput(
+                    id=f"{call_id}_output",
+                    call_id=call_id,
+                    name="delegate",
+                    output=result_outcome(task),
+                    is_error=task.status != TaskStatus.SUCCEEDED,
+                    created_at=at - 1e-6,
+                ),
+            ]
+        )
+        await self.update_chat_ctx(ctx)
 
     async def _answer(self, active: Announcement, choice: Choice) -> None:
         assert self.delegation is not None and self.speaker is not None
