@@ -1336,3 +1336,29 @@ def test_decision_approve_more(tmp_path: Path) -> None:
         await stand.agent.stop_delegation()
 
     asyncio.run(main())
+
+
+def test_decision_stale_after_new_request(tmp_path: Path) -> None:
+    async def main() -> None:
+        decider = FakeDecider({"Повтори запрос": decided("repeat")})
+        stand = Stand(tmp_path, decider=decider)
+        session = FakeSession()
+        task = waiting("a")
+        await activate(stand, session, task)
+        second = {**APPROVAL, "request_id": "p2"}
+
+        async def replace_request() -> None:
+            stand.agent.on_task_change(stand.put(replace(task, approval=second)))
+
+        decider.during = replace_request
+        _, message = await turn(stand.agent, "Повтори запрос")
+        assert message.text_content == "Повтори запрос"
+        await until(lambda: len(session.calls) == 2)
+        await until(lambda: stand.agent.active is not None)
+        assert stand.agent.active is not None
+        assert stand.agent.active.approval == second
+        await settle()
+        assert len(session.calls) == 2
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())

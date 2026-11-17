@@ -954,6 +954,8 @@ class VocaAgent(Agent):
             )
         if self.answered.get(active.key) == active.approval:
             return False
+        if self.active is not active and self.barged is not active:
+            return False
         if isinstance(decided, DecisionFailure):
             parsed = parse(text, self.vocabulary)
             if not isinstance(parsed, Phrase):
@@ -987,7 +989,9 @@ class VocaAgent(Agent):
         if self.barged is item:
             self.barged = None
         self.announcements = deque(
-            other for other in self.announcements if other.key != item.key
+            other
+            for other in self.announcements
+            if other.key != item.key or other.approval != item.approval
         )
         self.announcements.appendleft(item)
         self.wake.set()
