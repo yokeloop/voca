@@ -18,7 +18,7 @@ from pydantic_settings import (
     TomlConfigSettingsSource,
 )
 
-from voca.conversation.approval import Vocabulary
+from voca.conversation.approval import Vocabulary, distance, normalize
 
 WORD = re.compile(r"^\w+$")
 DAILY_AT = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
@@ -85,6 +85,27 @@ class ApprovalConfig(BaseModel):
             if not WORD.match(word):
                 raise ValueError(f"ключевое слово — одно слово: {word!r}")
         return value
+
+    @model_validator(mode="after")
+    def distinct_words(self) -> Self:
+        for name in (
+            "confirm",
+            "deny",
+            "refusal_stems",
+            "refusal_words",
+            "confirm_stems",
+            "negations",
+        ):
+            for word in getattr(self, name):
+                if not re.findall(r"\w+", normalize(word)):
+                    raise ValueError(f"{name}: пустое слово {word!r}")
+        for confirm in self.confirm:
+            for deny in self.deny:
+                if distance(normalize(confirm), normalize(deny)) <= self.near:
+                    raise ValueError(
+                        f"confirm {confirm!r} и deny {deny!r} ближе near={self.near}"
+                    )
+        return self
 
     def vocabulary(self) -> Vocabulary:
         return Vocabulary(

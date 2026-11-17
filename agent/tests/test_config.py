@@ -170,3 +170,40 @@ def test_approval_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
         write_config(tmp_path, monkeypatch, text)
         with pytest.raises(pydantic.ValidationError):
             Settings()
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        '[approval]\nconfirm = ["Подтверждаю"]\ndeny = ["подтверждаю"]\n',
+        '[approval]\nconfirm = ["Подтверждаю"]\ndeny = ["Подтверждаем"]\n',
+        '[approval]\nrefusal_stems = ["отклон", "  "]\n',
+        '[approval]\nrefusal_words = ["!"]\n',
+        '[approval]\nconfirm_stems = [""]\n',
+        '[approval]\nnegations = ["-"]\n',
+    ],
+)
+def test_approval_settings_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, text: str
+) -> None:
+    write_config(tmp_path, monkeypatch, text)
+    with pytest.raises(pydantic.ValidationError):
+        Settings()
+
+
+def test_approval_words_far_apart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write_config(
+        tmp_path,
+        monkeypatch,
+        '[approval]\nconfirm = ["Да"]\ndeny = ["Дай"]\nnear = 1\n',
+    )
+    with pytest.raises(pydantic.ValidationError):
+        Settings()
+    write_config(
+        tmp_path,
+        monkeypatch,
+        '[approval]\nconfirm = ["Принимаю"]\ndeny = ["Запрещаю"]\nnear = 2\n',
+    )
+    assert Settings().approval.vocabulary().deny == ("Запрещаю",)

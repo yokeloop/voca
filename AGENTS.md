@@ -132,7 +132,9 @@ a section) are no longer read.
   `refusal_words`, `confirm_stems` and `negations` (the guard of
   `deny_approval`), `near` (edits of a near
   miss) and `echo_words` (words in a row that make an echo). No word of the
-  voice protocol is in the code.
+  voice protocol is in the code. Every entry must hold a word, and each
+  `confirm` word must be more than `near` edits from each `deny` word;
+  otherwise the config is refused.
 
 `[session].history_on_join` is how many archive rows a joining client gets
 in `voca.history` («Client channel»); `[session].path` is the session store
