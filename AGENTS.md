@@ -12,11 +12,11 @@ Hermes. This file is the working contract for agents and contributors.
   (prewarm, entrypoint, `WorkerOptions`), `app/wiring.py` (the plugins,
   `PreparedTTS`, `build_session`, `SpeechLanguageClient`), `conversation/`
   (`VocaAgent`: the tool-call markup filter in `llm_node`, the `delegate`
-  tool and the delivery of its results, instructions, accepting a finished
+  tool and the delivery of its results, approval announcements and the approval phrase checked first in `on_user_turn_completed`, instructions, accepting a finished
   summary and the emergency context trim in `on_user_turn_completed`, the threshold trigger `maybe_compact`,
   the idle and daily check `check_due`, failures spoken aloud;
   `instructions.py`: `InstructionLoader` with the last valid set; `context.py`: `trim_chat_ctx` — the emergency path at
-  `hard_limit`; `compaction.py`: the compaction plan and the summariser
+  `hard_limit`; `approval.py`: the approval phrase match; `compaction.py`: the compaction plan and the summariser
   prompt; `summarizer.py`: the call to `[compression.model]`), `clientio/`
   (the `voca.cards` and `voca.history` channels, the `tasks` list on join), `telemetry/` (`.local/events.jsonl`), `session/`
   (`SessionStore`: the session snapshot and the archive in one SQLite file,
@@ -29,7 +29,7 @@ Hermes. This file is the working contract for agents and contributors.
   `agent/src/voca/speech/` prepares text before TTS: the tool-call markup
   filter, LaTeX and tables, numbers as words, stress and the first fragment.
   `markup`, `numbers`, `prepare`, `conversation/context`,
-  `conversation/compaction`, `conversation/instructions`, `session/model`,
+  `conversation/compaction`, `conversation/approval`, `conversation/instructions`, `session/model`,
   `delegation/model`, `delegation/ports` and `delegation/service` are pure
   modules, which
   `tests/test_import_boundaries.py` checks.
