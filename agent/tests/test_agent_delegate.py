@@ -796,3 +796,23 @@ def test_delegate_speaks_task_text(tmp_path: Path) -> None:
         await stand.agent.stop_delegation()
 
     asyncio.run(main())
+
+
+def test_delegate_asks_model_when_not_spoken(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path)
+        stand.backend.created = ["run_1", "run_2"]
+        stand.backend.runs["run_1"] = [RunState("run_1", TaskStatus.RUNNING)]
+        stand.backend.runs["run_2"] = [RunState("run_2", TaskStatus.RUNNING)]
+        reply = await stand.agent.delegate(ctx("call-1"), "сделай")
+        assert reply.reply_required is True
+        stand.start(FakeSession(closing=True))
+        reply = await stand.agent.delegate(ctx("call-2"), "сделай")
+        assert reply.reply_required is True
+        await stand.agent.stop_delegation()
+
+    with caplog.at_level("WARNING", logger="voca.tasks"):
+        asyncio.run(main())
+    assert sum("not spoken" in record.message for record in caplog.records) == 2

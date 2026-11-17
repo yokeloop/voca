@@ -999,16 +999,22 @@ class VocaAgent(Agent):
             self._spawn(self.delegation.watch(key))
         else:
             self.enqueue(found)
+        spoken = False
         if self.speaker is not None:
             try:
                 self.speaker.say(
                     submitted_text(task), allow_interruptions=True, add_to_chat_ctx=True
                 )
+                spoken = True
             except RuntimeError:
                 pass
+        if not spoken:
+            logging.getLogger("voca.tasks").warning(
+                "delegation acknowledgement not spoken: %s", key
+            )
         output = {"id": short_id(key), "event": "submitted"}
         return llm.ToolResult(
-            json.dumps(output, ensure_ascii=False), reply_required=False
+            json.dumps(output, ensure_ascii=False), reply_required=not spoken
         )
 
     @function_tool
