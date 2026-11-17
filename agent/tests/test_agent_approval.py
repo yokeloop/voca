@@ -1,7 +1,7 @@
 import asyncio
 import json
 import shutil
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -17,6 +17,7 @@ from voca.conversation.approval import Vocabulary, unclear_text
 from voca.conversation.compaction import Limits
 from voca.conversation.instructions import InstructionLoader
 from voca.conversation.summarizer import Failure, Summarizer, Summary
+from voca.conversation.verdict import Decision, DecisionFailure, Situation, Verdict
 from voca.delegation.model import Task, TaskStatus
 from voca.delegation.ports import ApprovalNotActive, OutcomeUnknown, RunState
 from voca.delegation.service import DelegationService
@@ -239,6 +240,31 @@ async def settle() -> None:
         await asyncio.sleep(0)
 
 
+def decided(
+    verdict: Verdict, confidence: float = 0.9, extra: bool = False, picked: str = ""
+) -> Decision:
+    return Decision(verdict, picked or verdict, confidence, extra, 12)
+
+
+class FakeDecider:
+    def __init__(
+        self,
+        script: dict[str, Decision] | None = None,
+        failure: str = "disabled",
+    ) -> None:
+        self.script = script or {}
+        self.failure = failure
+        self.seen: list[Situation] = []
+        self.during: Callable[[], Awaitable[None]] | None = None
+
+    async def decide(self, situation: Situation) -> Decision | DecisionFailure:
+        self.seen.append(situation)
+        if self.during is not None:
+            await self.during()
+        found = self.script.get(situation.phrase)
+        return found if found is not None else DecisionFailure(self.failure, 0)
+
+
 class Stand:
     def __init__(
         self,
@@ -247,7 +273,9 @@ class Stand:
         limits: Limits | None = None,
         summarizer: Summarizer | None = None,
         vocabulary: Vocabulary = VOCABULARY,
+        decider: FakeDecider | None = None,
     ) -> None:
+        self.decider = decider or FakeDecider()
         directory = tmp_path / "instructions"
         shutil.copytree(EXAMPLE, directory)
         loader = InstructionLoader(directory)
@@ -260,6 +288,7 @@ class Stand:
         )
         self.agent = VocaAgent(
             vocabulary=vocabulary,
+            decider=self.decider,
             loader=loader,
             instructions=instructions,
             log=JsonlLog(self.events, session="t"),
@@ -509,10 +538,10 @@ def test_facts_survive_restore(tmp_path: Path) -> None:
             for item in ctx.items
             if item.type == "function_call"
         ]
-        assert calls == [("list_tasks", {}), ("deny_approval", {"id": "a"})]
+        assert calls == [("list_tasks", {}), ("list_tasks", {})]
         assert [(name, output["event"]) for name, output in facts(ctx)] == [
             ("list_tasks", "approval_requested"),
-            ("deny_approval", "denied"),
+            ("list_tasks", "denied"),
         ]
 
     asyncio.run(main())
@@ -704,7 +733,8 @@ def test_phrase_without_active_request_goes_on(tmp_path: Path) -> None:
 
 def test_other_reply_keeps_active(tmp_path: Path) -> None:
     async def main() -> None:
-        stand = Stand(tmp_path)
+        decider = FakeDecider({"да, давай": decided("unrelated")})
+        stand = Stand(tmp_path, decider=decider)
         session = FakeSession()
         await activate(stand, session, waiting("a"))
         await answer(stand.agent, "да, давай")
@@ -731,17 +761,17 @@ def test_conflict_says_not_active(tmp_path: Path) -> None:
     asyncio.run(main())
 
 
-def test_changed_task_says_not_active(tmp_path: Path) -> None:
+def test_changed_task_goes_on(tmp_path: Path) -> None:
     async def main() -> None:
         stand = Stand(tmp_path)
         session = FakeSession()
         task = waiting("a")
         await activate(stand, session, task)
         stand.put(replace(task, status=TaskStatus.RUNNING))
-        await stopped(stand.agent, "Подтверждаю")
+        await answer(stand.agent, "Подтверждаю")
         assert stand.backend.approved == []
-        assert spoken(session)[-1] == "Запрос подтверждения уже не активен"
-        assert stand.agent.active is None
+        assert stand.decider.seen == []
+        assert len(session.calls) == 1
         assert approvals(stand, "a") == []
         await stand.agent.stop_delegation()
 
@@ -813,7 +843,7 @@ def test_deny_with_tail(tmp_path: Path) -> None:
         message = said("Отклоняю, отмени вообще задачу.")
         await stand.agent.on_user_turn_completed(turn_ctx, message)
         assert stand.backend.approved == [("run_a", "deny", APPROVAL)]
-        assert ("deny_approval", {"id": "a", "event": "denied", "by": "voice"}) in (
+        assert ("list_tasks", {"id": "a", "event": "denied", "by": "voice"}) in (
             facts(turn_ctx)
         )
         assert message.text_content == "отмени вообще задачу"
@@ -883,7 +913,8 @@ def test_echo_window_unclear(tmp_path: Path) -> None:
 
 def test_other_phrase_with_active_goes_to_llm(tmp_path: Path) -> None:
     async def main() -> None:
-        stand = Stand(tmp_path)
+        decider = FakeDecider({"А что он удалит?": decided("unrelated", extra=True)})
+        stand = Stand(tmp_path, decider=decider)
         session = FakeSession()
         await activate(stand, session, waiting("a"))
         active = stand.agent.active
@@ -898,7 +929,8 @@ def test_other_phrase_with_active_goes_to_llm(tmp_path: Path) -> None:
 
 def test_queue_waits_for_answer(tmp_path: Path) -> None:
     async def main() -> None:
-        stand = Stand(tmp_path)
+        decider = FakeDecider({"А что он удалит?": decided("unrelated", extra=True)})
+        stand = Stand(tmp_path, decider=decider)
         session = FakeSession()
         await activate(stand, session, waiting("a"), waiting("b", created_at=2.0))
         await settle()
@@ -1005,8 +1037,10 @@ def test_barge_in_filler_not_counted(tmp_path: Path) -> None:
         session = FakeSession(interrupts=[True, True])
         await activate(stand, session, waiting("a"))
         agent = stand.agent
-        await heard(agent, "Ммм, подтверждаю, хорошо. Давай.", agent.heard_at - 1)
+        with pytest.raises(StopResponse):
+            await heard(agent, "Ммм, подтверждаю, хорошо. Давай.", agent.heard_at - 1)
         assert stand.backend.approved == []
+        assert spoken(session)[-1] == unclear_text(VOCABULARY)
         assert agent.active is not None
         await agent.stop_delegation()
 
@@ -1023,8 +1057,9 @@ def test_configured_keywords(tmp_path: Path) -> None:
         assert spoken(session)[0].endswith(
             "Подтвердите на экране или скажите „Принимаю“ или „Запрещаю“."
         )
-        await answer(stand.agent, "Подтверждаю")
+        await stopped(stand.agent, "Подтверждаю")
         assert stand.backend.approved == []
+        assert spoken(session)[-1] == unclear_text(custom)
         await stopped(stand.agent, "Примаю")
         assert spoken(session)[-1] == unclear_text(custom)
         await stopped(stand.agent, "Принимаю.")
@@ -1045,6 +1080,241 @@ def test_echo_checked_only_near_the_announcement(tmp_path: Path) -> None:
         assert stand.backend.approved == [("run_a", "once", APPROVAL)]
         assert message.text_content == "удали каталог /tmp/x в файл"
         assert "a" not in agent.announced
+        await agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+PHRASE_OK = "Ну окей, давай подтвердим его."
+
+
+async def turn(agent: VocaAgent, text: str) -> tuple[llm.ChatContext, llm.ChatMessage]:
+    turn_ctx = agent.chat_ctx.copy()
+    message = said(text)
+    await agent.on_user_turn_completed(turn_ctx, message)
+    return turn_ctx, message
+
+
+def test_decision_approve(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path, decider=FakeDecider({PHRASE_OK: decided("approve")}))
+        session = FakeSession()
+        await activate(stand, session, waiting("a"))
+        await stopped(stand.agent, PHRASE_OK)
+        assert stand.backend.approved == [("run_a", "once", APPROVAL)]
+        assert spoken(session)[-1] == "Подтверждено"
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_decision_deny_with_extra(tmp_path: Path) -> None:
+    text = "Отклоняю, отмени вообще задачу"
+
+    async def main() -> None:
+        decider = FakeDecider({text: decided("deny", extra=True)})
+        stand = Stand(tmp_path, decider=decider)
+        session = FakeSession()
+        await activate(stand, session, waiting("a"))
+        turn_ctx, message = await turn(stand.agent, text)
+        assert stand.backend.approved == [("run_a", "deny", APPROVAL)]
+        assert "Отклонено" not in spoken(session)
+        assert message.text_content == text
+        assert ("list_tasks", {"id": "a", "event": "denied", "by": "voice"}) in (
+            facts(turn_ctx)
+        )
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_decision_repeat(tmp_path: Path) -> None:
+    async def main() -> None:
+        decider = FakeDecider({"Повтори запрос": decided("repeat")})
+        stand = Stand(tmp_path, decider=decider)
+        session = FakeSession()
+        await activate(stand, session, waiting("a"))
+        await stopped(stand.agent, "Повтори запрос")
+        await until(lambda: len(session.calls) == 2)
+        assert spoken(session) == [announcement_text(waiting("a"), VOCABULARY)] * 2
+        assert stand.backend.approved == []
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+@pytest.mark.parametrize(
+    "decision",
+    [decided("unclear"), decided("unclear", confidence=0.4, picked="approve")],
+    ids=["unclear", "low_confidence"],
+)
+def test_decision_unclear(tmp_path: Path, decision: Decision) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path, decider=FakeDecider({PHRASE_OK: decision}))
+        session = FakeSession()
+        await activate(stand, session, waiting("a"))
+        active = stand.agent.active
+        await stopped(stand.agent, PHRASE_OK)
+        assert spoken(session)[-1] == unclear_text(VOCABULARY)
+        assert stand.backend.approved == []
+        assert stand.agent.active is active
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_decision_low_confidence(tmp_path: Path) -> None:
+    async def main() -> None:
+        decision = decided("unclear", confidence=0.4, picked="approve")
+        stand = Stand(tmp_path, decider=FakeDecider({PHRASE_OK: decision}))
+        session = FakeSession()
+        await activate(stand, session, waiting("a"))
+        await stopped(stand.agent, PHRASE_OK)
+        assert stand.backend.approved == []
+        rows = [
+            json.loads(line)
+            for line in stand.events.read_text(encoding="utf-8").splitlines()
+        ]
+        [row] = [row for row in rows if row["kind"] == "approval_decision"]
+        assert (row["verdict"], row["picked"]) == ("unclear", "approve")
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_decision_unrelated_goes_to_llm(tmp_path: Path) -> None:
+    text = "А что он хочет удалить?"
+
+    async def main() -> None:
+        decider = FakeDecider({text: decided("unrelated", extra=True)})
+        stand = Stand(tmp_path, decider=decider)
+        session = FakeSession()
+        await activate(stand, session, waiting("a"))
+        _, message = await turn(stand.agent, text)
+        assert message.text_content == text
+        assert stand.backend.approved == []
+        assert stand.agent.active is not None
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_decision_situation(tmp_path: Path) -> None:
+    async def main() -> None:
+        decider = FakeDecider({PHRASE_OK: decided("unrelated")})
+        stand = Stand(tmp_path, decider=decider)
+        session = FakeSession()
+        await activate(stand, session, waiting("a"))
+        await answer(stand.agent, PHRASE_OK)
+        [situation] = decider.seen
+        assert situation == Situation(
+            task="Удали каталог /tmp/x",
+            request="удаление в корневом каталоге",
+            command="rm -r /tmp/x",
+            announcement=announcement_text(waiting("a"), VOCABULARY),
+            phrase=PHRASE_OK,
+        )
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_decision_fallback_keyword(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path, decider=FakeDecider(failure="timeout"))
+        session = FakeSession()
+        await activate(stand, session, waiting("a"))
+        await stopped(stand.agent, "Подтверждаю")
+        assert stand.backend.approved == [("run_a", "once", APPROVAL)]
+        assert spoken(session)[-1] == "Подтверждено"
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_decision_fallback_other_unclear(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path, decider=FakeDecider(failure="timeout"))
+        session = FakeSession()
+        await activate(stand, session, waiting("a"))
+        await stopped(stand.agent, "да, давай")
+        assert spoken(session)[-1] == unclear_text(VOCABULARY)
+        assert stand.backend.approved == []
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_decision_after_button(tmp_path: Path) -> None:
+    async def main() -> None:
+        decider = FakeDecider({PHRASE_OK: decided("approve")})
+        stand = Stand(tmp_path, decider=decider)
+        session = FakeSession()
+        await activate(stand, session, waiting("a"))
+
+        async def press() -> None:
+            await stand.agent.approve_from_page("a", "p1", "once")
+
+        decider.during = press
+        _, message = await turn(stand.agent, PHRASE_OK)
+        assert message.text_content == PHRASE_OK
+        assert stand.backend.approved == [("run_a", "once", APPROVAL)]
+        assert "Подтверждено" not in spoken(session)
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_decision_logged(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path, decider=FakeDecider({PHRASE_OK: decided("approve")}))
+        session = FakeSession()
+        await activate(stand, session, waiting("a"))
+        await stopped(stand.agent, PHRASE_OK)
+        rows = [
+            json.loads(line)
+            for line in stand.events.read_text(encoding="utf-8").splitlines()
+        ]
+        found = [row for row in rows if row["kind"] == "approval_decision"]
+        assert found[0]["tool_call_id"] == "a"
+        assert found[0]["phrase"] == PHRASE_OK
+        assert found[0]["verdict"] == "approve"
+        assert found[0]["confidence"] == 0.9
+        assert found[0]["extra"] is False
+        assert found[0]["ms"] == 12
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_decision_fallback_logged(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path, decider=FakeDecider(failure="connection"))
+        session = FakeSession()
+        await activate(stand, session, waiting("a"))
+        await stopped(stand.agent, "Подтверждаю")
+        rows = [
+            json.loads(line)
+            for line in stand.events.read_text(encoding="utf-8").splitlines()
+        ]
+        [row] = [row for row in rows if row["kind"] == "approval_decision"]
+        assert row["fallback"] == "connection"
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_echo_rejected_before_decision(tmp_path: Path) -> None:
+    async def main() -> None:
+        decider = FakeDecider({PHRASE_OK: decided("approve")})
+        stand = Stand(tmp_path, decider=decider)
+        session = FakeSession()
+        await activate(stand, session, waiting("a"))
+        agent = stand.agent
+        with pytest.raises(StopResponse):
+            await heard(agent, PHRASE_OK, agent.heard_at - 1)
+        assert decider.seen == []
+        assert spoken(session)[-1] == unclear_text(VOCABULARY)
         await agent.stop_delegation()
 
     asyncio.run(main())

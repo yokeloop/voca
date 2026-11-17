@@ -23,14 +23,11 @@ from livekit.agents.voice import Agent, AgentSession, ModelSettings, SpeechHandl
 from voca.clientio.cards import CardState
 from voca.conversation.approval import (
     Choice,
-    NearMiss,
     Phrase,
     Vocabulary,
     approval_prompt,
     echoes,
-    not_denied_reason,
     parse,
-    refuses,
     unclear_text,
 )
 from voca.conversation.compaction import (
@@ -49,7 +46,7 @@ from voca.conversation.context import Item, approx_tokens, split_turns, trim_cha
 from voca.conversation.descriptions import describe
 from voca.conversation.instructions import InstructionLoader, InstructionSet
 from voca.conversation.summarizer import Failure, Summarizer, Summary
-from voca.conversation.verdict import Decider
+from voca.conversation.verdict import Decider, Decision, DecisionFailure, Situation
 from voca.delegation.model import CANCELLED, GATEWAY_RESTART, TIMEOUT, Task, TaskStatus
 from voca.delegation.ports import (
     ApprovalNotActive,
@@ -84,7 +81,6 @@ TASK_CLOSED = "Поручение уже завершено"
 NOT_STEERABLE = "Поручение сейчас не принимает уточнений"
 NO_REQUEST = "Сейчас нет запроса подтверждения"
 ACTION_FAILED = "Не удалось связаться с Hermes"
-DENIED_NOTE = "Отклонена только команда; поручение продолжает выполняться"
 APPROVAL_LIMIT = 60
 APPROVAL_REPLIES = {"once": "Подтверждено", "deny": "Отклонено"}
 APPROVAL_GONE = "Запрос подтверждения уже не активен"
@@ -287,7 +283,6 @@ class VocaAgent(Agent):
         self.heard_at = 0.0
         self.barged: Announcement | None = None
         self.announced: dict[str, str] = {}
-        self.last_user_text = ""
         self.answered: dict[str, dict[str, Any]] = {}
 
     def set_present(self, present: bool) -> None:
@@ -611,16 +606,10 @@ class VocaAgent(Agent):
             text = APPROVAL_FAILED
             release = False
         if approved:
-            if choice == "once":
-                await self._fact(
-                    "list_tasks", {}, {"id": id, "event": "approved", "by": "voice"}
-                )
-            else:
-                await self._fact(
-                    "deny_approval",
-                    {"id": id},
-                    {"id": id, "event": "denied", "by": "voice"},
-                )
+            event = "approved" if choice == "once" else "denied"
+            await self._fact(
+                "list_tasks", {}, {"id": id, "event": event, "by": "voice"}
+            )
         else:
             await self._fact(
                 "list_tasks",
@@ -912,38 +901,105 @@ class VocaAgent(Agent):
             self.pending.task.cancel()
         self.pending = None
 
-    async def on_user_turn_completed(
-        self, turn_ctx: llm.ChatContext, new_message: llm.ChatMessage
-    ) -> None:
-        self.last_user_text = new_message.text_content or ""
-        parsed = parse(new_message.text_content, self.vocabulary)
-        changed = False
-        active = self.active
-        if active is None and isinstance(parsed, Phrase):
-            active = self.barged
-        if parsed is not None and active is not None:
-            started = new_message.metrics.get("started_speaking_at")
-            early = started is not None and started < self.heard_at
-            barged = self.barged is active
-            if (
-                isinstance(parsed, NearMiss)
-                or (early and not barged)
-                or (
-                    (early or barged)
-                    and echoes(
-                        new_message.text_content,
-                        self.announced.get(active.key, ""),
-                        self.vocabulary,
-                    )
-                )
-            ):
+    async def _on_request(self, active: Announcement, message: llm.ChatMessage) -> bool:
+        assert self.delegation is not None
+        text = message.text_content or ""
+        started = message.metrics.get("started_speaking_at")
+        early = started is not None and started < self.heard_at
+        barged = self.barged is active
+        if (early and not barged) or (
+            (early or barged)
+            and echoes(text, self.announced.get(active.key, ""), self.vocabulary)
+        ):
+            await self._unclear(active)
+            raise StopResponse()
+        task = await self.delegation.repo.get(active.key)
+        if (
+            task is None
+            or task.status != TaskStatus.WAITING_APPROVAL
+            or task.approval != active.approval
+        ):
+            return False
+        approval = task.approval or {}
+        situation = Situation(
+            task=clip(task.text, APPROVAL_LIMIT),
+            request=describe(approval.get("description")),
+            command=approval.get("command"),
+            announcement=self.announced.get(active.key)
+            or announcement_text(task, self.vocabulary),
+            phrase=text,
+        )
+        decided: Decision | DecisionFailure = (
+            await self.decider.decide(situation)
+            if self.decider is not None
+            else DecisionFailure("disabled", 0)
+        )
+        if isinstance(decided, Decision):
+            self.log.write(
+                "approval_decision",
+                tool_call_id=active.key,
+                phrase=text,
+                verdict=decided.verdict,
+                picked=decided.picked,
+                confidence=decided.confidence,
+                extra=decided.extra,
+                ms=decided.ms,
+            )
+        else:
+            self.log.write(
+                "approval_decision",
+                tool_call_id=active.key,
+                phrase=text,
+                fallback=decided.reason,
+                ms=decided.ms,
+            )
+        if self.answered.get(active.key) == active.approval:
+            return False
+        if isinstance(decided, DecisionFailure):
+            parsed = parse(text, self.vocabulary)
+            if not isinstance(parsed, Phrase):
                 await self._unclear(active)
                 raise StopResponse()
             await self._answer(active, parsed.choice, speak=not parsed.tail)
             if not parsed.tail:
                 raise StopResponse()
-            new_message.content = [parsed.tail]
-            changed = True
+            message.content = [parsed.tail]
+            return True
+        if decided.verdict in ("approve", "deny"):
+            choice: Choice = "once" if decided.verdict == "approve" else "deny"
+            await self._answer(active, choice, speak=not decided.extra)
+            if not decided.extra:
+                raise StopResponse()
+            return True
+        if decided.verdict == "repeat":
+            self._repeat(active)
+            if not decided.extra:
+                raise StopResponse()
+            return False
+        if decided.verdict == "unclear":
+            await self._unclear(active)
+            raise StopResponse()
+        return False
+
+    def _repeat(self, item: Announcement) -> None:
+        item.attempts = 0
+        if self.active is item:
+            self.active = None
+        if self.barged is item:
+            self.barged = None
+        self.announcements = deque(
+            other for other in self.announcements if other.key != item.key
+        )
+        self.announcements.appendleft(item)
+        self.wake.set()
+
+    async def on_user_turn_completed(
+        self, turn_ctx: llm.ChatContext, new_message: llm.ChatMessage
+    ) -> None:
+        changed = False
+        active = self.active or self.barged
+        if active is not None and self.delegation is not None:
+            changed = await self._on_request(active, new_message)
         loaded = self.loader.load()
         if (loaded.sha256, loaded.source, loaded.error) != (
             self.current.sha256,
@@ -1076,53 +1132,11 @@ class VocaAgent(Agent):
         return json.dumps(output, ensure_ascii=False)
 
     @function_tool
-    async def deny_approval(self, id: str | None = None) -> str:
-        """Отклонить запрос подтверждения Hermes, только когда пользователь сам отказывается. Отклоняется только команда, поручение продолжает выполняться. Подтвердить запрос может только пользователь; на просьбу подтвердить вызывай repeat_approval."""
-        if self.delegation is None:
-            raise ToolError(DELEGATE_UNAVAILABLE)
-        if id is None and self.active is not None:
-            found = await self.delegation.repo.get(self.active.key)
-            if found is None:
-                raise ToolError(APPROVAL_GONE)
-            task = found
-        else:
-            task = await self._pick_task(
-                id,
-                lambda task: (
-                    task.status == TaskStatus.WAITING_APPROVAL
-                    and task.approval is not None
-                ),
-                NO_REQUEST,
-            )
-        key = task.tool_call_id
-        if not refuses(self.last_user_text, self.vocabulary):
-            output = {
-                "id": short_id(key),
-                "event": "not_denied",
-                "reason": not_denied_reason(self.vocabulary),
-            }
-            return json.dumps(output, ensure_ascii=False)
-        try:
-            await self.delegation.approve(key, "deny", expected=task.approval)
-        except (ApprovalNotActive, TaskNotFound):
-            raise ToolError(APPROVAL_GONE) from None
-        except DelegationError:
-            raise ToolError(APPROVAL_FAILED) from None
-        self._settled(key, task.approval or {})
-        self._task_row(task, approval="deny", by="model")
-        output = {"id": short_id(key), "event": "denied", "note": DENIED_NOTE}
-        return json.dumps(output, ensure_ascii=False)
-
-    @function_tool
     async def repeat_approval(self) -> None:
         """Повторить вслух активный запрос подтверждения Hermes."""
         if self.active is None:
             raise ToolError(NO_REQUEST)
-        item = self.active
-        item.attempts = 0
-        self.active = None
-        self.announcements.appendleft(item)
-        self.wake.set()
+        self._repeat(self.active)
 
     async def llm_node(
         self,
