@@ -331,6 +331,10 @@ async def stopped(agent: VocaAgent, text: str) -> None:
         await answer(agent, text)
 
 
+def summaries(agent: VocaAgent) -> int:
+    return sum(1 for item in agent.chat_ctx.items if item.extra.get("voca_summary"))
+
+
 def approvals(stand: Stand, key: str) -> list[object]:
     return [row["approval"] for row in stand.rows(key) if "approval" in row]
 
@@ -604,5 +608,27 @@ def test_network_failure_keeps_active(tmp_path: Path) -> None:
         assert stand.agent.active is active
         assert approvals(stand, "a") == []
         await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_pending_summary_waits_for_next_turn(tmp_path: Path) -> None:
+    async def main() -> None:
+        fake = FakeSummarizer(Summary("## О чём говорили\nфакт 1", 50, 1200), hold=True)
+        stand = Stand(tmp_path, limits=LIMITS, summarizer=fake)
+        agent = stand.agent
+        await agent.update_chat_ctx(history(6))
+        agent.maybe_compact()
+        assert agent.pending is not None
+        await activate(stand, FakeSession(agent=agent), waiting("a"))
+        fake.gate.set()
+        await agent.pending.task
+        await stopped(agent, "Подтверждаю")
+        assert agent.pending is not None
+        assert summaries(agent) == 0
+        await answer(agent, "Привет")
+        assert agent.pending is None
+        assert summaries(agent) == 1
+        await agent.stop_delegation()
 
     asyncio.run(main())
