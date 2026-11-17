@@ -1,4 +1,5 @@
 import asyncio
+import json
 from collections.abc import AsyncIterable, AsyncIterator
 from pathlib import Path
 from types import SimpleNamespace
@@ -139,6 +140,6 @@ def test_delegate_tool_accepts(tmp_path: Path) -> None:
         assert service.keys == ["call-1"]
         assert len(agent.background) == 1
         await agent.stop_delegation()
-        return reply
+        return str(reply.output)
 
-    assert asyncio.run(main()) == "Поручение принято, сообщу, когда будет результат"
+    assert json.loads(asyncio.run(main())) == {"id": "call-1", "event": "submitted"}

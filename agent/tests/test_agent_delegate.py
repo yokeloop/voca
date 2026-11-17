@@ -326,14 +326,17 @@ def test_delegate_returns_at_once(tmp_path: Path) -> None:
         stand.start(session)
         stand.open()
         reply = await asyncio.wait_for(stand.agent.delegate(ctx("call-1"), "сделай"), 1)
-        assert reply == "Поручение принято, сообщу, когда будет результат"
+        assert json.loads(reply.output) == {"id": "call-1", "event": "submitted"}
+        assert reply.reply_required is False
         assert stand.repo.tasks["call-1"].status == TaskStatus.RUNNING
         assert stand.backend.posts == [("call-1", "сделай")]
         rows = stand.rows("call-1")
         assert [row["status"] for row in rows] == ["queued", "running"]
         assert {row["delivered"] for row in rows} == {False}
         await settle()
-        assert session.calls == []
+        assert session.calls == [
+            ("Поручил Hermes: «сделай». Сообщу результат.", True, True)
+        ]
         await stand.agent.stop_delegation()
 
     asyncio.run(main())
@@ -381,13 +384,13 @@ def test_delivery_waits_for_presence_and_history(tmp_path: Path) -> None:
         await stand.agent.delegate(ctx("call-1"), "сделай")
         await until(lambda: stand.repo.tasks["call-1"].status == TaskStatus.SUCCEEDED)
         await settle()
-        assert session.calls == []
+        assert len(session.calls) == 1
         stand.agent.set_present(True)
         await settle()
-        assert session.calls == []
+        assert len(session.calls) == 1
         stand.history.set()
-        await until(lambda: len(session.calls) == 1)
-        assert session.calls == [("Готово по поручению: Ответ.", True, True)]
+        await until(lambda: len(session.calls) == 2)
+        assert session.calls[1] == ("Готово по поручению: Ответ.", True, True)
         await stand.agent.stop_delegation()
 
     asyncio.run(main())
@@ -770,3 +773,22 @@ def test_delivery_text() -> None:
         assert "boom" not in spoken
     assert delivery_text(done(None)) == "Готово по поручению."
     assert delivery_text(done("")) == "Готово по поручению."
+
+
+def test_delegate_speaks_task_text(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path)
+        stand.backend.created = ["run_1"]
+        stand.backend.runs["run_1"] = [RunState("run_1", TaskStatus.RUNNING)]
+        session = FakeSession(agent=stand.agent)
+        stand.start(session)
+        stand.open()
+        text = "Найди расписание автобусов из Лединци в Нови Сад"
+        reply = await stand.agent.delegate(ctx("call-1"), text)
+        assert reply.reply_required is False
+        ack = f"Поручил Hermes: «{text}». Сообщу результат."
+        assert session.calls == [(ack, True, True)]
+        assert "Поручение принято" not in reply.output
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())

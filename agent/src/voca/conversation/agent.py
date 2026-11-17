@@ -56,7 +56,6 @@ REFUSALS = {"stt": "не расслышал", "llm": "не могу ответи
 OnCompacted = Callable[[str, float, str, dict[str, object]], None]
 BLOCK_STRIKES = 2
 BLOCK_RETRY_S = 300
-DELEGATE_ACCEPTED = "Поручение принято, сообщу, когда будет результат"
 DELEGATE_UNAVAILABLE = "Делегирование сейчас недоступно"
 SPEECH_LIMIT = 300
 RECENT_LIMIT = 5
@@ -139,6 +138,10 @@ def announcement_text(task: Task) -> str:
     head = clip(task.text, APPROVAL_LIMIT)
     description = describe((task.approval or {}).get("description"))
     return f"Hermes просит подтверждения по поручению «{head}»: {description}. {APPROVAL_PROMPT}"
+
+
+def submitted_text(task: str) -> str:
+    return f"Поручил Hermes: «{clip(task)}». Сообщу результат."
 
 
 def short_id(key: str) -> str:
@@ -960,7 +963,7 @@ class VocaAgent(Agent):
             self.session.say(text, add_to_chat_ctx=False)
 
     @function_tool
-    async def delegate(self, context: RunContext[Any], task: str) -> str:
+    async def delegate(self, context: RunContext[Any], task: str) -> llm.ToolResult:
         """Поручить задачу основному агенту Hermes: работа с проектами, файлами, поиском, заметками и всё, что требует времени. task — полная формулировка поручения по-русски."""
         if self.delegation is None:
             raise ToolError(DELEGATE_UNAVAILABLE)
@@ -977,7 +980,17 @@ class VocaAgent(Agent):
             self._spawn(self.delegation.watch(key))
         else:
             self.enqueue(found)
-        return DELEGATE_ACCEPTED
+        if self.speaker is not None:
+            try:
+                self.speaker.say(
+                    submitted_text(task), allow_interruptions=True, add_to_chat_ctx=True
+                )
+            except RuntimeError:
+                pass
+        output = {"id": short_id(key), "event": "submitted"}
+        return llm.ToolResult(
+            json.dumps(output, ensure_ascii=False), reply_required=False
+        )
 
     @function_tool
     async def list_tasks(self) -> str:
