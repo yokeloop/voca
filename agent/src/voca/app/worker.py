@@ -21,6 +21,7 @@ from voca.app.wiring import (
     build_session,
     check_context,
     compaction_limits,
+    make_decider,
     make_summarizer,
 )
 from voca.clientio.actions import bind_actions
@@ -98,6 +99,7 @@ async def entrypoint(ctx: JobContext) -> None:
     history.bind(ctx.room)
     bind_metrics(ctx.room, log.write)
     summarizer = make_summarizer(settings)
+    decider = make_decider(settings)
     agent = VocaAgent(
         loader=loader,
         instructions=instructions,
@@ -113,6 +115,7 @@ async def entrypoint(ctx: JobContext) -> None:
         else current.started_at,
         delegation=delegation,
         vocabulary=vocabulary,
+        decider=decider,
     )
     if delegation is not None:
         delegation.on_change = agent.on_task_change
@@ -195,6 +198,7 @@ async def entrypoint(ctx: JobContext) -> None:
         save()
         if backend is not None:
             await backend.aclose()
+        await decider.aclose()
         if tasks is not None:
             tasks.close()
         store.close()

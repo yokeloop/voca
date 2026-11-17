@@ -49,6 +49,7 @@ from voca.conversation.context import Item, approx_tokens, split_turns, trim_cha
 from voca.conversation.descriptions import describe
 from voca.conversation.instructions import InstructionLoader, InstructionSet
 from voca.conversation.summarizer import Failure, Summarizer, Summary
+from voca.conversation.verdict import Decider
 from voca.delegation.model import CANCELLED, GATEWAY_RESTART, TIMEOUT, Task, TaskStatus
 from voca.delegation.ports import (
     ApprovalNotActive,
@@ -250,6 +251,7 @@ class VocaAgent(Agent):
         compacted_at: float | None = None,
         delegation: DelegationService | None = None,
         vocabulary: Vocabulary,
+        decider: Decider | None = None,
     ) -> None:
         super().__init__(instructions=instructions.text, chat_ctx=chat_ctx)
         self.loader = loader
@@ -268,6 +270,7 @@ class VocaAgent(Agent):
         self.blocked_at: float | None = None
         self.delegation = delegation
         self.vocabulary = vocabulary
+        self.decider = decider
         self.background: set[asyncio.Task[Any]] = set()
         self.deliverer: asyncio.Task[None] | None = None
         self.in_tool: set[str] = set()
