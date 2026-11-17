@@ -12,6 +12,8 @@ class Vocabulary:
     deny: tuple[str, ...]
     refusal_stems: tuple[str, ...]
     refusal_words: tuple[str, ...]
+    confirm_stems: tuple[str, ...]
+    negations: tuple[str, ...]
     near: int
     echo_words: int
 
@@ -90,11 +92,30 @@ def parse(text: str | None, vocabulary: Vocabulary) -> Phrase | NearMiss | None:
     return None
 
 
+def _says(words: list[str], stems: tuple[str, ...], negations: set[str]) -> bool:
+    for stem in stems:
+        parts = re.findall(r"\w+", normalize(stem))
+        if not parts:
+            continue
+        *head, last = parts
+        for i in range(len(words) - len(parts) + 1):
+            if words[i : i + len(head)] != head:
+                continue
+            if not words[i + len(head)].startswith(last):
+                continue
+            if not head and i > 0 and words[i - 1] in negations:
+                continue
+            return True
+    return False
+
+
 def refuses(text: str | None, vocabulary: Vocabulary) -> bool:
     words = re.findall(r"\w+", normalize(text or ""))
-    joined = " ".join(words)
+    negations = {normalize(word) for word in vocabulary.negations}
+    if _says(words, vocabulary.confirm_stems, negations):
+        return False
     refusals = {normalize(word) for word in vocabulary.refusal_words}
-    return any(normalize(stem) in joined for stem in vocabulary.refusal_stems) or any(
+    return _says(words, vocabulary.refusal_stems, negations) or any(
         word in refusals for word in words
     )
 

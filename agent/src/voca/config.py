@@ -70,8 +70,11 @@ class ApprovalConfig(BaseModel):
         "нельзя",
         "запрет",
         "запрещ",
+        "не подтверд",
     ]
     refusal_words: list[str] = ["нет"]
+    confirm_stems: list[str] = ["подтверд", "подтвержд"]
+    negations: list[str] = ["не"]
     near: int = Field(default=2, ge=0)
     echo_words: int = Field(default=3, ge=1)
 
@@ -89,6 +92,8 @@ class ApprovalConfig(BaseModel):
             deny=tuple(self.deny),
             refusal_stems=tuple(self.refusal_stems),
             refusal_words=tuple(self.refusal_words),
+            confirm_stems=tuple(self.confirm_stems),
+            negations=tuple(self.negations),
             near=self.near,
             echo_words=self.echo_words,
         )

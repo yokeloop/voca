@@ -128,8 +128,9 @@ a section) are no longer read.
 - `[compression.model]` — the summariser.
 - `[delegation]` — the task file and the run deadline.
 - `[approval]` — the voice approval words: `confirm` and `deny` (single words;
-  the first of each is spoken and shown on the card), `refusal_stems` and
-  `refusal_words` (the guard of `deny_approval`), `near` (edits of a near
+  the first of each is spoken and shown on the card), `refusal_stems`,
+  `refusal_words`, `confirm_stems` and `negations` (the guard of
+  `deny_approval`), `near` (edits of a near
   miss) and `echo_words` (words in a row that make an echo). No word of the
   voice protocol is in the code.
 

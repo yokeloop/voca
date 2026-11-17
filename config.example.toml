@@ -78,9 +78,14 @@ run_timeout = 900
 confirm = ["Подтверждаю"]
 deny = ["Отклоняю"]
 # deny_approval goes to Hermes only when the user's last utterance holds one of these stems
-refusal_stems = ["отклон", "отказ", "откаж", "не подтверж", "не надо", "нельзя", "запрет", "запрещ"]
+# A stem matches at a word start; a one-word stem right after a negation does not count.
+refusal_stems = ["отклон", "отказ", "откаж", "не подтверж", "не надо", "нельзя", "запрет", "запрещ", "не подтверд"]
 # ... or one of these whole words.
 refusal_words = ["нет"]
+# A phrase that asks to confirm (one of these stems, not negated) is never a refusal.
+confirm_stems = ["подтверд", "подтвержд"]
+# Words that negate the stem after them.
+negations = ["не"]
 # A first word this many edits from a key word, or a phrase with words near both kinds, is «не разобрал».
 near = 2
 # A phrase repeating this many words in a row of the announcement is its echo.

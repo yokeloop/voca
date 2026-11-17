@@ -71,10 +71,20 @@ def test_refuses() -> None:
         "Запрещаю",
         "Нет.",
         "Ну нет, конечно",
+        "Отклоняю",
+        "нет, не надо",
+        "не подтверждаю",
+        "откажись от этого",
+        "Не подтверди его",
     ):
         assert refuses(text, VOCABULARY), text
     for text in (
         "Ну окей, давай подтвердим его.",
+        "Мне надо, чтобы ты его подтвердил",
+        "мне подтверждение нужно",
+        "не отклоняй, подтверди",
+        "Нет, подтверди его",
+        "Не отказывайся",
         "Подтверждаю",
         "Нетрудно, давай",
         "А что там за скрипт?",
@@ -102,6 +112,8 @@ CUSTOM = Vocabulary(
     deny=("Запрещаю",),
     refusal_stems=("стоп",),
     refusal_words=("никак",),
+    confirm_stems=("приня", "принима"),
+    negations=("не",),
     near=1,
     echo_words=2,
 )
@@ -118,6 +130,8 @@ def test_custom_vocabulary() -> None:
     assert refuses("Стоп, не надо", CUSTOM)
     assert refuses("никак", CUSTOM)
     assert not refuses("нет", CUSTOM)
+    assert not refuses("стоп, принимаю", CUSTOM)
+    assert refuses("стоп, не принимаю", CUSTOM)
     assert echoes("скажите принимаю", "Скажите „Принимаю“", CUSTOM)
     assert approval_prompt(CUSTOM) == (
         "Подтвердите на экране или скажите „Принимаю“ или „Запрещаю“."
