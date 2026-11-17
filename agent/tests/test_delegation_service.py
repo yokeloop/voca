@@ -627,3 +627,36 @@ def test_cancel_after_watch_settled() -> None:
     assert task.status == TaskStatus.FAILED
     assert task.error == "cancelled"
     assert task.delivered_at == 1.0
+
+
+def test_watch_ignores_stopping_of_cancelled_request() -> None:
+    service, repo, backend, _, seen = make()
+    waiting_task = replace(
+        running(),
+        status=TaskStatus.WAITING_APPROVAL,
+        approval=APPROVAL,
+        stop_requested_at=0.0,
+        stop_reason="user",
+    )
+    repo.tasks["k"] = waiting_task
+    backend.runs["run_1"] = [
+        state("run_1", TaskStatus.RUNNING),
+        state("run_1", TaskStatus.FAILED, error="cancelled"),
+    ]
+    task = asyncio.run(service.watch("k"))
+    assert [item.status for item in seen] == ["failed"]
+    assert task.error == "cancelled"
+    assert task.delivered_at is not None
+
+
+def test_watch_ignores_request_of_cancelled_task() -> None:
+    service, repo, backend, _, seen = make()
+    repo.tasks["k"] = replace(running(), stop_requested_at=0.0, stop_reason="user")
+    backend.runs["run_1"] = [
+        state("run_1", TaskStatus.WAITING_APPROVAL, approval=APPROVAL),
+        state("run_1", TaskStatus.FAILED, error="cancelled"),
+    ]
+    task = asyncio.run(service.watch("k"))
+    assert [item.status for item in seen] == ["failed"]
+    assert task.approval is None
+    assert task.delivered_at is not None

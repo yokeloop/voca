@@ -133,10 +133,9 @@ class DelegationService:
         if not current.is_open:
             return current
         if current.stop_reason == STOP_USER:
-            if task.stop_reason != STOP_USER:
+            if task.stop_reason != STOP_USER or state.status not in TERMINAL:
                 return current
-            if state.status in TERMINAL:
-                current = replace(current, delivered_at=self.clock())
+            current = replace(current, delivered_at=self.clock())
         return await self._settle(current, state)
 
     async def _settle(self, task: Task, state: RunState) -> Task:
