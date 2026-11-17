@@ -332,8 +332,9 @@ Exit codes: 0 succeeded, 1 failed or unavailable, 2 usage, config or missing var
 
 - `delegate` puts the task with the key `tool_call_id` and answers at once «Поручение принято, сообщу, когда будет результат»; if Hermes is not configured (`VOCA_HERMES_URL`/`VOCA_HERMES_KEY`), the task file did not open or Hermes refused, it answers «Делегирование сейчас недоступно», and the refusal is not spoken again.
 - The result is one reply: «Готово по поручению: …» (up to 300 characters, cut at a sentence boundary; the full text is in the card) or «Поручение не выполнено: не дождался результата | Hermes перезапускался | Hermes вернул ошибку»; the reply goes into the context, the archive and `voca.history`.
+- Whatever was played, the delivery also puts the whole result into the model's context once per task: a `delegate` call with the task text and its output `{"status", "result" | "error"}` (the full result or the failure reason), just before the reply. It is kept in the session snapshot and survives a restart, but it is not an archive row, so `voca archive search` still finds one delivery reply per result.
 - The reply waits for a `user-*` participant and for `voca.history` sent to them, and, if the user is speaking, for the end of their speech; deliveries go one at a time, in the order the tasks finish.
-- Interruption: an interrupted reply counts as delivered and is not repeated. If it was interrupted before its first sound, it stays only in the card — the archive and the history do not have it.
+- Interruption: an interrupted reply counts as delivered and is not repeated. If it was interrupted before its first sound, the archive and the history do not have it; the card and the model's context keep the full result.
 - No client: the result waits for the next «Подключиться»; a participant who left closes delivery until someone joins again.
 - Restart: a new job delivers what was not delivered and, through `recover()`, carries open tasks to their end, abandoned `cli-*` tasks included.
 - Risk: if the process dies between the playout and writing `delivered_at`, the result is spoken again.
