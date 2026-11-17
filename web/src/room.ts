@@ -53,6 +53,7 @@ export interface TaskApproval {
   command: string | null;
   choices: string[] | null;
   request_id: string | null;
+  hint: string;
 }
 
 export interface TaskCard {

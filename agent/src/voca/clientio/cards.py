@@ -24,7 +24,7 @@ def component_of(error: object) -> str | None:
     return component if component in COMPONENTS else None
 
 
-def task_item(task: Task) -> dict[str, Any]:
+def task_item(task: Task, hint: str = "") -> dict[str, Any]:
     a = task.approval
     approval = (
         None
@@ -34,6 +34,7 @@ def task_item(task: Task) -> dict[str, Any]:
             "command": a.get("command"),
             "choices": a.get("choices"),
             "request_id": a.get("request_id"),
+            "hint": hint,
         }
     )
     return {
@@ -48,14 +49,16 @@ def task_item(task: Task) -> dict[str, Any]:
     }
 
 
-def tasks_message(tasks: Sequence[Task]) -> str:
+def tasks_message(tasks: Sequence[Task], hint: str = "") -> str:
     return json.dumps(
-        {"type": "tasks", "tasks": [task_item(t) for t in tasks]}, ensure_ascii=False
+        {"type": "tasks", "tasks": [task_item(t, hint) for t in tasks]},
+        ensure_ascii=False,
     )
 
 
 class CardState:
-    def __init__(self, instructions: InstructionSet) -> None:
+    def __init__(self, instructions: InstructionSet, hint: str = "") -> None:
+        self.hint = hint
         self.components = {"stt": "ok", "llm": "ok", "tts": "ok"}
         self.instructions = instructions
         self.room: rtc.Room | None = None
@@ -127,7 +130,9 @@ class CardState:
             return
         self.sending = asyncio.create_task(
             self._send(
-                json.dumps({"type": "task", **task_item(task)}, ensure_ascii=False),
+                json.dumps(
+                    {"type": "task", **task_item(task, self.hint)}, ensure_ascii=False
+                ),
                 self.sending,
             )
         )
@@ -147,7 +152,7 @@ class CardState:
         try:
             assert self.room is not None
             await self.room.local_participant.send_text(
-                tasks_message(await repo.list_all()),
+                tasks_message(await repo.list_all(), self.hint),
                 topic=TOPIC,
                 destination_identities=[identity],
             )

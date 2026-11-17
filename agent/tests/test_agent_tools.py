@@ -18,6 +18,7 @@ from tests.test_agent_approval import (
     until,
     waiting,
 )
+from voca.config import ApprovalConfig
 from voca.conversation.agent import (
     APPROVAL_GONE,
     NO_REQUEST,
@@ -28,6 +29,8 @@ from voca.conversation.agent import (
 )
 from voca.delegation.model import Task, TaskStatus
 from voca.delegation.ports import RunState
+
+VOCABULARY = ApprovalConfig().vocabulary()
 
 
 def running(key: str, created_at: float = 1.0) -> Task:
@@ -48,7 +51,6 @@ def test_tool_names(tmp_path: Path) -> None:
         "list_tasks",
         "cancel_task",
         "steer_task",
-        "deny_approval",
         "repeat_approval",
     }
     assert not any("approve" in name for name in names)
@@ -166,24 +168,6 @@ def test_steer_not_running(tmp_path: Path) -> None:
     asyncio.run(main())
 
 
-def test_deny_approval_active(tmp_path: Path) -> None:
-    async def main() -> None:
-        stand = Stand(tmp_path)
-        session = FakeSession()
-        await activate(stand, session, waiting("a"), waiting("b", created_at=2.0))
-        await settle()
-        output = json.loads(await stand.agent.deny_approval())
-        assert output == {"id": "a", "event": "denied"}
-        assert stand.backend.approved == [("run_a", "deny", APPROVAL)]
-        await until(lambda: len(session.calls) == 2)
-        assert spoken(session)[-1] == announcement_text(waiting("b", created_at=2.0))
-        rows = [row for row in stand.rows("a") if "approval" in row]
-        assert [(row["approval"], row["by"]) for row in rows] == [("deny", "model")]
-        await stand.agent.stop_delegation()
-
-    asyncio.run(main())
-
-
 def test_repeat_approval(tmp_path: Path) -> None:
     async def main() -> None:
         stand = Stand(tmp_path)
@@ -192,7 +176,7 @@ def test_repeat_approval(tmp_path: Path) -> None:
         assert await stand.agent.repeat_approval() is None
         await until(lambda: len(session.calls) == 2)
         await until(lambda: stand.agent.active is not None)
-        assert spoken(session) == [announcement_text(waiting("a"))] * 2
+        assert spoken(session) == [announcement_text(waiting("a"), VOCABULARY)] * 2
         assert stand.agent.active is not None
         assert stand.agent.active.key == "a"
         await stand.agent.stop_delegation()
@@ -244,7 +228,10 @@ def test_approve_from_page_queued_request(tmp_path: Path) -> None:
         assert stand.agent.active.key == "a"
         await stopped(stand.agent, "Подтверждаю")
         await settle()
-        assert spoken(session) == [announcement_text(waiting("a")), "Подтверждено"]
+        assert spoken(session) == [
+            announcement_text(waiting("a"), VOCABULARY),
+            "Подтверждено",
+        ]
         await stand.agent.stop_delegation()
 
     asyncio.run(main())
@@ -305,12 +292,20 @@ def test_steer_wrong_state_with_id(tmp_path: Path) -> None:
     asyncio.run(main())
 
 
-def test_deny_wrong_state_with_id(tmp_path: Path) -> None:
+def test_repeat_barged(tmp_path: Path) -> None:
     async def main() -> None:
         stand = Stand(tmp_path)
-        stand.put(running("a"))
-        with pytest.raises(ToolError, match=NO_REQUEST):
-            await stand.agent.deny_approval("a")
-        assert stand.backend.approved == []
+        session = FakeSession(interrupts=[True, True])
+        await activate(stand, session, waiting("a"))
+        agent = stand.agent
+        assert agent.barged is agent.active
+        item = agent.active
+        assert item is not None
+        agent.announcements.append(item)
+        agent._repeat(item)
+        assert agent.barged is None
+        assert [queued.key for queued in agent.announcements] == ["a"]
+        await until(lambda: len(session.calls) == 3)
+        await stand.agent.stop_delegation()
 
     asyncio.run(main())

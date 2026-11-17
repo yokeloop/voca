@@ -17,11 +17,14 @@
         "arguments": {
           "task": "Создай каталог /tmp/voca-c02 с файлом a.txt"
         },
-        "output": "Поручение принято, сообщу, когда будет результат"
+        "output": {
+          "id": "call_c02",
+          "event": "submitted"
+        }
       },
       {
         "role": "assistant",
-        "content": "Поручение отправлено."
+        "content": "Поручил Hermes: «Создай каталог /tmp/voca-c02 с файлом a.txt». Сообщу результат."
       }
     ],
     "user": "Уточни поручение: пусть ещё создаст b.txt",
@@ -39,11 +42,14 @@
         "arguments": {
           "task": "Создай каталог /tmp/voca-c02 с файлом a.txt"
         },
-        "output": "Поручение принято, сообщу, когда будет результат"
+        "output": {
+          "id": "call_c03",
+          "event": "submitted"
+        }
       },
       {
         "role": "assistant",
-        "content": "Поручение отправлено."
+        "content": "Поручил Hermes: «Создай каталог /tmp/voca-c02 с файлом a.txt». Сообщу результат."
       }
     ],
     "user": "Отмени это поручение",
@@ -61,11 +67,14 @@
         "arguments": {
           "task": "Удали каталог /tmp/voca-c04 командой rm -r"
         },
-        "output": "Поручение принято, сообщу, когда будет результат"
+        "output": {
+          "id": "call_c04",
+          "event": "submitted"
+        }
       },
       {
         "role": "assistant",
-        "content": "Поручение отправлено."
+        "content": "Поручил Hermes: «Удали каталог /tmp/voca-c04 командой rm -r». Сообщу результат."
       },
       {
         "call": "list_tasks",
@@ -95,11 +104,14 @@
         "arguments": {
           "task": "Удали каталог /tmp/voca-c04 командой rm -r"
         },
-        "output": "Поручение принято, сообщу, когда будет результат"
+        "output": {
+          "id": "call_c05",
+          "event": "submitted"
+        }
       },
       {
         "role": "assistant",
-        "content": "Поручение отправлено."
+        "content": "Поручил Hermes: «Удали каталог /tmp/voca-c04 командой rm -r». Сообщу результат."
       },
       {
         "call": "list_tasks",
@@ -115,7 +127,7 @@
       }
     ],
     "user": "Отклони запрос",
-    "expect": "deny_approval"
+    "expect": "none"
   },
   {
     "id": "c06",
@@ -135,11 +147,14 @@
         "arguments": {
           "task": "Удали каталог /tmp/voca-c04 командой rm -r"
         },
-        "output": "Поручение принято, сообщу, когда будет результат"
+        "output": {
+          "id": "call_c07",
+          "event": "submitted"
+        }
       },
       {
         "role": "assistant",
-        "content": "Поручение отправлено."
+        "content": "Поручил Hermes: «Удали каталог /tmp/voca-c04 командой rm -r». Сообщу результат."
       },
       {
         "call": "list_tasks",
@@ -155,7 +170,7 @@
       }
     ],
     "user": "Подтверди запрос",
-    "expect": "none"
+    "expect": "repeat_approval"
   },
   {
     "id": "c08",
@@ -169,11 +184,14 @@
         "arguments": {
           "task": "Удали каталог /tmp/voca-c04 командой rm -r"
         },
-        "output": "Поручение принято, сообщу, когда будет результат"
+        "output": {
+          "id": "call_c08",
+          "event": "submitted"
+        }
       },
       {
         "role": "assistant",
-        "content": "Поручение отправлено."
+        "content": "Поручил Hermes: «Удали каталог /tmp/voca-c04 командой rm -r». Сообщу результат."
       },
       {
         "call": "list_tasks",
@@ -203,11 +221,14 @@
         "arguments": {
           "task": "Подожди 60 секунд и ответь готово"
         },
-        "output": "Поручение принято, сообщу, когда будет результат"
+        "output": {
+          "id": "call_c09",
+          "event": "submitted"
+        }
       },
       {
         "role": "assistant",
-        "content": "Поручение отправлено."
+        "content": "Поручил Hermes: «Подожди 60 секунд и ответь готово». Сообщу результат."
       },
       {
         "role": "user",
@@ -232,5 +253,38 @@
     ],
     "user": "Что с той задачей?",
     "expect": "none"
+  },
+  {
+    "id": "c10",
+    "history": [
+      {
+        "role": "user",
+        "content": "Дай задачу агенту."
+      },
+      {
+        "role": "user",
+        "content": "про найти расписание автобусов из деревни Леденцы в Нависад."
+      },
+      {
+        "call": "delegate",
+        "arguments": {
+          "task": "Найти расписание автобусов из деревни Леденцы в Нависад."
+        },
+        "output": {
+          "id": "call_c10",
+          "event": "submitted"
+        }
+      },
+      {
+        "role": "assistant",
+        "content": "Поручил Hermes: «Найти расписание автобусов из деревни Леденцы в Нависад.». Сообщу результат."
+      },
+      {
+        "role": "user",
+        "content": "Давай немножко поправим, давай попросим его создать файл."
+      }
+    ],
+    "user": "Эа, в которой он запишет это расписание.",
+    "expect": "steer_task"
   }
 ]

@@ -1,0 +1,155 @@
+{
+  "situation": {
+    "task": "Удали каталог /tmp/voca-d01 командой rm -r",
+    "request": "удаление в корневом каталоге",
+    "command": "rm -r /tmp/voca-d01",
+    "announcement": "Hermes просит подтверждения по поручению «Удали каталог /tmp/voca-d01 командой rm -r»: удаление в корневом каталоге. Подтвердите на экране или скажите „Подтверждаю“ или „Отклоняю“."
+  },
+  "cases": [
+    {
+      "id": "d01",
+      "phrase": "Ну окей, давай подтвердим его.",
+      "expect": [
+        "approve"
+      ]
+    },
+    {
+      "id": "d02",
+      "phrase": "Подтверждаю.",
+      "expect": [
+        "approve"
+      ]
+    },
+    {
+      "id": "d03",
+      "phrase": "Ммм, подтверждаю, хорошо. Давай.",
+      "expect": [
+        "unclear",
+        "approve"
+      ]
+    },
+    {
+      "id": "d04",
+      "phrase": "Нет, не отклоняй",
+      "expect": [
+        "unclear",
+        "approve"
+      ]
+    },
+    {
+      "id": "d05",
+      "phrase": "Не надо это подтверждать",
+      "expect": [
+        "deny"
+      ]
+    },
+    {
+      "id": "d06",
+      "phrase": "Отклоняю, отмени вообще задачу",
+      "expect": [
+        "deny_more"
+      ]
+    },
+    {
+      "id": "d07",
+      "phrase": "А что он хочет удалить?",
+      "expect": [
+        "unrelated"
+      ]
+    },
+    {
+      "id": "d08",
+      "phrase": "Повтори запрос",
+      "expect": [
+        "repeat"
+      ]
+    },
+    {
+      "id": "d09",
+      "phrase": "Мне надо, чтобы ты его подтвердил",
+      "expect": [
+        "approve"
+      ]
+    },
+    {
+      "id": "d10",
+      "phrase": "Почему ещё не подтверждено?",
+      "expect": [
+        "unrelated",
+        "unclear"
+      ]
+    },
+    {
+      "id": "d11",
+      "phrase": "Давай, разрешаю",
+      "expect": [
+        "approve"
+      ]
+    },
+    {
+      "id": "d12",
+      "phrase": "Стоп, не надо",
+      "expect": [
+        "deny"
+      ]
+    },
+    {
+      "id": "d13",
+      "phrase": "Отклоняю",
+      "expect": [
+        "deny"
+      ]
+    },
+    {
+      "id": "d14",
+      "phrase": "Да",
+      "expect": [
+        "approve"
+      ]
+    },
+    {
+      "id": "d15",
+      "phrase": "Нет",
+      "expect": [
+        "deny"
+      ]
+    },
+    {
+      "id": "d16",
+      "phrase": "Подтверждаю, и скажи потом, сколько времени",
+      "expect": [
+        "approve_more"
+      ]
+    },
+    {
+      "id": "d17",
+      "phrase": "Что с поручениями?",
+      "expect": [
+        "unrelated"
+      ]
+    },
+    {
+      "id": "d18",
+      "phrase": "Ещё раз, что он просит?",
+      "expect": [
+        "repeat",
+        "unrelated"
+      ]
+    },
+    {
+      "id": "d19",
+      "phrase": "Подожди, я подумаю",
+      "expect": [
+        "unclear",
+        "unrelated"
+      ]
+    },
+    {
+      "id": "d20",
+      "phrase": "Какая сегодня погода?",
+      "expect": [
+        "unrelated"
+      ]
+    }
+  ]
+}

@@ -21,6 +21,7 @@ from openai._models import FinalRequestOptions
 
 from voca.config import Settings
 from voca.conversation.compaction import Limits
+from voca.conversation.decision import DecisionClient
 from voca.conversation.summarizer import Summarizer
 from voca.speech.fragments import FirstFragmentTokenizer
 from voca.speech.markup import strip_latex_and_tables
@@ -172,6 +173,19 @@ def make_summarizer(settings: Settings) -> Summarizer:
             max_retries=0,
         ),
         model=settings.compression.model.model,
+    )
+
+
+def make_decider(settings: Settings) -> DecisionClient:
+    decision = settings.decision
+    if not decision.enabled:
+        return DecisionClient(None, model=decision.model, prompt=decision.prompt())
+    return DecisionClient(
+        httpx.AsyncClient(
+            base_url=decision.url.rstrip("/"), timeout=decision.timeout_s
+        ),
+        model=decision.model,
+        prompt=decision.prompt(),
     )
 
 

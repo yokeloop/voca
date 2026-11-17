@@ -192,6 +192,7 @@ async def agent_body(log: dict[str, Any]) -> tuple[bool, str]:
                 cards=CardState(instructions),
                 ctx_high=9830,
                 ctx_low=6553,
+                vocabulary=Settings().approval.vocabulary(),
             )
             result = await run_chat(
                 make_agent_llm(Settings(llm_url=f"http://127.0.0.1:{port}/v1")),

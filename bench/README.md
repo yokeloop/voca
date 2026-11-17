@@ -18,14 +18,21 @@ Scripts:
   and the `VocaAgent` tools) sent to a fake server on loopback:
   `thinking_budget_tokens`, `tools` with `delegate`, no `chat_template_kwargs`;
   no llama-server needed.
+- `decision_ru.py` (VOCA-36) — the decision model of voice approval: the
+  twenty phrases of `corpus/decision.json` against `scripts/decision.sh`
+  (`scripts/up.sh decision`) through the agent's `make_decider`, one warm-up
+  call and `--rounds` (3) rounds; prints `PASS|FAIL id verdict picked
+  confidence ms` and `decision N/20 p50 … ms p95 … ms`, writes
+  `.local/bench/decision/decision.json`.
 - `llm_ru_tools.py` (VOCA-4) — G3: `dialogs`, `delegate`, `all` (the default),
   `dialogs-thinking` (the twenty dialogs with thinking on, VOCA-7),
   `delegate-thinking` (the ten scenarios with thinking on);
-  `tools` (VOCA-36) — the nine cases of `corpus/llm_tools.json`: a context of
+  `tools` (VOCA-36) — the ten cases of `corpus/llm_tools.json` (`c10` — the
+  stand's correction of a running task, expected `steer_task`): a context of
   messages and delegation facts, then one user turn; the first tool call must be
   the expected one (`delegate`, `steer_task`, `cancel_task`, `repeat_approval`,
-  `deny_approval`, `list_tasks`), and a `none` case passes with no call (only
-  `list_tasks` in `c08`, `c09`) and a Russian answer without a claimed action
+  `list_tasks`), and a `none` case passes with no call (only
+  `list_tasks` in `c05`, `c08`, `c09`) and a Russian answer without a claimed action
   or the announcement text. The tools and instructions come from `VocaAgent`
   with `instructions.example`, the model from the agent's `make_llm`; the
   result goes to `tools.json`.
@@ -137,6 +144,7 @@ Reports, one per measurement task:
 - `report_g5.md` (VOCA-14)
 - `report_g6.md` (VOCA-16)
 - `report_delegation_tools.md` (VOCA-36)
+- `report_decision.md` (VOCA-36)
 
 Corpora are plain text or JSON in `bench/corpus/`. Voice recordings stay out of the
 repository, in `.local/bench/`; each report names the recordings it used with

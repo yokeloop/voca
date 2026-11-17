@@ -12,12 +12,12 @@ Hermes. This file is the working contract for agents and contributors.
   (prewarm, entrypoint, `WorkerOptions`), `app/wiring.py` (the plugins,
   `PreparedTTS`, `build_session`, `SpeechLanguageClient`), `conversation/`
   (`VocaAgent`: the tool-call markup filter in `llm_node`, the `delegate`,
-  `list_tasks`, `cancel_task`, `steer_task`, `deny_approval` and `repeat_approval`
-  tools, the delegation facts in the context and the delivery of results, approval announcements and the approval phrase checked first in `on_user_turn_completed`, instructions, accepting a finished
+  `list_tasks`, `cancel_task`, `steer_task` and `repeat_approval`
+  tools, the delegation facts in the context and the delivery of results, approval announcements and the reply to an active request judged first in `on_user_turn_completed` (echo, decision model, fallback word), instructions, accepting a finished
   summary and the emergency context trim in `on_user_turn_completed`, the threshold trigger `maybe_compact`,
   the idle and daily check `check_due`, failures spoken aloud;
   `instructions.py`: `InstructionLoader` with the last valid set; `context.py`: `trim_chat_ctx` — the emergency path at
-  `hard_limit`; `approval.py`: the approval phrase parse (the first word, the tail, a near miss); `descriptions.py`: the Russian descriptions of Hermes approval requests; `compaction.py`: the compaction plan and the summariser
+  `hard_limit`; `approval.py`: the fallback phrase parse (the exact first word, the tail), the echo check and the hint texts; `verdict.py`: the decision model's request body and answer reading (pure); `decision.py`: `DecisionClient`, the HTTP adapter of `POST /v1/systemone`; `descriptions.py`: the Russian descriptions of Hermes approval requests; `compaction.py`: the compaction plan and the summariser
   prompt; `summarizer.py`: the call to `[compression.model]`), `clientio/`
   (the `voca.cards` and `voca.history` channels, the `tasks` list on join, `actions.py`: the page's RPC), `telemetry/` (`.local/events.jsonl`), `session/`
   (`SessionStore`: the session snapshot and the archive in one SQLite file,
@@ -31,7 +31,7 @@ Hermes. This file is the working contract for agents and contributors.
   filter, LaTeX and tables, the quotes audio.cpp rejects (`„‟‚‹` → `«`,
   `“”›` → `»`), numbers as words, stress and the first fragment.
   `markup`, `numbers`, `prepare`, `conversation/context`,
-  `conversation/compaction`, `conversation/approval`, `conversation/descriptions`, `conversation/instructions`, `session/model`,
+  `conversation/compaction`, `conversation/approval`, `conversation/descriptions`, `conversation/verdict`, `conversation/instructions`, `session/model`,
   `delegation/model`, `delegation/ports` and `delegation/service` are pure
   modules, which
   `tests/test_import_boundaries.py` checks.
@@ -43,7 +43,7 @@ Hermes. This file is the working contract for agents and contributors.
   writes `web/dist/`, which `voca web` serves.
 - `bench/` — stand scripts and their reports; they run in the `agent/`
   environment (`bench/README.md`).
-- `scripts/` — the stand: `up.sh`, `down.sh`, `fetch.sh`, `env.sh`, the
+- `scripts/` — the stand: `up.sh`, `down.sh`, `fetch.sh`, `env.sh`, `decision.sh`, the
   `SHA256SUMS` of every download, the audio.cpp `server.json` template and
   `llm-profiles/`, one llama-server model profile per file.
 - `.local/` — only what VOCA itself creates: logs, pid files, the assembled
@@ -97,6 +97,11 @@ stand's downloads; it is a stand check, not a CI check.
 | `VOCA_LIVEKIT_URL` | `ws://127.0.0.1:7880` | LiveKit URL the agent worker connects to |
 | `VOCA_AUDIO_URL` | `http://127.0.0.1:8082/v1` | audio.cpp API of the agent's STT and TTS |
 | `VOCA_LLM_URL` | `http://127.0.0.1:8081/v1` | llama-server API of the agent's LLM |
+| `VOCA_DECISION_MODEL` | `$VOCA_MODELS_DIR/LiquidAI/d1-2B-Q4_K_M.gguf` | GGUF of the decision model for `scripts/decision.sh` |
+| `VOCA_DECISION_PORT` | `8086` | Port of the decision model's llama-server (127.0.0.1) |
+| `VOCA_DECISION_THREADS` | `4` | CPU threads of the decision model (`-t`) |
+| `VOCA_DECISION_NGL` | `99` | GPU layers of the decision model (`-ngl`); `0` runs it on the CPU |
+| `VOCA_DECISION__URL` | `http://127.0.0.1:$VOCA_DECISION_PORT` | `[decision].url` of the agent: where it asks the decision model |
 | `VOCA_AGENT_PORT` | `8084` | Health port of the agent worker (127.0.0.1) |
 | `VOCA_STATE_DIR` | `$VOCA_ROOT/.local` | Directory of the agent's `events.jsonl` |
 | `VOCA_HERMES_URL` | empty | Hermes API server URL for `bench/hermes_runs.py` and the agent (`voca bench delegate`, the `delegate` tool); `https://hermes-voca.priney.com` (the Hermes profile `voca`) on the stand |
@@ -127,6 +132,20 @@ a section) are no longer read.
 - `[compression]` — the compression triggers and the trim.
 - `[compression.model]` — the summariser.
 - `[delegation]` — the task file and the run deadline.
+- `[approval]` — `confirm` and `deny` (single words; the first of each is
+  spoken in the announcement and shown on the card; an exact first word is
+  the fallback answer when the decision model is unavailable) and
+  `echo_words` (words in a row of the announcement that make an echo). No
+  word of the voice protocol is in the code. A `confirm` word equal to a
+  `deny` word after normalisation is refused.
+- `[decision]` — the decision model of voice approval: `enabled` (true),
+  `url` (`http://127.0.0.1:8086`, env `VOCA_DECISION__URL`, set by
+  `scripts/env.sh`), `model` (`d1-2B`), `timeout_s` (1.5), `threshold` (0.6,
+  a lower confidence is `unclear`), `instructions` (the question) and
+  `verdicts` (exactly `approve`, `approve_more`, `deny`, `deny_more`,
+  `repeat`, `unrelated`, `unclear`, each with its Russian description). Empty
+  texts, a missing or an unknown verdict are refused. The model file is not
+  here: `VOCA_DECISION_MODEL` for `scripts/decision.sh`.
 
 `[session].history_on_join` is how many archive rows a joining client gets
 in `voca.history` («Client channel»); `[session].path` is the session store
@@ -194,14 +213,14 @@ plus a path variable with its default in `scripts/env.sh` and `.env.example`.
 
 ## Stand
 
-`scripts/up.sh [livekit|audio|llm|web|agent …]` (no arguments: all five) checks
+`scripts/up.sh [livekit|audio|llm|decision|web|agent …]` (no arguments: all six) checks
 every named service first and starts nothing when a check fails: the binary or
 build exists, the service is not already running, its ports are free; for
 `agent` — `agent/.venv/bin/voca`, the ruaccent `koziev` link
 (`scripts/ruaccent-setup.sh`) and `VOCA_AGENT_PORT`. It then starts them in
 order with logs in `.local/logs/<name>.log` and pids in
-`.local/run/<name>.pid`, and waits up to 20 s for each (120 s for `audio` and
-`llm`, 60 s for `agent`). `agent` runs `voca agent start`; it is ready when
+`.local/run/<name>.pid`, and waits up to 20 s for each (120 s for `audio`,
+`llm` and `decision`, 60 s for `agent`). `agent` runs `voca agent start`; it is ready when
 `http://127.0.0.1:$VOCA_AGENT_PORT/` answers 200 (503 until the worker has
 registered with livekit-server). `scripts/down.sh [names…]` stops them in
 reverse order, `agent` first.
@@ -217,6 +236,14 @@ and its port (8082) is free; with `--check` it stops there. Otherwise it `exec`s
 `$VOCA_MODELS_DIR/ruaccent/accentuator-b78ae5e/` against `SHA256SUMS` and links
 them into the `ruaccent` package of `agent/.venv`; it is idempotent, and
 `bench/tts_pipeline.py` stops without the link.
+
+`scripts/decision.sh [--check]` checks `VOCA_LLAMA_BIN`, the model
+`VOCA_DECISION_MODEL` (LiquidAI `d1-2B-Q4_K_M.gguf`, in `SHA256SUMS`) and that
+port `VOCA_DECISION_PORT` (8086) is free; with `--check` it stops there.
+Otherwise it `exec`s llama-server with `--alias d1-2B`, `127.0.0.1:8086`,
+`-c 2048`, `--parallel 1`, `-t $VOCA_DECISION_THREADS` (4), `-ngl
+$VOCA_DECISION_NGL` (99: the GPU; `0` runs it on the CPU) and `--cache-ram
+256`. The agent calls `POST /v1/systemone`.
 
 `scripts/llama.sh [--check]` sources the profile
 `scripts/llm-profiles/$VOCA_LLM_PROFILE.sh` (README 0.3.1), which sets `model`
@@ -267,7 +294,7 @@ classes come from `livekit-api` in the `agent/` environment.
   "queued"|"running"|"waiting_approval"|"unknown"|"succeeded"|"failed",
   "text", "result": string|null, "error": string|null, "created_at",
   "delivered_at": number|null, "approval": {"description", "command",
-  "choices", "request_id"}|null}`. `approval` is set only while the task is
+  "choices", "request_id", "hint"}|null}`. `approval` is set only while the task is
   `waiting_approval`. `task`, `state` and `tasks` share one send chain, so
   their order is kept. The agent sends them from the `delegate` tool, its
   watchers and the delivery.
@@ -284,8 +311,9 @@ classes come from `livekit-api` in the `agent/` environment.
 - The task block is separate from the transcript: neither `history` nor a
   disconnect clears it. A card shows the status, the text, the full result,
   the error and «озвучено» once `delivered_at` is set. A `waiting_approval`
-  card also shows `description`, `command`, «Подтвердите на экране или скажите
-  „Подтверждаю“ или „Отклоняю“» and the buttons «Подтвердить» and «Отклонить»
+  card also shows `description`, `command`, the agent's `hint` (built from
+  `[approval]`: «Подтвердите на экране или скажите „<confirm>“ или „<deny>“»)
+  and the buttons «Подтвердить» and «Отклонить»
   (only with a `request_id`); every open card has «Отменить задачу».
 - The page calls RPC methods of the agent participant (the one with
   `lk.agent.state`): `voca.approve` with `{"tool_call_id", "request_id",
@@ -438,6 +466,7 @@ classes come from `livekit-api` in the `agent/` environment.
 | 8082 TCP | audio.cpp server (127.0.0.1) |
 | 8081 TCP | llama-server (127.0.0.1) |
 | 8084 TCP | voca agent health (127.0.0.1, `VOCA_AGENT_PORT`) |
+| 8086 TCP | llama-server of the decision model d1-2B (127.0.0.1, `VOCA_DECISION_PORT`; GPU by default) |
 
 Deviation from `derive:eb1id854:§1`: `voca web` listens on 8083, not 8090,
 because 8090 is taken on the stand host (hyperhdr).

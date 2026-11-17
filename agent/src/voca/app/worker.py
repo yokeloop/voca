@@ -21,6 +21,7 @@ from voca.app.wiring import (
     build_session,
     check_context,
     compaction_limits,
+    make_decider,
     make_summarizer,
 )
 from voca.clientio.actions import bind_actions
@@ -29,6 +30,7 @@ from voca.clientio.history import HistoryChannel, send_on_wait
 from voca.clientio.metrics import bind_metrics
 from voca.config import Settings, config_path
 from voca.conversation.agent import VocaAgent, records
+from voca.conversation.approval import approval_prompt
 from voca.conversation.instructions import InstructionError, InstructionLoader
 from voca.delegation.hermes import HermesBackend
 from voca.delegation.service import DelegationService
@@ -88,7 +90,8 @@ async def entrypoint(ctx: JobContext) -> None:
         items=len(restored.items),
         estimate=sum(item.tokens for item in records(restored)),
     )
-    cards = CardState(instructions)
+    vocabulary = settings.approval.vocabulary()
+    cards = CardState(instructions, approval_prompt(vocabulary))
     cards.bind(ctx.room)
     if tasks is not None:
         cards.bind_tasks(tasks)
@@ -96,6 +99,7 @@ async def entrypoint(ctx: JobContext) -> None:
     history.bind(ctx.room)
     bind_metrics(ctx.room, log.write)
     summarizer = make_summarizer(settings)
+    decider = make_decider(settings)
     agent = VocaAgent(
         loader=loader,
         instructions=instructions,
@@ -110,6 +114,8 @@ async def entrypoint(ctx: JobContext) -> None:
         if current.compacted_at is not None
         else current.started_at,
         delegation=delegation,
+        vocabulary=vocabulary,
+        decider=decider,
     )
     if delegation is not None:
         delegation.on_change = agent.on_task_change
@@ -192,6 +198,7 @@ async def entrypoint(ctx: JobContext) -> None:
         save()
         if backend is not None:
             await backend.aclose()
+        await decider.aclose()
         if tasks is not None:
             tasks.close()
         store.close()

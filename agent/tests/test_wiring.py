@@ -20,6 +20,7 @@ from voca.app.wiring import (
     build_session,
     check_context,
     compaction_limits,
+    make_decider,
     make_llm,
     make_summarizer,
     make_tts,
@@ -27,6 +28,7 @@ from voca.app.wiring import (
 from voca.app.worker import run, server_options
 from voca.config import Settings
 from voca.conversation.compaction import Limits
+from voca.conversation.verdict import DecisionFailure, Situation
 from voca.speech.prepare import Prepared
 from voca.telemetry.jsonl import JsonlLog
 
@@ -260,3 +262,16 @@ def test_make_summarizer(monkeypatch: pytest.MonkeyPatch) -> None:
     assert summarizer.client.timeout == 60
     assert summarizer.model == "glm-5.3-flash"
     asyncio.run(summarizer.close())
+
+
+def test_make_decider_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("VOCA_DECISION__ENABLED", "false")
+    situation = Situation("t", "r", None, "a", "p")
+
+    async def main() -> object:
+        decider = make_decider(Settings())
+        result = await decider.decide(situation)
+        await decider.aclose()
+        return result
+
+    assert asyncio.run(main()) == DecisionFailure("disabled", 0)
