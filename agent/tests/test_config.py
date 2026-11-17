@@ -155,7 +155,7 @@ def test_approval_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
     approval = Settings().approval
     assert approval.confirm == ["Подтверждаю"]
     assert approval.deny == ["Отклоняю"]
-    assert "нет" in approval.refusal_words
+    assert approval.echo_words == 3
     monkeypatch.setenv("VOCA_APPROVAL__CONFIRM", '["Принимаю", "Согласен"]')
     vocabulary = Settings().approval.vocabulary()
     assert vocabulary.confirm == ("Принимаю", "Согласен")
@@ -163,11 +163,11 @@ def test_approval_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
     write_config(
         tmp_path,
         monkeypatch,
-        '[approval]\ndeny = ["Запрещаю"]\nrefusal_words = ["никак"]\n',
+        '[approval]\ndeny = ["Запрещаю"]\necho_words = 4\n',
     )
     vocabulary = Settings().approval.vocabulary()
     assert vocabulary.deny == ("Запрещаю",)
-    assert vocabulary.refusal_words == ("никак",)
+    assert vocabulary.echo_words == 4
     for text in ('[approval]\nconfirm = ["Да ладно"]\n', "[approval]\nconfirm = []\n"):
         write_config(tmp_path, monkeypatch, text)
         with pytest.raises(pydantic.ValidationError):
@@ -178,11 +178,10 @@ def test_approval_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
     "text",
     [
         '[approval]\nconfirm = ["Подтверждаю"]\ndeny = ["подтверждаю"]\n',
-        '[approval]\nconfirm = ["Подтверждаю"]\ndeny = ["Подтверждаем"]\n',
-        '[approval]\nrefusal_stems = ["отклон", "  "]\n',
-        '[approval]\nrefusal_words = ["!"]\n',
-        '[approval]\nconfirm_stems = [""]\n',
-        '[approval]\nnegations = ["-"]\n',
+        '[approval]\nconfirm = ["Подтверждаю"]\ndeny = ["ПОДТВЕРЖДАЮ"]\n',
+        '[approval]\nrefusal_words = ["нет"]\n',
+        "[approval]\nnear = 2\n",
+        "[approval]\necho_words = 0\n",
     ],
 )
 def test_approval_settings_rejected(
@@ -193,22 +192,18 @@ def test_approval_settings_rejected(
         Settings()
 
 
-def test_approval_words_far_apart(
+def test_approval_words_disjoint(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     write_config(
-        tmp_path,
-        monkeypatch,
-        '[approval]\nconfirm = ["Да"]\ndeny = ["Дай"]\nnear = 1\n',
+        tmp_path, monkeypatch, '[approval]\nconfirm = ["Ёлка"]\ndeny = ["елка"]\n'
     )
     with pytest.raises(pydantic.ValidationError):
         Settings()
     write_config(
-        tmp_path,
-        monkeypatch,
-        '[approval]\nconfirm = ["Принимаю"]\ndeny = ["Запрещаю"]\nnear = 2\n',
+        tmp_path, monkeypatch, '[approval]\nconfirm = ["Да"]\ndeny = ["Дай"]\n'
     )
-    assert Settings().approval.vocabulary().deny == ("Запрещаю",)
+    assert Settings().approval.vocabulary().deny == ("Дай",)
 
 
 def test_decision_defaults() -> None:

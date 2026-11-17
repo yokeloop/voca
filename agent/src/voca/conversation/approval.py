@@ -10,11 +10,6 @@ Choice = Literal["once", "deny"]
 class Vocabulary:
     confirm: tuple[str, ...]
     deny: tuple[str, ...]
-    refusal_stems: tuple[str, ...]
-    refusal_words: tuple[str, ...]
-    confirm_stems: tuple[str, ...]
-    negations: tuple[str, ...]
-    near: int
     echo_words: int
 
     def phrases(self) -> dict[str, Choice]:
@@ -27,11 +22,6 @@ class Vocabulary:
 class Phrase:
     choice: Choice
     tail: str
-
-
-@dataclass(frozen=True)
-class NearMiss:
-    pass
 
 
 def _edge(char: str) -> bool:
@@ -51,73 +41,20 @@ def normalize(text: str) -> str:
     return _strip(text.lower().replace("ё", "е"))
 
 
-def distance(a: str, b: str) -> int:
-    previous = list(range(len(b) + 1))
-    for i, left in enumerate(a, 1):
-        current = [i]
-        for j, right in enumerate(b, 1):
-            current.append(
-                min(
-                    previous[j] + 1,
-                    current[j - 1] + 1,
-                    previous[j - 1] + (left != right),
-                )
-            )
-        previous = current
-    return previous[-1]
-
-
-def _near(word: str, keys: tuple[str, ...], limit: int) -> bool:
-    return any(distance(word, normalize(key)) <= limit for key in keys)
-
-
-def parse(text: str | None, vocabulary: Vocabulary) -> Phrase | NearMiss | None:
+def parse(text: str | None, vocabulary: Vocabulary) -> Phrase | None:
     words = re.findall(r"\w+", normalize(text or ""))
     if not words:
         return None
-    limit = vocabulary.near
-    if any(_near(word, vocabulary.confirm, limit) for word in words) and any(
-        _near(word, vocabulary.deny, limit) for word in words
-    ):
-        return NearMiss()
-    phrases = vocabulary.phrases()
-    first = words[0]
-    choice = phrases.get(first)
-    if choice is not None:
-        found = re.search(r"\w+", text or "")
-        assert found is not None
-        return Phrase(choice, _strip((text or "")[found.end() :], keep="?"))
-    if any(0 < distance(first, key) <= limit for key in phrases):
-        return NearMiss()
-    return None
-
-
-def _says(words: list[str], stems: tuple[str, ...], negations: set[str]) -> bool:
-    for stem in stems:
-        parts = re.findall(r"\w+", normalize(stem))
-        if not parts:
-            continue
-        *head, last = parts
-        for i in range(len(words) - len(parts) + 1):
-            if words[i : i + len(head)] != head:
-                continue
-            if not words[i + len(head)].startswith(last):
-                continue
-            if not head and i > 0 and words[i - 1] in negations:
-                continue
-            return True
-    return False
-
-
-def refuses(text: str | None, vocabulary: Vocabulary) -> bool:
-    words = re.findall(r"\w+", normalize(text or ""))
-    negations = {normalize(word) for word in vocabulary.negations}
-    if _says(words, vocabulary.confirm_stems, negations):
-        return False
-    refusals = {normalize(word) for word in vocabulary.refusal_words}
-    return _says(words, vocabulary.refusal_stems, negations) or any(
-        word in refusals for word in words
-    )
+    confirm = {normalize(word) for word in vocabulary.confirm}
+    deny = {normalize(word) for word in vocabulary.deny}
+    if confirm & set(words) and deny & set(words):
+        return None
+    choice = vocabulary.phrases().get(words[0])
+    if choice is None:
+        return None
+    found = re.search(r"\w+", text or "")
+    assert found is not None
+    return Phrase(choice, _strip((text or "")[found.end() :], keep="?"))
 
 
 def echoes(text: str | None, source: str, vocabulary: Vocabulary) -> bool:
@@ -141,11 +78,4 @@ def unclear_text(vocabulary: Vocabulary) -> str:
     return (
         f"Не разобрал подтверждение. Скажите „{vocabulary.confirm[0]}“ "
         f"или „{vocabulary.deny[0]}“, или ответьте на экране"
-    )
-
-
-def not_denied_reason(vocabulary: Vocabulary) -> str:
-    return (
-        "пользователь не просил отклонять; подтвердить можно только кнопкой "
-        f"«Подтвердить» или словом «{vocabulary.confirm[0]}»"
     )

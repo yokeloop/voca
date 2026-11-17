@@ -72,21 +72,9 @@ path = "~/.voca/tasks.sqlite3"
 run_timeout = 900
 
 [approval]
-# Voice approval words. Matching lowers case and folds ё to е.
-# A phrase whose first word is one of confirm answers «once», one of deny — «deny»;
-# the first of each is spoken in the announcement and shown on the card.
+# confirm/deny: the hint of the announcement and the card, and the fallback when the decision model
+# is unavailable: the exact first word answers the request. Matching lowers case and folds ё to е.
 confirm = ["Подтверждаю"]
 deny = ["Отклоняю"]
-# deny_approval goes to Hermes only when the user's last utterance holds one of these stems
-# A stem matches at a word start; a one-word stem right after a negation does not count.
-refusal_stems = ["отклон", "отказ", "откаж", "не подтверж", "не надо", "нельзя", "запрет", "запрещ", "не подтверд"]
-# ... or one of these whole words.
-refusal_words = ["нет"]
-# A phrase that asks to confirm (one of these stems, not negated) is never a refusal.
-confirm_stems = ["подтверд", "подтвержд"]
-# Words that negate the stem after them.
-negations = ["не"]
-# A first word this many edits from a key word, or a phrase with words near both kinds, is «не разобрал».
-near = 2
 # A phrase repeating this many words in a row of the announcement is its echo.
 echo_words = 3

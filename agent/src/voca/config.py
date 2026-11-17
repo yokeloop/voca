@@ -18,7 +18,7 @@ from pydantic_settings import (
     TomlConfigSettingsSource,
 )
 
-from voca.conversation.approval import Vocabulary, distance, normalize
+from voca.conversation.approval import Vocabulary, normalize
 from voca.conversation.verdict import VERDICTS, Prompt
 
 WORD = re.compile(r"^\w+$")
@@ -62,21 +62,6 @@ class ApprovalConfig(BaseModel):
 
     confirm: list[str] = Field(default=["Подтверждаю"], min_length=1)
     deny: list[str] = Field(default=["Отклоняю"], min_length=1)
-    refusal_stems: list[str] = [
-        "отклон",
-        "отказ",
-        "откаж",
-        "не подтверж",
-        "не надо",
-        "нельзя",
-        "запрет",
-        "запрещ",
-        "не подтверд",
-    ]
-    refusal_words: list[str] = ["нет"]
-    confirm_stems: list[str] = ["подтверд", "подтвержд"]
-    negations: list[str] = ["не"]
-    near: int = Field(default=2, ge=0)
     echo_words: int = Field(default=3, ge=1)
 
     @field_validator("confirm", "deny")
@@ -89,34 +74,16 @@ class ApprovalConfig(BaseModel):
 
     @model_validator(mode="after")
     def distinct_words(self) -> Self:
-        for name in (
-            "confirm",
-            "deny",
-            "refusal_stems",
-            "refusal_words",
-            "confirm_stems",
-            "negations",
-        ):
-            for word in getattr(self, name):
-                if not re.findall(r"\w+", normalize(word)):
-                    raise ValueError(f"{name}: пустое слово {word!r}")
         for confirm in self.confirm:
             for deny in self.deny:
-                if distance(normalize(confirm), normalize(deny)) <= self.near:
-                    raise ValueError(
-                        f"confirm {confirm!r} и deny {deny!r} ближе near={self.near}"
-                    )
+                if normalize(confirm) == normalize(deny):
+                    raise ValueError(f"confirm {confirm!r} и deny {deny!r} совпадают")
         return self
 
     def vocabulary(self) -> Vocabulary:
         return Vocabulary(
             confirm=tuple(self.confirm),
             deny=tuple(self.deny),
-            refusal_stems=tuple(self.refusal_stems),
-            refusal_words=tuple(self.refusal_words),
-            confirm_stems=tuple(self.confirm_stems),
-            negations=tuple(self.negations),
-            near=self.near,
             echo_words=self.echo_words,
         )
 
