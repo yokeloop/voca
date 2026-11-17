@@ -32,9 +32,9 @@ CORPUS = Path(__file__).resolve().parent / "corpus"
 CYRILLIC_MIN = 0.8
 INSTRUCTIONS = Path(__file__).resolve().parents[1] / "instructions.example"
 CLAIMS = re.compile(
-    r"(?i)отправил|отменил|отменено|изменю|уточнил|подтвердил|подтверждено"
+    r"(?i)отправил|отменил|отменено|изменю|уточнил|подтвердил|подтверждено|отклонил|отклонено"
 )
-LOOKUPS = {"c08", "c09"}
+LOOKUPS = {"c05", "c08", "c09"}
 
 
 def cyrillic(text: str) -> float:

@@ -127,7 +127,7 @@
       }
     ],
     "user": "Отклони запрос",
-    "expect": "deny_approval"
+    "expect": "none"
   },
   {
     "id": "c06",
