@@ -10,6 +10,7 @@ from livekit.agents import RunContext, ToolError, llm
 from livekit.agents.voice import Agent, ModelSettings
 
 from voca.clientio.cards import CardState
+from voca.config import ApprovalConfig
 from voca.conversation.agent import VocaAgent
 from voca.conversation.instructions import InstructionLoader
 from voca.delegation.model import Task, TaskStatus
@@ -19,11 +20,14 @@ from voca.telemetry.jsonl import JsonlLog
 EXAMPLE = Path(__file__).resolve().parents[2] / "instructions.example"
 USAGE = llm.CompletionUsage(completion_tokens=3, prompt_tokens=900, total_tokens=903)
 
+VOCABULARY = ApprovalConfig().vocabulary()
+
 
 def make_agent(tmp_path: Path, *, delegation: Any = None) -> VocaAgent:
     loader = InstructionLoader(EXAMPLE)
     instructions = loader.load()
     return VocaAgent(
+        vocabulary=VOCABULARY,
         loader=loader,
         instructions=instructions,
         log=JsonlLog(tmp_path / "events.jsonl", session="t"),

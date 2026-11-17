@@ -21,7 +21,18 @@ from livekit.agents import (
 from livekit.agents.voice import Agent, AgentSession, ModelSettings, SpeechHandle
 
 from voca.clientio.cards import CardState
-from voca.conversation.approval import Choice, NearMiss, Phrase, echoes, parse, refuses
+from voca.conversation.approval import (
+    Choice,
+    NearMiss,
+    Phrase,
+    Vocabulary,
+    approval_prompt,
+    echoes,
+    not_denied_reason,
+    parse,
+    refuses,
+    unclear_text,
+)
 from voca.conversation.compaction import (
     SUMMARY_KEY,
     Limits,
@@ -73,13 +84,10 @@ NOT_STEERABLE = "Поручение сейчас не принимает уто�
 NO_REQUEST = "Сейчас нет запроса подтверждения"
 ACTION_FAILED = "Не удалось связаться с Hermes"
 DENIED_NOTE = "Отклонена только команда; поручение продолжает выполняться"
-NOT_DENIED_REASON = "пользователь не просил отклонять; подтвердить можно только кнопкой «Подтвердить» или словом «Подтверждаю»"
 APPROVAL_LIMIT = 60
-APPROVAL_PROMPT = "Подтвердите на экране или скажите „Подтверждаю“ или „Отклоняю“."
 APPROVAL_REPLIES = {"once": "Подтверждено", "deny": "Отклонено"}
 APPROVAL_GONE = "Запрос подтверждения уже не активен"
 APPROVAL_FAILED = "Не удалось передать подтверждение"
-APPROVAL_UNCLEAR = "Не разобрал подтверждение. Скажите „Подтверждаю“ или „Отклоняю“, или ответьте на экране"
 ANNOUNCE_ATTEMPTS = 2
 
 
@@ -134,10 +142,10 @@ def result_outcome(task: Task) -> str:
     return json.dumps(outcome, ensure_ascii=False)
 
 
-def announcement_text(task: Task) -> str:
+def announcement_text(task: Task, vocabulary: Vocabulary) -> str:
     head = clip(task.text, APPROVAL_LIMIT)
     description = describe((task.approval or {}).get("description"))
-    return f"Hermes просит подтверждения по поручению «{head}»: {description}. {APPROVAL_PROMPT}"
+    return f"Hermes просит подтверждения по поручению «{head}»: {description}. {approval_prompt(vocabulary)}"
 
 
 def submitted_text(task: str) -> str:
@@ -241,6 +249,7 @@ class VocaAgent(Agent):
         clock: Callable[[], float] = time.time,
         compacted_at: float | None = None,
         delegation: DelegationService | None = None,
+        vocabulary: Vocabulary,
     ) -> None:
         super().__init__(instructions=instructions.text, chat_ctx=chat_ctx)
         self.loader = loader
@@ -258,6 +267,7 @@ class VocaAgent(Agent):
         self.strikes = 0
         self.blocked_at: float | None = None
         self.delegation = delegation
+        self.vocabulary = vocabulary
         self.background: set[asyncio.Task[Any]] = set()
         self.deliverer: asyncio.Task[None] | None = None
         self.in_tool: set[str] = set()
@@ -458,7 +468,7 @@ class VocaAgent(Agent):
             return True
         self.speaking = item
         try:
-            text = announcement_text(task)
+            text = announcement_text(task, self.vocabulary)
             try:
                 handle = session.say(
                     text,
@@ -640,7 +650,9 @@ class VocaAgent(Agent):
         )
         try:
             handle = self.speaker.say(
-                APPROVAL_UNCLEAR, allow_interruptions=True, add_to_chat_ctx=True
+                unclear_text(self.vocabulary),
+                allow_interruptions=True,
+                add_to_chat_ctx=True,
             )
         except RuntimeError:
             return
@@ -899,7 +911,7 @@ class VocaAgent(Agent):
         self, turn_ctx: llm.ChatContext, new_message: llm.ChatMessage
     ) -> None:
         self.last_user_text = new_message.text_content or ""
-        parsed = parse(new_message.text_content)
+        parsed = parse(new_message.text_content, self.vocabulary)
         changed = False
         active = self.active
         if active is None and isinstance(parsed, Phrase):
@@ -908,7 +920,9 @@ class VocaAgent(Agent):
             started = new_message.metrics.get("started_speaking_at")
             if (
                 isinstance(parsed, NearMiss)
-                or echoes(new_message.text_content, self.announced_text)
+                or echoes(
+                    new_message.text_content, self.announced_text, self.vocabulary
+                )
                 or (
                     started is not None
                     and started < self.heard_at
@@ -1067,11 +1081,11 @@ class VocaAgent(Agent):
                 NO_REQUEST,
             )
         key = task.tool_call_id
-        if not refuses(self.last_user_text):
+        if not refuses(self.last_user_text, self.vocabulary):
             output = {
                 "id": short_id(key),
                 "event": "not_denied",
-                "reason": NOT_DENIED_REASON,
+                "reason": not_denied_reason(self.vocabulary),
             }
             return json.dumps(output, ensure_ascii=False)
         try:

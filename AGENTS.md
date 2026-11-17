@@ -127,6 +127,11 @@ a section) are no longer read.
 - `[compression]` — the compression triggers and the trim.
 - `[compression.model]` — the summariser.
 - `[delegation]` — the task file and the run deadline.
+- `[approval]` — the voice approval words: `confirm` and `deny` (single words;
+  the first of each is spoken and shown on the card), `refusal_stems` and
+  `refusal_words` (the guard of `deny_approval`), `near` (edits of a near
+  miss) and `echo_words` (words in a row that make an echo). No word of the
+  voice protocol is in the code.
 
 `[session].history_on_join` is how many archive rows a joining client gets
 in `voca.history` («Client channel»); `[session].path` is the session store
@@ -267,7 +272,7 @@ classes come from `livekit-api` in the `agent/` environment.
   "queued"|"running"|"waiting_approval"|"unknown"|"succeeded"|"failed",
   "text", "result": string|null, "error": string|null, "created_at",
   "delivered_at": number|null, "approval": {"description", "command",
-  "choices", "request_id"}|null}`. `approval` is set only while the task is
+  "choices", "request_id", "hint"}|null}`. `approval` is set only while the task is
   `waiting_approval`. `task`, `state` and `tasks` share one send chain, so
   their order is kept. The agent sends them from the `delegate` tool, its
   watchers and the delivery.
@@ -284,8 +289,9 @@ classes come from `livekit-api` in the `agent/` environment.
 - The task block is separate from the transcript: neither `history` nor a
   disconnect clears it. A card shows the status, the text, the full result,
   the error and «озвучено» once `delivered_at` is set. A `waiting_approval`
-  card also shows `description`, `command`, «Подтвердите на экране или скажите
-  „Подтверждаю“ или „Отклоняю“» and the buttons «Подтвердить» and «Отклонить»
+  card also shows `description`, `command`, the agent's `hint` (built from
+  `[approval]`: «Подтвердите на экране или скажите „<confirm>“ или „<deny>“»)
+  and the buttons «Подтвердить» and «Отклонить»
   (only with a `request_id`); every open card has «Отменить задачу».
 - The page calls RPC methods of the agent participant (the one with
   `lk.agent.state`): `voca.approve` with `{"tool_call_id", "request_id",

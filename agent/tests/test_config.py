@@ -147,3 +147,26 @@ def test_example_config_is_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("VOCA_CONFIG", str(EXAMPLE))
     assert EXAMPLE.is_file()
     assert Settings().model_dump() == defaults
+
+
+def test_approval_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    approval = Settings().approval
+    assert approval.confirm == ["Подтверждаю"]
+    assert approval.deny == ["Отклоняю"]
+    assert "нет" in approval.refusal_words
+    monkeypatch.setenv("VOCA_APPROVAL__CONFIRM", '["Принимаю", "Согласен"]')
+    vocabulary = Settings().approval.vocabulary()
+    assert vocabulary.confirm == ("Принимаю", "Согласен")
+    monkeypatch.delenv("VOCA_APPROVAL__CONFIRM")
+    write_config(
+        tmp_path,
+        monkeypatch,
+        '[approval]\ndeny = ["Запрещаю"]\nrefusal_words = ["никак"]\n',
+    )
+    vocabulary = Settings().approval.vocabulary()
+    assert vocabulary.deny == ("Запрещаю",)
+    assert vocabulary.refusal_words == ("никак",)
+    for text in ('[approval]\nconfirm = ["Да ладно"]\n', "[approval]\nconfirm = []\n"):
+        write_config(tmp_path, monkeypatch, text)
+        with pytest.raises(pydantic.ValidationError):
+            Settings()

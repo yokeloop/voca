@@ -11,6 +11,7 @@ from livekit.agents import RunContext, ToolError, llm
 from livekit.agents.voice import AgentSession
 
 from voca.clientio.cards import CardState
+from voca.config import ApprovalConfig
 from voca.conversation.agent import (
     SPEECH_LIMIT,
     VocaAgent,
@@ -31,6 +32,8 @@ from voca.telemetry.jsonl import JsonlLog
 
 EXAMPLE = Path(__file__).resolve().parents[2] / "instructions.example"
 NOW = 10.0
+
+VOCABULARY = ApprovalConfig().vocabulary()
 
 
 class FakeRepo:
@@ -275,6 +278,7 @@ class Stand:
             self.repo, self.backend, run_timeout=900, clock=lambda: NOW, sleep=tick
         )
         self.agent = VocaAgent(
+            vocabulary=VOCABULARY,
             loader=loader,
             instructions=instructions,
             log=JsonlLog(self.events, session="t"),

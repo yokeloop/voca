@@ -11,7 +11,9 @@ from livekit.agents import StopResponse, llm
 from livekit.agents.voice import AgentSession
 
 from voca.clientio.cards import CardState
-from voca.conversation.agent import APPROVAL_UNCLEAR, VocaAgent, announcement_text
+from voca.config import ApprovalConfig
+from voca.conversation.agent import VocaAgent, announcement_text
+from voca.conversation.approval import Vocabulary, unclear_text
 from voca.conversation.compaction import Limits
 from voca.conversation.instructions import InstructionLoader
 from voca.conversation.summarizer import Failure, Summarizer, Summary
@@ -22,6 +24,8 @@ from voca.telemetry.jsonl import JsonlLog
 
 EXAMPLE = Path(__file__).resolve().parents[2] / "instructions.example"
 NOW = 10.0
+
+VOCABULARY = ApprovalConfig().vocabulary()
 
 
 class FakeRepo:
@@ -242,6 +246,7 @@ class Stand:
         *,
         limits: Limits | None = None,
         summarizer: Summarizer | None = None,
+        vocabulary: Vocabulary = VOCABULARY,
     ) -> None:
         directory = tmp_path / "instructions"
         shutil.copytree(EXAMPLE, directory)
@@ -254,6 +259,7 @@ class Stand:
             self.repo, self.backend, run_timeout=900, clock=lambda: NOW, sleep=tick
         )
         self.agent = VocaAgent(
+            vocabulary=vocabulary,
             loader=loader,
             instructions=instructions,
             log=JsonlLog(self.events, session="t"),
@@ -371,7 +377,7 @@ def approvals(stand: Stand, key: str) -> list[object]:
 
 
 def test_announcement_text() -> None:
-    text = announcement_text(waiting("a"))
+    text = announcement_text(waiting("a"), VOCABULARY)
     assert text == (
         "Hermes просит подтверждения по поручению «Удали каталог /tmp/x»: "
         "удаление в корневом каталоге. Подтвердите на экране или скажите "
@@ -380,10 +386,10 @@ def test_announcement_text() -> None:
     assert "rm -r" not in text
     long = ("слово " * 20)[:100]
     assert len(long) == 100
-    quoted = announcement_text(replace(waiting("b"), text=long))
+    quoted = announcement_text(replace(waiting("b"), text=long), VOCABULARY)
     assert 0 < len(quoted.split("«")[1].split("»")[0]) <= 60
     bare = waiting("c", {"command": "rm -r /tmp/x", "request_id": "p1"})
-    assert announcement_text(bare) == (
+    assert announcement_text(bare, VOCABULARY) == (
         "Hermes просит подтверждения по поручению «Удали каталог /tmp/x»: "
         "опасная команда. Подтвердите на экране или скажите "
         "„Подтверждаю“ или „Отклоняю“."
@@ -398,7 +404,7 @@ def test_interrupted_announcement_still_active(tmp_path: Path) -> None:
         stand.start(session)
         stand.open()
         await until(lambda: stand.agent.active is not None)
-        assert spoken(session) == [announcement_text(waiting("a"))] * 2
+        assert spoken(session) == [announcement_text(waiting("a"), VOCABULARY)] * 2
         assert stand.agent.active is not None
         assert stand.agent.active.key == "a"
         rows = [row for row in stand.rows("a") if row.get("announced")]
@@ -467,7 +473,7 @@ def test_answered_not_reannounced(tmp_path: Path) -> None:
         await settle()
         assert not stand.agent.announcements
         assert stand.agent.active is None
-        assert spoken(session) == [announcement_text(task), "Подтверждено"]
+        assert spoken(session) == [announcement_text(task, VOCABULARY), "Подтверждено"]
         await stand.agent.stop_delegation()
 
     asyncio.run(main())
@@ -488,6 +494,7 @@ def test_facts_survive_restore(tmp_path: Path) -> None:
         loader = InstructionLoader(directory)
         instructions = loader.load()
         agent = VocaAgent(
+            vocabulary=VOCABULARY,
             loader=loader,
             instructions=instructions,
             log=JsonlLog(tmp_path / "second.jsonl", session="t2"),
@@ -530,13 +537,15 @@ def test_interrupted_first_holds_queue(tmp_path: Path) -> None:
         session = FakeSession(interrupts=[True, True, False])
         await activate(stand, session, waiting("a"), waiting("b", created_at=2.0))
         await settle()
-        assert spoken(session) == [announcement_text(waiting("a"))] * 2
+        assert spoken(session) == [announcement_text(waiting("a"), VOCABULARY)] * 2
         assert stand.agent.active is not None
         assert stand.agent.active.key == "a"
         await stopped(stand.agent, "Подтверждаю")
         assert stand.backend.approved == [("run_a", "once", APPROVAL)]
         await until(lambda: len(session.calls) == 4)
-        assert spoken(session)[-1] == announcement_text(waiting("b", created_at=2.0))
+        assert spoken(session)[-1] == announcement_text(
+            waiting("b", created_at=2.0), VOCABULARY
+        )
         await stand.agent.stop_delegation()
 
     asyncio.run(main())
@@ -557,7 +566,7 @@ def test_next_announcement_waits_for_active(tmp_path: Path) -> None:
         await until(lambda: stand.agent.active is not None)
         assert spoken(session)[1:] == [
             "Подтверждено",
-            announcement_text(waiting("b", created_at=2.0)),
+            announcement_text(waiting("b", created_at=2.0), VOCABULARY),
         ]
         assert stand.agent.active is not None
         assert stand.agent.active.key == "b"
@@ -579,7 +588,7 @@ def test_announcement_before_result_and_results_play(tmp_path: Path) -> None:
         await until(lambda: stand.repo.tasks["c"].delivered_at is not None)
         await settle()
         assert spoken(session) == [
-            announcement_text(waiting("a")),
+            announcement_text(waiting("a"), VOCABULARY),
             "Готово по поручению: Третья.",
         ]
         assert stand.agent.active is not None
@@ -635,7 +644,7 @@ def test_waiting_task_announced_on_join(tmp_path: Path) -> None:
         stand.start(session)
         stand.open()
         await until(lambda: len(session.calls) == 1)
-        assert spoken(session) == [announcement_text(waiting("a"))]
+        assert spoken(session) == [announcement_text(waiting("a"), VOCABULARY)]
         await stand.agent.stop_delegation()
 
     asyncio.run(main())
@@ -822,8 +831,8 @@ def test_near_miss_says_unclear(tmp_path: Path, text: str) -> None:
         await activate(stand, session, waiting("a"))
         active = stand.agent.active
         await stopped(stand.agent, text)
-        assert spoken(session)[-1] == APPROVAL_UNCLEAR
-        assert session.calls[-1] == (APPROVAL_UNCLEAR, True, True)
+        assert spoken(session)[-1] == unclear_text(VOCABULARY)
+        assert session.calls[-1] == (unclear_text(VOCABULARY), True, True)
         assert stand.backend.approved == []
         assert stand.agent.active is active
         assert facts(stand.agent.chat_ctx)[-1] == (
@@ -841,7 +850,7 @@ def test_both_keywords_unclear(tmp_path: Path) -> None:
         session = FakeSession()
         await activate(stand, session, waiting("a"))
         await stopped(stand.agent, "Подтверждаю или отклоняю")
-        assert spoken(session)[-1] == APPROVAL_UNCLEAR
+        assert spoken(session)[-1] == unclear_text(VOCABULARY)
         assert stand.backend.approved == []
         assert stand.agent.active is not None
         await stand.agent.stop_delegation()
@@ -859,7 +868,7 @@ def test_echo_window_unclear(tmp_path: Path) -> None:
             await agent.on_user_turn_completed(
                 agent.chat_ctx.copy(), said("Подтверждаю", agent.heard_at - 1)
             )
-        assert spoken(session)[-1] == APPROVAL_UNCLEAR
+        assert spoken(session)[-1] == unclear_text(VOCABULARY)
         assert stand.backend.approved == []
         assert agent.active is not None
         with pytest.raises(StopResponse):
@@ -893,13 +902,15 @@ def test_queue_waits_for_answer(tmp_path: Path) -> None:
         session = FakeSession()
         await activate(stand, session, waiting("a"), waiting("b", created_at=2.0))
         await settle()
-        assert spoken(session) == [announcement_text(waiting("a"))]
+        assert spoken(session) == [announcement_text(waiting("a"), VOCABULARY)]
         await answer(stand.agent, "А что он удалит?")
         await settle()
         assert len(session.calls) == 1
         await stopped(stand.agent, "Подтверждаю")
         await until(lambda: len(session.calls) == 3)
-        assert spoken(session)[-1] == announcement_text(waiting("b", created_at=2.0))
+        assert spoken(session)[-1] == announcement_text(
+            waiting("b", created_at=2.0), VOCABULARY
+        )
         await stand.agent.stop_delegation()
 
     asyncio.run(main())
@@ -919,7 +930,7 @@ def test_unclear_reply_moves_echo_window(tmp_path: Path) -> None:
                 agent.chat_ctx.copy(),
                 said("Подтверждаю", (before + agent.heard_at) / 2),
             )
-        assert spoken(session)[-1] == APPROVAL_UNCLEAR
+        assert spoken(session)[-1] == unclear_text(VOCABULARY)
         assert stand.backend.approved == []
         await agent.stop_delegation()
 
@@ -980,7 +991,7 @@ def test_barge_in_echo_rejected(tmp_path: Path) -> None:
         ):
             with pytest.raises(StopResponse):
                 await heard(agent, text, agent.heard_at - 1)
-            assert spoken(session)[-1] == APPROVAL_UNCLEAR
+            assert spoken(session)[-1] == unclear_text(VOCABULARY)
         assert stand.backend.approved == []
         assert agent.active is not None
         await agent.stop_delegation()
@@ -998,5 +1009,26 @@ def test_barge_in_filler_not_counted(tmp_path: Path) -> None:
         assert stand.backend.approved == []
         assert agent.active is not None
         await agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_configured_keywords(tmp_path: Path) -> None:
+    custom = ApprovalConfig(confirm=["Принимаю"], deny=["Запрещаю"]).vocabulary()
+
+    async def main() -> None:
+        stand = Stand(tmp_path, vocabulary=custom)
+        session = FakeSession()
+        await activate(stand, session, waiting("a"))
+        assert spoken(session)[0].endswith(
+            "Подтвердите на экране или скажите „Принимаю“ или „Запрещаю“."
+        )
+        await answer(stand.agent, "Подтверждаю")
+        assert stand.backend.approved == []
+        await stopped(stand.agent, "Примаю")
+        assert spoken(session)[-1] == unclear_text(custom)
+        await stopped(stand.agent, "Принимаю.")
+        assert stand.backend.approved == [("run_a", "once", APPROVAL)]
+        await stand.agent.stop_delegation()
 
     asyncio.run(main())

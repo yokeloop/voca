@@ -18,6 +18,9 @@ from pydantic_settings import (
     TomlConfigSettingsSource,
 )
 
+from voca.conversation.approval import Vocabulary
+
+WORD = re.compile(r"^\w+$")
 DAILY_AT = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 
 
@@ -51,6 +54,44 @@ class AgentConfig(BaseModel):
     aec_warmup: float = 3.0
     endpointing_min_delay: float = 0.5
     preemptive_generation: bool = False
+
+
+class ApprovalConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    confirm: list[str] = Field(default=["Подтверждаю"], min_length=1)
+    deny: list[str] = Field(default=["Отклоняю"], min_length=1)
+    refusal_stems: list[str] = [
+        "отклон",
+        "отказ",
+        "откаж",
+        "не подтверж",
+        "не надо",
+        "нельзя",
+        "запрет",
+        "запрещ",
+    ]
+    refusal_words: list[str] = ["нет"]
+    near: int = Field(default=2, ge=0)
+    echo_words: int = Field(default=3, ge=1)
+
+    @field_validator("confirm", "deny")
+    @classmethod
+    def single_words(cls, value: list[str]) -> list[str]:
+        for word in value:
+            if not WORD.match(word):
+                raise ValueError(f"ключевое слово — одно слово: {word!r}")
+        return value
+
+    def vocabulary(self) -> Vocabulary:
+        return Vocabulary(
+            confirm=tuple(self.confirm),
+            deny=tuple(self.deny),
+            refusal_stems=tuple(self.refusal_stems),
+            refusal_words=tuple(self.refusal_words),
+            near=self.near,
+            echo_words=self.echo_words,
+        )
 
 
 class SessionConfig(BaseModel):
@@ -158,6 +199,7 @@ class Settings(BaseSettings):
     session: SessionConfig = Field(default_factory=SessionConfig)
     compression: CompressionConfig = Field(default_factory=CompressionConfig)
     delegation: DelegationConfig = Field(default_factory=DelegationConfig)
+    approval: ApprovalConfig = Field(default_factory=ApprovalConfig)
 
     @field_validator("instructions_dir")
     @classmethod

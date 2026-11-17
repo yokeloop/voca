@@ -192,7 +192,11 @@ def test_task_item_schema() -> None:
         "command": "rm -r x",
         "choices": ["once", "deny"],
         "request_id": "r1",
+        "hint": "",
     }
+    assert task_item(waiting, "Скажите „Принимаю“")["approval"]["hint"] == (
+        "Скажите „Принимаю“"
+    )
     assert "run_id" not in item
     assert "stop_requested_at" not in item
     assert "stop_reason" not in item

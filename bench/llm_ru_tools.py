@@ -238,6 +238,7 @@ async def tool_cases(name: str) -> bool:
             cards=CardState(instructions),
             ctx_high=9830,
             ctx_low=6553,
+            vocabulary=Settings().approval.vocabulary(),
         )
         for item in corpus:
             entry = await tool_case(model, agent, item)
