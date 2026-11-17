@@ -570,3 +570,60 @@ def test_steer_not_running_raises() -> None:
     with pytest.raises(NotSteerable):
         asyncio.run(service.steer("k", "добавь b.txt"))
     assert backend.steers == []
+
+
+def test_watch_settles_user_cancel() -> None:
+    service, repo, backend, _, seen = make()
+    repo.tasks["k"] = replace(running(), stop_requested_at=0.0, stop_reason="user")
+    backend.runs["run_1"] = [state("run_1", TaskStatus.FAILED, error="cancelled")]
+    task = asyncio.run(service.watch("k"))
+    assert task.status == TaskStatus.FAILED
+    assert task.error == "cancelled"
+    assert task.delivered_at is not None
+    assert backend.gets == [("run_1", "user")]
+    assert [item.delivered_at is not None for item in seen] == [True]
+
+
+def test_watch_does_not_expire_user_cancel() -> None:
+    service, repo, backend, clock, _ = make(run_timeout=10)
+    clock.now = 100
+    repo.tasks["k"] = replace(running(), stop_requested_at=99.0, stop_reason="user")
+    backend.runs["run_1"] = [
+        state("run_1", TaskStatus.RUNNING),
+        state("run_1", TaskStatus.FAILED, error="cancelled"),
+    ]
+    task = asyncio.run(service.watch("k"))
+    assert backend.stopped == []
+    assert task.stop_reason == "user"
+    assert task.error == "cancelled"
+
+
+def test_watch_closes_stuck_user_cancel() -> None:
+    service, repo, backend, clock, _ = make()
+    repo.tasks["k"] = replace(running(), stop_requested_at=0.0, stop_reason="user")
+    backend.runs["run_1"] = [state("run_1", TaskStatus.RUNNING)]
+    task = asyncio.run(service.watch("k"))
+    assert task.status == TaskStatus.FAILED
+    assert task.error == "cancelled"
+    assert task.delivered_at is not None
+    assert clock.now <= 34
+    assert backend.stopped == []
+
+
+def test_cancel_after_watch_settled() -> None:
+    service, repo, backend, _, _ = make()
+    repo.tasks["k"] = running()
+
+    async def stop(run_id: str, reason: str) -> RunState | None:
+        backend.stopped.append((run_id, reason))
+        current = repo.tasks["k"]
+        repo.tasks["k"] = current.transition(
+            TaskStatus.FAILED, error="cancelled", delivered_at=1.0
+        )
+        return state("run_1", TaskStatus.FAILED, error="cancelled")
+
+    backend.stop = stop  # type: ignore[method-assign]
+    task = asyncio.run(service.cancel("k"))
+    assert task.status == TaskStatus.FAILED
+    assert task.error == "cancelled"
+    assert task.delivered_at == 1.0

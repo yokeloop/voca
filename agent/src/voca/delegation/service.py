@@ -94,7 +94,16 @@ class DelegationService:
             task = await self._get(key)
             if not task.is_open or task.status == TaskStatus.QUEUED:
                 return task
-            if self._expired(task):
+            if task.stop_reason == STOP_USER:
+                if self._cancel_lapsed(task):
+                    return await self._save(
+                        task.transition(
+                            TaskStatus.FAILED,
+                            error=CANCELLED,
+                            delivered_at=self.clock(),
+                        )
+                    )
+            elif self._expired(task):
                 return await self._expire(task)
             run_id = task.run_id
             assert run_id is not None
@@ -115,10 +124,19 @@ class DelegationService:
                 return task
             await self.sleep(POLL_S)
 
+    def _cancel_lapsed(self, task: Task) -> bool:
+        started = task.stop_requested_at
+        return started is not None and self.clock() - started > STOP_WINDOW_S
+
     async def _apply(self, task: Task, state: RunState) -> Task:
         current = await self.repo.get(task.tool_call_id) or task
-        if not current.is_open or current.stop_reason == STOP_USER:
+        if not current.is_open:
             return current
+        if current.stop_reason == STOP_USER:
+            if task.stop_reason != STOP_USER:
+                return current
+            if state.status in TERMINAL:
+                current = replace(current, delivered_at=self.clock())
         return await self._settle(current, state)
 
     async def _settle(self, task: Task, state: RunState) -> Task:
@@ -263,13 +281,15 @@ class DelegationService:
                 if polled.status in TERMINAL:
                     state = polled
                     break
+        current = await self._get(key)
+        if not current.is_open:
+            if current.delivered_at is None:
+                current = await self._save(replace(current, delivered_at=self.clock()))
+            return current
+        done = replace(current, delivered_at=self.clock())
         if state is not None:
-            final = await self._settle(task, state)
-        else:
-            final = await self._save(
-                task.transition(TaskStatus.FAILED, error=CANCELLED)
-            )
-        return await self._save(replace(final, delivered_at=self.clock()))
+            return await self._settle(done, state)
+        return await self._save(done.transition(TaskStatus.FAILED, error=CANCELLED))
 
     async def steer(self, key: str, text: str) -> None:
         task = await self._get(key)
