@@ -11,13 +11,22 @@ from livekit.agents import RunContext, ToolError, llm
 from livekit.agents.voice import AgentSession
 
 from voca.clientio.cards import CardState
-from voca.conversation.agent import SPEECH_LIMIT, VocaAgent, clip, delivery_text
+from voca.conversation.agent import (
+    SPEECH_LIMIT,
+    VocaAgent,
+    clip,
+    delivery_text,
+    records,
+    result_outcome,
+)
 from voca.conversation.compaction import Limits
+from voca.conversation.context import split_turns
 from voca.conversation.instructions import InstructionLoader
 from voca.conversation.summarizer import Failure, Summarizer, Summary
 from voca.delegation.model import Task, TaskStatus
 from voca.delegation.ports import OutcomeUnknown, Rejected, RunState
 from voca.delegation.service import DelegationService
+from voca.session.store import SessionRecorder, SessionStore
 from voca.telemetry.jsonl import JsonlLog
 
 EXAMPLE = Path(__file__).resolve().parents[2] / "instructions.example"
@@ -157,19 +166,24 @@ class FakeHandle:
         agent: VocaAgent | None,
         interrupted: bool,
         gate: asyncio.Event,
+        played: str | None = None,
     ) -> None:
         self.text = text
+        self.played = text if played is None else played
         self.add_to_chat_ctx = add_to_chat_ctx
         self.events = events
         self.agent = agent
         self.interrupted = interrupted
         self.gate = gate
+        self.chat_items: list[llm.ChatItem] = []
 
     async def wait_for_playout(self) -> None:
         await self.gate.wait()
         if self.add_to_chat_ctx and self.agent is not None:
             ctx = self.agent.chat_ctx.copy()
-            ctx.add_message(role="assistant", content=self.text)
+            self.chat_items.append(
+                ctx.add_message(role="assistant", content=self.played)
+            )
             await self.agent.update_chat_ctx(ctx)
         self.events.append(("playout", self.text))
 
@@ -182,8 +196,10 @@ class FakeSession:
         agent: VocaAgent | None = None,
         interrupted: bool = False,
         gates: list[asyncio.Event] | None = None,
+        played: str | None = None,
     ) -> None:
         self.closing = closing
+        self.played = played
         self.agent = agent
         self.interrupted = interrupted
         self.gates = gates or []
@@ -199,7 +215,13 @@ class FakeSession:
         self.events.append(("say", text))
         gate = self.gates.pop(0) if self.gates else opened()
         return FakeHandle(
-            text, add_to_chat_ctx, self.events, self.agent, self.interrupted, gate
+            text,
+            add_to_chat_ctx,
+            self.events,
+            self.agent,
+            self.interrupted,
+            gate,
+            self.played,
         )
 
 
@@ -233,9 +255,10 @@ class Stand:
         *,
         limits: Limits | None = None,
         summarizer: Summarizer | None = None,
+        chat_ctx: llm.ChatContext | None = None,
     ) -> None:
         directory = tmp_path / "instructions"
-        shutil.copytree(EXAMPLE, directory)
+        shutil.copytree(EXAMPLE, directory, dirs_exist_ok=True)
         loader = InstructionLoader(directory)
         instructions = loader.load()
         self.events = tmp_path / "events.jsonl"
@@ -254,6 +277,7 @@ class Stand:
             limits=limits,
             summarizer=summarizer,
             delegation=self.service,
+            chat_ctx=chat_ctx,
         )
         self.service.on_change = self.agent.on_task_change
         self.history = asyncio.Event()
@@ -433,9 +457,155 @@ def test_say_on_closing_session_keeps_task_undelivered(tmp_path: Path) -> None:
         assert deliverer is not None
         await until(deliverer.done)
         assert stand.repo.tasks["a"].delivered_at is None
+        assert results(stand.agent) == []
         await stand.agent.stop_delegation()
 
     asyncio.run(main())
+
+
+LONG = " ".join(f"Фраза {n} о маршруте." for n in range(40))
+PLAYED = "Готово по поручению: Фраза 0"
+DUMP: dict[str, Any] = {
+    "exclude_function_call": False,
+    "exclude_timestamp": False,
+    "exclude_config_update": True,
+}
+
+
+def results(agent: VocaAgent) -> list[llm.ChatItem]:
+    return [
+        item
+        for item in agent.chat_ctx.items
+        if item.type in ("function_call", "function_call_output")
+    ]
+
+
+def check_result(agent: VocaAgent, task: Task, outcome: dict[str, str]) -> None:
+    call, output = results(agent)
+    assert isinstance(call, llm.FunctionCall)
+    assert isinstance(output, llm.FunctionCallOutput)
+    assert call.name == "delegate"
+    assert json.loads(call.arguments) == {"task": task.text}
+    assert output.call_id == call.call_id
+    assert json.loads(output.output) == outcome
+
+
+def test_interrupted_delivery_puts_full_result_in_context(tmp_path: Path) -> None:
+    async def main() -> VocaAgent:
+        stand = Stand(tmp_path)
+        task = stand.put(finished("a", LONG))
+        session = FakeSession(agent=stand.agent, interrupted=True, played=PLAYED)
+        stand.start(session)
+        stand.agent.enqueue(task)
+        stand.open()
+        await until(lambda: stand.repo.tasks["a"].delivered_at is not None)
+        stand.agent.enqueue(task)
+        await stand.agent.enqueue_undelivered()
+        await settle()
+        assert len(session.calls) == 1
+        await stand.agent.stop_delegation()
+        return stand.agent
+
+    agent = asyncio.run(main())
+    check_result(agent, finished("a"), {"status": "succeeded", "result": LONG})
+    items = agent.chat_ctx.items
+    assert [item.type for item in items] == [
+        "function_call",
+        "function_call_output",
+        "message",
+    ]
+    assert items[2].text_content == PLAYED
+    assert [len(turn) for turn in split_turns(records(agent.chat_ctx))] == [3]
+
+
+def test_long_delivery_puts_whole_result_in_context(tmp_path: Path) -> None:
+    async def main() -> VocaAgent:
+        stand = Stand(tmp_path)
+        task = stand.put(finished("a", LONG))
+        session = FakeSession(agent=stand.agent)
+        stand.start(session)
+        stand.agent.enqueue(task)
+        stand.open()
+        await until(lambda: stand.repo.tasks["a"].delivered_at is not None)
+        await stand.agent.stop_delegation()
+        return stand.agent
+
+    agent = asyncio.run(main())
+    spoken = delivery_text(finished("a", LONG))
+    assert len(spoken) < len(LONG)
+    assert agent.chat_ctx.items[-1].text_content == spoken
+    check_result(agent, finished("a"), {"status": "succeeded", "result": LONG})
+
+
+def test_failed_delivery_puts_reason_in_context(tmp_path: Path) -> None:
+    async def main() -> VocaAgent:
+        stand = Stand(tmp_path)
+        task = stand.put(
+            Task("b", "t", TaskStatus.FAILED, created_at=1.0, error="timeout")
+        )
+        stand.start(FakeSession(agent=stand.agent))
+        stand.agent.enqueue(task)
+        stand.open()
+        await until(lambda: stand.repo.tasks["b"].delivered_at is not None)
+        await stand.agent.stop_delegation()
+        return stand.agent
+
+    agent = asyncio.run(main())
+    check_result(
+        agent,
+        finished("b"),
+        {"status": "failed", "error": "не дождался результата", "detail": "timeout"},
+    )
+    assert results(agent)[1].is_error is True
+    assert json.loads(result_outcome(failed("HTTP 500 boom"))) == {
+        "status": "failed",
+        "error": "Hermes вернул ошибку",
+        "detail": "HTTP 500 boom",
+    }
+    assert json.loads(result_outcome(failed(""))) == {
+        "status": "failed",
+        "error": "Hermes вернул ошибку",
+    }
+
+
+def test_result_in_context_once_across_restart(tmp_path: Path) -> None:
+    path = tmp_path / "sessions.sqlite3"
+
+    async def first() -> None:
+        stand = Stand(tmp_path)
+        stand.put(finished("a", LONG))
+        stand.start(FakeSession(agent=stand.agent))
+        stand.agent.enqueue(stand.repo.tasks["a"])
+        stand.open()
+        await until(lambda: stand.repo.tasks["a"].delivered_at is not None)
+        await stand.agent.stop_delegation()
+        store = SessionStore.open(path)
+        recorder = SessionRecorder(store, store.open_session().id)
+        recorder.flush(stand.agent.chat_ctx.to_dict(**DUMP))
+        store.close()
+
+    async def second() -> VocaAgent:
+        store = SessionStore.open(path)
+        restored = llm.ChatContext.from_dict(store.open_session().context)
+        store.close()
+        stand = Stand(tmp_path, chat_ctx=restored)
+        check_result(
+            stand.agent, finished("a"), {"status": "succeeded", "result": LONG}
+        )
+        session = FakeSession(agent=stand.agent)
+        stand.start(session)
+        stand.agent.enqueue(stand.put(finished("a", LONG)))
+        stand.open()
+        await until(lambda: stand.repo.tasks["a"].delivered_at is not None)
+        assert len(session.calls) == 1
+        await stand.agent.stop_delegation()
+        return stand.agent
+
+    asyncio.run(first())
+    agent = asyncio.run(second())
+    check_result(agent, finished("a"), {"status": "succeeded", "result": LONG})
+    spoken = [item for item in agent.chat_ctx.items if item.type == "message"]
+    assert len(spoken) == 2
 
 
 def test_recovered_undelivered_spoken_one_by_one(tmp_path: Path) -> None:
@@ -498,7 +668,11 @@ def test_result_during_pending_summary_stays(tmp_path: Path) -> None:
 
     agent = asyncio.run(main())
     items = agent.chat_ctx.items
-    summaries = [n for n, item in enumerate(items) if item.extra.get("voca_summary")]
+    summaries = [
+        n
+        for n, item in enumerate(items)
+        if item.type == "message" and item.extra.get("voca_summary")
+    ]
     spoken = [
         n
         for n, item in enumerate(items)

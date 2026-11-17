@@ -167,12 +167,13 @@ class FakeHandle:
         self.agent = agent
         self.interrupted = interrupted
         self.gate = gate
+        self.chat_items: list[llm.ChatItem] = []
 
     async def wait_for_playout(self) -> None:
         await self.gate.wait()
         if self.add_to_chat_ctx and self.agent is not None:
             ctx = self.agent.chat_ctx.copy()
-            ctx.add_message(role="assistant", content=self.text)
+            self.chat_items.append(ctx.add_message(role="assistant", content=self.text))
             await self.agent.update_chat_ctx(ctx)
         self.events.append(("playout", self.text))
 
