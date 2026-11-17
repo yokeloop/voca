@@ -2,7 +2,7 @@ import asyncio
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
-from typing import Literal
+from typing import Any, Literal
 
 from voca.delegation.model import (
     LOST,
@@ -198,9 +198,18 @@ class DelegationService:
         await asyncio.gather(*(self.watch(key) for key in watched))
         return await self.repo.list_undelivered()
 
-    async def approve(self, key: str, choice: Literal["once", "deny"]) -> None:
+    async def approve(
+        self,
+        key: str,
+        choice: Literal["once", "deny"],
+        expected: dict[str, Any] | None = None,
+    ) -> None:
         task = await self._get(key)
-        if task.status != TaskStatus.WAITING_APPROVAL or task.approval is None:
+        if (
+            task.status != TaskStatus.WAITING_APPROVAL
+            or task.approval is None
+            or (expected is not None and task.approval != expected)
+        ):
             raise ApprovalNotActive(key)
         assert task.run_id is not None
         await self.backend.approve(task.run_id, choice, task.approval)
