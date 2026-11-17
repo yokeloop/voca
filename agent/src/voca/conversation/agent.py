@@ -18,7 +18,7 @@ from livekit.agents import (
     function_tool,
     llm,
 )
-from livekit.agents.voice import Agent, AgentSession, ModelSettings
+from livekit.agents.voice import Agent, AgentSession, ModelSettings, SpeechHandle
 
 from voca.clientio.cards import CardState
 from voca.conversation.approval import Choice, NearMiss, parse
@@ -481,7 +481,7 @@ class VocaAgent(Agent):
                 and self.answered.get(item.key) != item.approval
             ):
                 self.active = item
-        elif item.attempts < ANNOUNCE_ATTEMPTS:
+        else:
             self.announcements.appendleft(item)
             self.wake.set()
         return True
@@ -622,11 +622,16 @@ class VocaAgent(Agent):
             },
         )
         try:
-            self.speaker.say(
+            handle = self.speaker.say(
                 APPROVAL_UNCLEAR, allow_interruptions=True, add_to_chat_ctx=True
             )
         except RuntimeError:
-            pass
+            return
+        self._spawn(self._heard(handle))
+
+    async def _heard(self, handle: SpeechHandle) -> None:
+        await handle.wait_for_playout()
+        self.heard_at = time.time()
 
     def _settled(self, key: str, approval: dict[str, Any]) -> None:
         self.answered[key] = approval
@@ -667,15 +672,22 @@ class VocaAgent(Agent):
     async def cancel_from_page(self, key: str) -> dict[str, Any]:
         if self.delegation is None:
             return {"ok": False, "error": DELEGATE_UNAVAILABLE}
+        task = await self.delegation.repo.get(key)
+        if task is None:
+            return {"ok": False, "error": TASK_UNKNOWN}
+        if not task.is_open:
+            return {"ok": False, "error": TASK_CLOSED}
         self.in_tool.add(key)
+        self._spawn(self._cancel_by_button(key))
+        return {"ok": True}
+
+    async def _cancel_by_button(self, key: str) -> None:
+        assert self.delegation is not None
         try:
             final = await self.delegation.cancel(key)
-        except TaskNotOpen:
-            return {"ok": False, "error": TASK_CLOSED}
-        except TaskNotFound:
-            return {"ok": False, "error": TASK_UNKNOWN}
-        except DelegationError:
-            return {"ok": False, "error": ACTION_FAILED}
+        except DelegationError as error:
+            logging.getLogger("voca.tasks").warning("cancel failed: %s: %r", key, error)
+            return
         finally:
             self.in_tool.discard(key)
         view = task_view(final, self.active)
@@ -688,13 +700,22 @@ class VocaAgent(Agent):
             }
         )
         await self._fact("list_tasks", {}, output)
-        return {"ok": True}
 
-    async def _pick_task(self, id: str | None, allowed: Callable[[Task], bool]) -> Task:
+    async def _pick_task(
+        self,
+        id: str | None,
+        allowed: Callable[[Task], bool],
+        unfit: str = TASK_UNKNOWN,
+    ) -> Task:
         assert self.delegation is not None
-        candidates = [
-            task for task in await self.delegation.repo.list_open() if allowed(task)
-        ]
+        found = await self.delegation.repo.list_open()
+        candidates = [task for task in found if allowed(task)]
+        if (
+            id
+            and not any(task.tool_call_id.startswith(id) for task in candidates)
+            and any(task.tool_call_id.startswith(id) for task in found)
+        ):
+            raise ToolError(unfit)
         if id:
             exact = [task for task in candidates if task.tool_call_id == id]
             if exact:
@@ -972,7 +993,9 @@ class VocaAgent(Agent):
         found = await self.delegation.repo.list_open()
         if found and not any(task.status == TaskStatus.RUNNING for task in found):
             raise ToolError(NOT_STEERABLE)
-        task = await self._pick_task(id, lambda task: task.status == TaskStatus.RUNNING)
+        task = await self._pick_task(
+            id, lambda task: task.status == TaskStatus.RUNNING, NOT_STEERABLE
+        )
         try:
             await self.delegation.steer(task.tool_call_id, text)
         except NotSteerable:
@@ -1003,6 +1026,7 @@ class VocaAgent(Agent):
                     task.status == TaskStatus.WAITING_APPROVAL
                     and task.approval is not None
                 ),
+                NO_REQUEST,
             )
         key = task.tool_call_id
         try:

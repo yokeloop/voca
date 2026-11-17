@@ -270,6 +270,7 @@ def test_cancel_from_page(tmp_path: Path) -> None:
         stand.put(running("a"))
         stand.backend.stops = [RunState("run_a", TaskStatus.FAILED, error="cancelled")]
         assert await stand.agent.cancel_from_page("a") == {"ok": True}
+        await until(lambda: bool(facts(stand.agent.chat_ctx)))
         assert facts(stand.agent.chat_ctx)[-1] == (
             "list_tasks",
             {
@@ -288,5 +289,28 @@ def test_cancel_from_page(tmp_path: Path) -> None:
             "error": TASK_CLOSED,
         }
         await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_steer_wrong_state_with_id(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path)
+        stand.put(waiting("a"))
+        stand.put(running("b", created_at=2.0))
+        with pytest.raises(ToolError, match=NOT_STEERABLE):
+            await stand.agent.steer_task("добавь b.txt", "a")
+        assert stand.backend.steers == []
+
+    asyncio.run(main())
+
+
+def test_deny_wrong_state_with_id(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path)
+        stand.put(running("a"))
+        with pytest.raises(ToolError, match=NO_REQUEST):
+            await stand.agent.deny_approval("a")
+        assert stand.backend.approved == []
 
     asyncio.run(main())

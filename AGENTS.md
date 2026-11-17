@@ -290,7 +290,8 @@ classes come from `livekit-api` in the `agent/` environment.
 - The page calls RPC methods of the agent participant (the one with
   `lk.agent.state`): `voca.approve` with `{"tool_call_id", "request_id",
   "choice": "once"|"deny"}` and `voca.cancel_task` with `{"tool_call_id"}`,
-  response timeout 45 s. The answer is `{"ok": true}` or `{"ok": false,
+  response timeout 45 s; `voca.cancel_task` answers once the cancel has
+  started, its outcome comes as a `task` message. The answer is `{"ok": true}` or `{"ok": false,
   "error"}`; an invalid payload gives «неверный запрос». The agent answers a
   request only when `request_id` matches the waiting one, speaks nothing and
   puts a fact into the model's context.

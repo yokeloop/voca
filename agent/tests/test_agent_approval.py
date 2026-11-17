@@ -903,3 +903,24 @@ def test_queue_waits_for_answer(tmp_path: Path) -> None:
         await stand.agent.stop_delegation()
 
     asyncio.run(main())
+
+
+def test_unclear_reply_moves_echo_window(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path)
+        session = FakeSession()
+        await activate(stand, session, waiting("a"))
+        agent = stand.agent
+        before = agent.heard_at
+        await stopped(agent, "подверждаю")
+        await until(lambda: agent.heard_at > before)
+        with pytest.raises(StopResponse):
+            await agent.on_user_turn_completed(
+                agent.chat_ctx.copy(),
+                said("Подтверждаю", (before + agent.heard_at) / 2),
+            )
+        assert spoken(session)[-1] == APPROVAL_UNCLEAR
+        assert stand.backend.approved == []
+        await agent.stop_delegation()
+
+    asyncio.run(main())
