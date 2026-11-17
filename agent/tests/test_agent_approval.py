@@ -924,3 +924,79 @@ def test_unclear_reply_moves_echo_window(tmp_path: Path) -> None:
         await agent.stop_delegation()
 
     asyncio.run(main())
+
+
+async def heard(agent: VocaAgent, text: str, started: float) -> None:
+    await agent.on_user_turn_completed(agent.chat_ctx.copy(), said(text, started))
+
+
+def test_barge_in_phrase_counts(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path)
+        session = FakeSession(interrupts=[True, True])
+        await activate(stand, session, waiting("a"))
+        agent = stand.agent
+        with pytest.raises(StopResponse):
+            await heard(agent, "Подтверждаю.", agent.heard_at - 1)
+        assert stand.backend.approved == [("run_a", "once", APPROVAL)]
+        assert spoken(session)[-1] == "Подтверждено"
+        await agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_barge_in_while_replaying(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path)
+        replay = asyncio.Event()
+        session = FakeSession(interrupts=[True, False], gates=[opened(), replay])
+        stand.agent.on_task_change(stand.put(waiting("a")))
+        stand.start(session)
+        stand.open()
+        await until(lambda: len(session.calls) == 2)
+        agent = stand.agent
+        assert agent.active is None
+        with pytest.raises(StopResponse):
+            await heard(agent, "Подтверждаю", agent.heard_at - 1)
+        assert stand.backend.approved == [("run_a", "once", APPROVAL)]
+        replay.set()
+        await settle()
+        assert agent.active is None
+        assert len(session.calls) == 3
+        await agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_barge_in_echo_rejected(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path)
+        session = FakeSession(interrupts=[True, True])
+        await activate(stand, session, waiting("a"))
+        agent = stand.agent
+        for text in (
+            "Подтверждаю по поручению «Удали каталог",
+            "Подтверждаю или Отклоняю",
+        ):
+            with pytest.raises(StopResponse):
+                await heard(agent, text, agent.heard_at - 1)
+            assert spoken(session)[-1] == APPROVAL_UNCLEAR
+        assert stand.backend.approved == []
+        assert agent.active is not None
+        await agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_barge_in_filler_not_counted(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path)
+        session = FakeSession(interrupts=[True, True])
+        await activate(stand, session, waiting("a"))
+        agent = stand.agent
+        await heard(agent, "Ммм, подтверждаю, хорошо. Давай.", agent.heard_at - 1)
+        assert stand.backend.approved == []
+        assert agent.active is not None
+        await agent.stop_delegation()
+
+    asyncio.run(main())

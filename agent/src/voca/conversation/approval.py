@@ -6,6 +6,7 @@ from typing import Literal
 Choice = Literal["once", "deny"]
 PHRASES: dict[str, Choice] = {"подтверждаю": "once", "отклоняю": "deny"}
 NEAR = 2
+ECHO_WORDS = 3
 REFUSAL_STEMS = (
     "отклон",
     "отказ",
@@ -85,4 +86,13 @@ def refuses(text: str | None) -> bool:
     joined = " ".join(words)
     return any(stem in joined for stem in REFUSAL_STEMS) or any(
         word in REFUSAL_WORDS for word in words
+    )
+
+
+def echoes(text: str | None, source: str) -> bool:
+    words = re.findall(r"\w+", normalize(text or ""))
+    spoken = " " + " ".join(re.findall(r"\w+", normalize(source))) + " "
+    return any(
+        f" {' '.join(words[i : i + ECHO_WORDS])} " in spoken
+        for i in range(len(words) - ECHO_WORDS + 1)
     )

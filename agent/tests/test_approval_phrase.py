@@ -2,6 +2,7 @@ from voca.conversation.approval import (
     NearMiss,
     Phrase,
     distance,
+    echoes,
     normalize,
     parse,
     refuses,
@@ -72,3 +73,16 @@ def test_refuses() -> None:
         None,
     ):
         assert not refuses(text), text
+
+
+def test_echoes() -> None:
+    source = (
+        "Hermes просит подтверждения по поручению «Удали каталог /tmp/x»: "
+        "удаление в корневом каталоге. Подтвердите на экране или скажите "
+        "„Подтверждаю“ или „Отклоняю“."
+    )
+    assert echoes("Подтверждаю по поручению «Удали каталог", source)
+    assert echoes("на экране или скажите", source)
+    assert not echoes("Подтверждаю.", source)
+    assert not echoes("Подтверждаю. А что дальше?", source)
+    assert not echoes("Подтверждаю", "")

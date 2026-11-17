@@ -21,7 +21,7 @@ from livekit.agents import (
 from livekit.agents.voice import Agent, AgentSession, ModelSettings, SpeechHandle
 
 from voca.clientio.cards import CardState
-from voca.conversation.approval import Choice, NearMiss, parse, refuses
+from voca.conversation.approval import Choice, NearMiss, Phrase, echoes, parse, refuses
 from voca.conversation.compaction import (
     SUMMARY_KEY,
     Limits,
@@ -269,6 +269,8 @@ class VocaAgent(Agent):
         self.wake = asyncio.Event()
         self.speaker: AgentSession[Any] | None = None
         self.heard_at = 0.0
+        self.barged: Announcement | None = None
+        self.announced_text = ""
         self.last_user_text = ""
         self.answered: dict[str, dict[str, Any]] = {}
 
@@ -346,6 +348,12 @@ class VocaAgent(Agent):
                 )
             self.active = None
             self.wake.set()
+        if (
+            self.barged is not None
+            and self.barged.key == key
+            and (not waiting or task.approval != self.barged.approval)
+        ):
+            self.barged = None
         if not waiting:
             self.announcements = deque(
                 item for item in self.announcements if item.key != key
@@ -447,18 +455,21 @@ class VocaAgent(Agent):
             return True
         self.speaking = item
         try:
+            text = announcement_text(task)
             try:
                 handle = session.say(
-                    announcement_text(task),
+                    text,
                     allow_interruptions=True,
                     add_to_chat_ctx=False,
                 )
             except RuntimeError:
                 return False
+            self.announced_text = text
             await handle.wait_for_playout()
         finally:
             self.speaking = None
         self.heard_at = time.time()
+        self.barged = item if handle.interrupted else None
         item.attempts += 1
         self._task_row(task, announced=True, interrupted=handle.interrupted)
         approval = task.approval or {}
@@ -638,6 +649,8 @@ class VocaAgent(Agent):
 
     def _settled(self, key: str, approval: dict[str, Any]) -> None:
         self.answered[key] = approval
+        if self.barged is not None and self.barged.key == key:
+            self.barged = None
         self.announcements = deque(
             item for item in self.announcements if item.key != key
         )
@@ -885,11 +898,19 @@ class VocaAgent(Agent):
         self.last_user_text = new_message.text_content or ""
         parsed = parse(new_message.text_content)
         changed = False
-        if parsed is not None and self.active is not None:
-            active = self.active
+        active = self.active
+        if active is None and isinstance(parsed, Phrase):
+            active = self.barged
+        if parsed is not None and active is not None:
             started = new_message.metrics.get("started_speaking_at")
-            if isinstance(parsed, NearMiss) or (
-                started is not None and started < self.heard_at
+            if (
+                isinstance(parsed, NearMiss)
+                or echoes(new_message.text_content, self.announced_text)
+                or (
+                    started is not None
+                    and started < self.heard_at
+                    and self.barged is not active
+                )
             ):
                 await self._unclear(active)
                 raise StopResponse()
