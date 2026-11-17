@@ -20,6 +20,7 @@ from voca.delegation.ports import (
     ApprovalNotActive,
     DelegationBackend,
     DelegationError,
+    NotSteerable,
     OutcomeUnknown,
     Rejected,
     RunNotFound,
@@ -269,6 +270,13 @@ class DelegationService:
                 task.transition(TaskStatus.FAILED, error=CANCELLED)
             )
         return await self._save(replace(final, delivered_at=self.clock()))
+
+    async def steer(self, key: str, text: str) -> None:
+        task = await self._get(key)
+        if task.status != TaskStatus.RUNNING:
+            raise NotSteerable(key)
+        assert task.run_id is not None
+        await self.backend.steer(task.run_id, text)
 
     async def mark_delivered(self, key: str) -> Task:
         task = await self._get(key)

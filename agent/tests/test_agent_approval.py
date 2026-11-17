@@ -74,6 +74,8 @@ class FakeBackend:
         self.stopped: list[tuple[str, str]] = []
         self.approved: list[tuple[str, str, dict[str, Any]]] = []
         self.resolved: list[tuple[str, dict[str, Any]]] = []
+        self.steers: list[tuple[str, str]] = []
+        self.steer_error: Exception | None = None
 
     async def create_run(self, key: str, text: str) -> str:
         self.posts.append((key, text))
@@ -98,6 +100,11 @@ class FakeBackend:
 
     async def resolve_unknown(self, run_id: str, admission: dict[str, Any]) -> None:
         self.resolved.append((run_id, admission))
+
+    async def steer(self, run_id: str, text: str) -> None:
+        self.steers.append((run_id, text))
+        if self.steer_error is not None:
+            raise self.steer_error
 
     async def aclose(self) -> None:
         pass

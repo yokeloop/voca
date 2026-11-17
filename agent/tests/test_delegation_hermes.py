@@ -10,6 +10,7 @@ from voca.delegation.hermes import HermesBackend, map_run
 from voca.delegation.model import TaskStatus
 from voca.delegation.ports import (
     ApprovalNotActive,
+    NotSteerable,
     OutcomeUnknown,
     Rejected,
     RunNotFound,
@@ -289,3 +290,27 @@ def test_resolve_unknown_body() -> None:
     asyncio.run(closing(client, client.resolve_unknown("run_1", admission)))
     assert requests[0].url.path == "/v1/runs/run_1/resolve-unknown"
     assert json.loads(requests[0].content) == admission
+
+
+def test_steer_request() -> None:
+    client, requests = backend(reply(200, {"run_id": "run_1", "status": "running"}))
+    asyncio.run(closing(client, client.steer("run_1", "добавь b.txt")))
+    assert requests[0].method == "POST"
+    assert requests[0].url.path == "/v1/runs/run_1/steer"
+    assert json.loads(requests[0].content) == {"input": "добавь b.txt"}
+
+
+@pytest.mark.parametrize(
+    ("status", "code", "error"),
+    [
+        (409, "run_not_accepting_steer", NotSteerable),
+        (409, "steer_not_accepted", NotSteerable),
+        (400, "invalid_steer_input", Rejected),
+        (404, "run_not_found", RunNotFound),
+        (500, "internal", OutcomeUnknown),
+    ],
+)
+def test_steer_responses(status: int, code: str, error: type[Exception]) -> None:
+    client, _ = backend(reply(status, error_body(code)))
+    with pytest.raises(error):
+        asyncio.run(closing(client, client.steer("run_1", "добавь b.txt")))

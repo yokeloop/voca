@@ -12,6 +12,7 @@ from voca.delegation.model import (
 )
 from voca.delegation.ports import (
     ApprovalNotActive,
+    NotSteerable,
     OutcomeUnknown,
     Rejected,
     RunNotFound,
@@ -177,6 +178,18 @@ class HermesBackend:
         )
         if response.status_code != 200:
             raise OutcomeUnknown(error_code(response))
+
+    async def steer(self, run_id: str, text: str) -> None:
+        response = await self._send("POST", f"/v1/runs/{run_id}/steer", {"input": text})
+        if response.status_code == 200:
+            return
+        if response.status_code == 409:
+            raise NotSteerable(error_code(response))
+        if response.status_code == 404:
+            raise RunNotFound(error_code(response))
+        if response.is_client_error:
+            raise Rejected(error_code(response))
+        raise OutcomeUnknown(error_code(response))
 
     async def aclose(self) -> None:
         await self.client.aclose()

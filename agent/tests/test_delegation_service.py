@@ -7,6 +7,7 @@ import pytest
 from voca.delegation.model import Task, TaskStatus
 from voca.delegation.ports import (
     ApprovalNotActive,
+    NotSteerable,
     OutcomeUnknown,
     Rejected,
     RunNotFound,
@@ -76,6 +77,8 @@ class FakeBackend:
         self.stopped: list[tuple[str, str]] = []
         self.approved: list[tuple[str, str, dict[str, Any]]] = []
         self.resolved: list[tuple[str, dict[str, Any]]] = []
+        self.steers: list[tuple[str, str]] = []
+        self.steer_error: Exception | None = None
 
     async def create_run(self, key: str, text: str) -> str:
         self.posts.append((key, text))
@@ -100,6 +103,11 @@ class FakeBackend:
 
     async def resolve_unknown(self, run_id: str, admission: dict[str, Any]) -> None:
         self.resolved.append((run_id, admission))
+
+    async def steer(self, run_id: str, text: str) -> None:
+        self.steers.append((run_id, text))
+        if self.steer_error is not None:
+            raise self.steer_error
 
     async def aclose(self) -> None:
         pass
@@ -544,3 +552,21 @@ def test_expire_sets_timeout_reason() -> None:
     task = asyncio.run(service._expire(repo.tasks["k"]))
     assert task.stop_reason == "timeout"
     assert repo.tasks["k"].stop_reason == "timeout"
+
+
+def test_steer_running() -> None:
+    service, repo, backend, _, _ = make()
+    repo.tasks["k"] = running()
+    asyncio.run(service.steer("k", "добавь b.txt"))
+    assert backend.steers == [("run_1", "добавь b.txt")]
+    assert repo.tasks["k"] == running()
+
+
+def test_steer_not_running_raises() -> None:
+    service, repo, backend, _, _ = make()
+    repo.tasks["k"] = replace(
+        running(), status=TaskStatus.WAITING_APPROVAL, approval=APPROVAL
+    )
+    with pytest.raises(NotSteerable):
+        asyncio.run(service.steer("k", "добавь b.txt"))
+    assert backend.steers == []

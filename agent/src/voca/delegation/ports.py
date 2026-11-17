@@ -38,6 +38,10 @@ class TaskNotOpen(DelegationError):
     pass
 
 
+class NotSteerable(DelegationError):
+    pass
+
+
 @dataclass(frozen=True)
 class RunState:
     run_id: str
@@ -74,5 +78,7 @@ class DelegationBackend(Protocol):
     ) -> None: ...
 
     async def resolve_unknown(self, run_id: str, admission: dict[str, Any]) -> None: ...
+
+    async def steer(self, run_id: str, text: str) -> None: ...
 
     async def aclose(self) -> None: ...
