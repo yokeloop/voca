@@ -11,14 +11,15 @@ Hermes. This file is the working contract for agents and contributors.
   `voca agent {dev|start|console}` runs the LiveKit worker: `app/worker.py`
   (prewarm, entrypoint, `WorkerOptions`), `app/wiring.py` (the plugins,
   `PreparedTTS`, `build_session`, `SpeechLanguageClient`), `conversation/`
-  (`VocaAgent`: the tool-call markup filter in `llm_node`, the `delegate`
-  tool and the delivery of its results, approval announcements and the approval phrase checked first in `on_user_turn_completed`, instructions, accepting a finished
+  (`VocaAgent`: the tool-call markup filter in `llm_node`, the `delegate`,
+  `list_tasks`, `cancel_task`, `steer_task`, `deny_approval` and `repeat_approval`
+  tools, the delegation facts in the context and the delivery of results, approval announcements and the approval phrase checked first in `on_user_turn_completed`, instructions, accepting a finished
   summary and the emergency context trim in `on_user_turn_completed`, the threshold trigger `maybe_compact`,
   the idle and daily check `check_due`, failures spoken aloud;
   `instructions.py`: `InstructionLoader` with the last valid set; `context.py`: `trim_chat_ctx` — the emergency path at
-  `hard_limit`; `approval.py`: the approval phrase match; `compaction.py`: the compaction plan and the summariser
+  `hard_limit`; `approval.py`: the approval phrase parse (the first word, the tail, a near miss); `descriptions.py`: the Russian descriptions of Hermes approval requests; `compaction.py`: the compaction plan and the summariser
   prompt; `summarizer.py`: the call to `[compression.model]`), `clientio/`
-  (the `voca.cards` and `voca.history` channels, the `tasks` list on join), `telemetry/` (`.local/events.jsonl`), `session/`
+  (the `voca.cards` and `voca.history` channels, the `tasks` list on join, `actions.py`: the page's RPC), `telemetry/` (`.local/events.jsonl`), `session/`
   (`SessionStore`: the session snapshot and the archive in one SQLite file,
   «Session store»; `voca archive search`), `delegation/` (`DelegationService`:
   tasks given to Hermes through the Runs API, the state machine, polling, the
@@ -30,7 +31,7 @@ Hermes. This file is the working contract for agents and contributors.
   filter, LaTeX and tables, the quotes audio.cpp rejects (`„‟‚‹` → `«`,
   `“”›` → `»`), numbers as words, stress and the first fragment.
   `markup`, `numbers`, `prepare`, `conversation/context`,
-  `conversation/compaction`, `conversation/approval`, `conversation/instructions`, `session/model`,
+  `conversation/compaction`, `conversation/approval`, `conversation/descriptions`, `conversation/instructions`, `session/model`,
   `delegation/model`, `delegation/ports` and `delegation/service` are pure
   modules, which
   `tests/test_import_boundaries.py` checks.
@@ -86,7 +87,7 @@ stand's downloads; it is a stand check, not a CI check.
 | `VOCA_LIVEKIT_BIN` | `$VOCA_APPS_DIR/livekit/1.13.11/livekit-server` | livekit-server release binary |
 | `VOCA_AUDIOCPP_BIN` | `$VOCA_APPS_DIR/audio.cpp/0.9.4/audiocpp_server` | audio.cpp server release binary (CPU); its ggml libraries sit next to it |
 | `VOCA_LLAMA_BIN` | `$VOCA_APPS_DIR/llama.cpp/llama-b12167/llama-server` | llama-server of the llama.cpp CUDA release; its libraries sit next to it |
-| `VOCA_LLM_PROFILE` | `lfm2.5-2.6b` | llama-server model profile, `scripts/llm-profiles/<name>.sh`; only this model is loaded. `lfm2.5-2.6b` is the agent's model; `bolt-e4b` and `lfm3-1.7b` are alternatives, set explicitly |
+| `VOCA_LLM_PROFILE` | `bolt-e4b` | llama-server model profile, `scripts/llm-profiles/<name>.sh`; only this model is loaded. `bolt-e4b` is the agent's model; `lfm2.5-2.6b` and `lfm3-1.7b` are alternatives, set explicitly |
 | `VOCA_LIVEKIT_NODE_IP` | `127.0.0.1` | `--node-ip`: the address livekit-server announces for media |
 | `VOCA_LIVEKIT_API_KEY` | `devkey` | Key that signs tokens; the built-in key of `livekit-server --dev` |
 | `VOCA_LIVEKIT_API_SECRET` | `secret` | Secret that signs tokens; the built-in secret of `livekit-server --dev` |
@@ -266,7 +267,7 @@ classes come from `livekit-api` in the `agent/` environment.
   "queued"|"running"|"waiting_approval"|"unknown"|"succeeded"|"failed",
   "text", "result": string|null, "error": string|null, "created_at",
   "delivered_at": number|null, "approval": {"description", "command",
-  "choices"}|null}`. `approval` is set only while the task is
+  "choices", "request_id"}|null}`. `approval` is set only while the task is
   `waiting_approval`. `task`, `state` and `tasks` share one send chain, so
   their order is kept. The agent sends them from the `delegate` tool, its
   watchers and the delivery.
@@ -283,8 +284,17 @@ classes come from `livekit-api` in the `agent/` environment.
 - The task block is separate from the transcript: neither `history` nor a
   disconnect clears it. A card shows the status, the text, the full result,
   the error and «озвучено» once `delivered_at` is set. A `waiting_approval`
-  card also shows `description`, `command` and «Скажите „Подтверждаю“ или
-  „Отклоняю“».
+  card also shows `description`, `command`, «Подтвердите на экране или скажите
+  „Подтверждаю“ или „Отклоняю“» and the buttons «Подтвердить» and «Отклонить»
+  (only with a `request_id`); every open card has «Отменить задачу».
+- The page calls RPC methods of the agent participant (the one with
+  `lk.agent.state`): `voca.approve` with `{"tool_call_id", "request_id",
+  "choice": "once"|"deny"}` and `voca.cancel_task` with `{"tool_call_id"}`,
+  response timeout 45 s; `voca.cancel_task` answers once the cancel has
+  started, its outcome comes as a `task` message. The answer is `{"ok": true}` or `{"ok": false,
+  "error"}`; an invalid payload gives «неверный запрос». The agent answers a
+  request only when `request_id` matches the waiting one, speaks nothing and
+  puts a fact into the model's context.
 - The agent sends a JSON `history` message on the text stream topic
   `voca.history` to one participant (`destination_identities`):
   `{"type": "history", "session_id", "items": [{"id", "at", "who":

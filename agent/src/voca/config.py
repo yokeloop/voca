@@ -146,7 +146,7 @@ class Settings(BaseSettings):
     livekit_url: str = "ws://127.0.0.1:7880"
     audio_url: str = "http://127.0.0.1:8082/v1"
     llm_url: str = "http://127.0.0.1:8081/v1"
-    llm_profile: str = "lfm2.5-2.6b"
+    llm_profile: str = "bolt-e4b"
     agent_port: int = 8084
     state_dir: Path = Field(default_factory=default_state_dir)
     instructions_dir: Path = Path("~/.voca/instructions")

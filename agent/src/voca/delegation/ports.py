@@ -34,6 +34,14 @@ class TaskNotFound(DelegationError):
     pass
 
 
+class TaskNotOpen(DelegationError):
+    pass
+
+
+class NotSteerable(DelegationError):
+    pass
+
+
 @dataclass(frozen=True)
 class RunState:
     run_id: str
@@ -61,14 +69,16 @@ class TaskRepository(Protocol):
 class DelegationBackend(Protocol):
     async def create_run(self, key: str, text: str) -> str: ...
 
-    async def get_run(self, run_id: str, stop_requested: bool) -> RunState: ...
+    async def get_run(self, run_id: str, stop_reason: str | None) -> RunState: ...
 
-    async def stop(self, run_id: str) -> RunState | None: ...
+    async def stop(self, run_id: str, reason: str) -> RunState | None: ...
 
     async def approve(
         self, run_id: str, choice: Literal["once", "deny"], approval: dict[str, Any]
     ) -> None: ...
 
     async def resolve_unknown(self, run_id: str, admission: dict[str, Any]) -> None: ...
+
+    async def steer(self, run_id: str, text: str) -> None: ...
 
     async def aclose(self) -> None: ...

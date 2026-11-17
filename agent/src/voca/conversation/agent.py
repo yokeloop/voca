@@ -3,6 +3,7 @@ import json
 import logging
 import re
 import time
+import uuid
 from collections import deque
 from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine
 from dataclasses import dataclass
@@ -17,10 +18,10 @@ from livekit.agents import (
     function_tool,
     llm,
 )
-from livekit.agents.voice import Agent, AgentSession, ModelSettings
+from livekit.agents.voice import Agent, AgentSession, ModelSettings, SpeechHandle
 
 from voca.clientio.cards import CardState
-from voca.conversation.approval import Choice, match
+from voca.conversation.approval import Choice, NearMiss, parse
 from voca.conversation.compaction import (
     SUMMARY_KEY,
     Limits,
@@ -34,13 +35,16 @@ from voca.conversation.compaction import (
     wrap,
 )
 from voca.conversation.context import Item, approx_tokens, split_turns, trim_chat_ctx
+from voca.conversation.descriptions import describe
 from voca.conversation.instructions import InstructionLoader, InstructionSet
 from voca.conversation.summarizer import Failure, Summarizer, Summary
-from voca.delegation.model import GATEWAY_RESTART, TIMEOUT, Task, TaskStatus
+from voca.delegation.model import CANCELLED, GATEWAY_RESTART, TIMEOUT, Task, TaskStatus
 from voca.delegation.ports import (
     ApprovalNotActive,
     DelegationError,
+    NotSteerable,
     TaskNotFound,
+    TaskNotOpen,
     Unavailable,
 )
 from voca.delegation.service import DelegationService
@@ -55,15 +59,26 @@ BLOCK_RETRY_S = 300
 DELEGATE_ACCEPTED = "Поручение принято, сообщу, когда будет результат"
 DELEGATE_UNAVAILABLE = "Делегирование сейчас недоступно"
 SPEECH_LIMIT = 300
+RECENT_LIMIT = 5
+TOOL_RESULT_LIMIT = SPEECH_LIMIT
 FAILURE_REASONS = {
     TIMEOUT: "не дождался результата",
     GATEWAY_RESTART: "Hermes перезапускался",
+    CANCELLED: "отменено пользователем",
 }
+FAILURE_DEFAULT = "Hermes вернул ошибку"
+TASK_UNKNOWN = "Нет такого поручения"
+TASK_AMBIGUOUS = "Неясно, какое поручение: назовите id из list_tasks"
+TASK_CLOSED = "Поручение уже завершено"
+NOT_STEERABLE = "Поручение сейчас не принимает уточнений"
+NO_REQUEST = "Сейчас нет запроса подтверждения"
+ACTION_FAILED = "Не удалось связаться с Hermes"
 APPROVAL_LIMIT = 60
-APPROVAL_PROMPT = "Скажите „Подтверждаю“ или „Отклоняю“."
+APPROVAL_PROMPT = "Подтвердите на экране или скажите „Подтверждаю“ или „Отклоняю“."
 APPROVAL_REPLIES = {"once": "Подтверждено", "deny": "Отклонено"}
 APPROVAL_GONE = "Запрос подтверждения уже не активен"
 APPROVAL_FAILED = "Не удалось передать подтверждение"
+APPROVAL_UNCLEAR = "Не разобрал подтверждение. Скажите „Подтверждаю“ или „Отклоняю“, или ответьте на экране"
 ANNOUNCE_ATTEMPTS = 2
 
 
@@ -103,7 +118,7 @@ def delivery_text(task: Task) -> str:
     if task.status == TaskStatus.SUCCEEDED:
         result = clip(task.result or "")
         return f"Готово по поручению: {result}" if result else "Готово по поручению."
-    reason = FAILURE_REASONS.get(task.error or "", "Hermes вернул ошибку")
+    reason = FAILURE_REASONS.get(task.error or "", FAILURE_DEFAULT)
     return f"Поручение не выполнено: {reason}."
 
 
@@ -111,7 +126,7 @@ def result_outcome(task: Task) -> str:
     if task.status == TaskStatus.SUCCEEDED:
         outcome = {"status": task.status.value, "result": task.result or ""}
     else:
-        reason = FAILURE_REASONS.get(task.error or "", "Hermes вернул ошибку")
+        reason = FAILURE_REASONS.get(task.error or "", FAILURE_DEFAULT)
         outcome = {"status": task.status.value, "error": reason}
         if task.error:
             outcome["detail"] = task.error
@@ -120,10 +135,33 @@ def result_outcome(task: Task) -> str:
 
 def announcement_text(task: Task) -> str:
     head = clip(task.text, APPROVAL_LIMIT)
-    description = clip(str((task.approval or {}).get("description") or "")).rstrip(".")
-    if description:
-        return f"Hermes просит подтверждения по поручению «{head}»: {description}. {APPROVAL_PROMPT}"
-    return f"Hermes просит подтверждения по поручению «{head}». {APPROVAL_PROMPT}"
+    description = describe((task.approval or {}).get("description"))
+    return f"Hermes просит подтверждения по поручению «{head}»: {description}. {APPROVAL_PROMPT}"
+
+
+def short_id(key: str) -> str:
+    return key
+
+
+def task_view(task: Task, active: Announcement | None) -> dict[str, Any]:
+    view: dict[str, Any] = {
+        "id": short_id(task.tool_call_id),
+        "text": clip(task.text, APPROVAL_LIMIT),
+        "status": task.status.value,
+    }
+    if task.status == TaskStatus.SUCCEEDED:
+        view["result"] = clip(task.result or "", TOOL_RESULT_LIMIT)
+    elif task.status == TaskStatus.FAILED:
+        view["error"] = FAILURE_REASONS.get(task.error or "", FAILURE_DEFAULT)
+    elif task.status == TaskStatus.WAITING_APPROVAL and task.approval is not None:
+        view["approval"] = {
+            "request": describe(task.approval.get("description")),
+            "command": task.approval.get("command"),
+            "active": active is not None
+            and active.key == task.tool_call_id
+            and active.approval == task.approval,
+        }
+    return view
 
 
 def records(ctx: llm.ChatContext) -> list[Item]:
@@ -228,6 +266,8 @@ class VocaAgent(Agent):
         self.active: Announcement | None = None
         self.wake = asyncio.Event()
         self.speaker: AgentSession[Any] | None = None
+        self.heard_at = 0.0
+        self.answered: dict[str, dict[str, Any]] = {}
 
     def set_present(self, present: bool) -> None:
         if present:
@@ -267,6 +307,8 @@ class VocaAgent(Agent):
         if task.status != TaskStatus.WAITING_APPROVAL or task.approval is None:
             return
         key = task.tool_call_id
+        if self.answered.get(key) == task.approval:
+            return
         for item in (self.active, self.speaking, *self.announcements):
             if item is not None and item.key == key and item.approval == task.approval:
                 return
@@ -279,11 +321,26 @@ class VocaAgent(Agent):
     def _release(self, task: Task) -> None:
         key = task.tool_call_id
         waiting = task.status == TaskStatus.WAITING_APPROVAL
+        answered = key in self.answered
+        if not waiting or task.approval != self.answered.get(key):
+            self.answered.pop(key, None)
         if (
             self.active is not None
             and self.active.key == key
             and (not waiting or task.approval != self.active.approval)
         ):
+            if task.status == TaskStatus.RUNNING and not answered:
+                self._spawn(
+                    self._fact(
+                        "list_tasks",
+                        {},
+                        {
+                            "id": short_id(key),
+                            "event": "approval_expired",
+                            "by": "hermes",
+                        },
+                    )
+                )
             self.active = None
             self.wake.set()
         if not waiting:
@@ -391,25 +448,40 @@ class VocaAgent(Agent):
                 handle = session.say(
                     announcement_text(task),
                     allow_interruptions=True,
-                    add_to_chat_ctx=True,
+                    add_to_chat_ctx=False,
                 )
             except RuntimeError:
                 return False
             await handle.wait_for_playout()
         finally:
             self.speaking = None
+        self.heard_at = time.time()
         item.attempts += 1
         self._task_row(task, announced=True, interrupted=handle.interrupted)
-        if not handle.interrupted:
+        approval = task.approval or {}
+        await self._fact(
+            "list_tasks",
+            {},
+            {
+                "id": short_id(item.key),
+                "event": "approval_requested",
+                "text": clip(task.text, APPROVAL_LIMIT),
+                "request": describe(approval.get("description")),
+                "command": approval.get("command"),
+                "interrupted": handle.interrupted,
+            },
+        )
+        if not handle.interrupted or item.attempts >= ANNOUNCE_ATTEMPTS:
             current = await self.delegation.repo.get(item.key)
             if (
                 current is not None
                 and current.status == TaskStatus.WAITING_APPROVAL
                 and current.approval == item.approval
                 and self.active is None
+                and self.answered.get(item.key) != item.approval
             ):
                 self.active = item
-        elif item.attempts < ANNOUNCE_ATTEMPTS:
+        else:
             self.announcements.appendleft(item)
             self.wake.set()
         return True
@@ -458,10 +530,45 @@ class VocaAgent(Agent):
         )
         await self.update_chat_ctx(ctx)
 
-    async def _answer(self, active: Announcement, choice: Choice) -> None:
+    async def _fact(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        output: dict[str, Any],
+        *,
+        is_error: bool = False,
+    ) -> None:
+        call_id = f"voca_{uuid.uuid4().hex[:16]}"
+        at = time.time()
+        ctx = self.chat_ctx.copy()
+        ctx.insert(
+            [
+                llm.FunctionCall(
+                    id=call_id,
+                    call_id=call_id,
+                    name=name,
+                    arguments=json.dumps(arguments, ensure_ascii=False),
+                    created_at=at - 2e-6,
+                ),
+                llm.FunctionCallOutput(
+                    id=f"{call_id}_output",
+                    call_id=call_id,
+                    name=name,
+                    output=json.dumps(output, ensure_ascii=False),
+                    is_error=is_error,
+                    created_at=at - 1e-6,
+                ),
+            ]
+        )
+        await self.update_chat_ctx(ctx)
+
+    async def _answer(
+        self, active: Announcement, choice: Choice, *, speak: bool
+    ) -> None:
         assert self.delegation is not None and self.speaker is not None
         task = await self.delegation.repo.get(active.key)
         approved = False
+        id = short_id(active.key)
         try:
             await self.delegation.approve(active.key, choice, expected=active.approval)
             text = APPROVAL_REPLIES[choice]
@@ -472,15 +579,159 @@ class VocaAgent(Agent):
         except DelegationError:
             text = APPROVAL_FAILED
             release = False
-        try:
-            self.speaker.say(text, allow_interruptions=True, add_to_chat_ctx=True)
-        except RuntimeError:
-            pass
-        if release and self.active is active:
+        if approved:
+            if choice == "once":
+                await self._fact(
+                    "list_tasks", {}, {"id": id, "event": "approved", "by": "voice"}
+                )
+            else:
+                await self._fact(
+                    "deny_approval",
+                    {"id": id},
+                    {"id": id, "event": "denied", "by": "voice"},
+                )
+        else:
+            await self._fact(
+                "list_tasks",
+                {},
+                {"id": id, "event": "approval_failed", "by": "voice", "error": text},
+                is_error=True,
+            )
+        if speak:
+            try:
+                self.speaker.say(text, allow_interruptions=True, add_to_chat_ctx=True)
+            except RuntimeError:
+                pass
+        if approved:
+            self._settled(active.key, active.approval)
+        elif release and self.active is active:
             self.active = None
             self.wake.set()
         if approved and task is not None:
-            self._task_row(task, approval=choice)
+            self._task_row(task, approval=choice, by="voice")
+
+    async def _unclear(self, active: Announcement) -> None:
+        assert self.speaker is not None
+        await self._fact(
+            "list_tasks",
+            {},
+            {
+                "id": short_id(active.key),
+                "event": "approval_not_recognized",
+                "by": "voice",
+            },
+        )
+        try:
+            handle = self.speaker.say(
+                APPROVAL_UNCLEAR, allow_interruptions=True, add_to_chat_ctx=True
+            )
+        except RuntimeError:
+            return
+        self._spawn(self._heard(handle))
+
+    async def _heard(self, handle: SpeechHandle) -> None:
+        await handle.wait_for_playout()
+        self.heard_at = time.time()
+
+    def _settled(self, key: str, approval: dict[str, Any]) -> None:
+        self.answered[key] = approval
+        self.announcements = deque(
+            item for item in self.announcements if item.key != key
+        )
+        if self.active is not None and self.active.key == key:
+            self.active = None
+        self.wake.set()
+
+    async def approve_from_page(
+        self, key: str, request_id: str, choice: Choice
+    ) -> dict[str, Any]:
+        if self.delegation is None:
+            return {"ok": False, "error": DELEGATE_UNAVAILABLE}
+        task = await self.delegation.repo.get(key)
+        if (
+            task is None
+            or task.status != TaskStatus.WAITING_APPROVAL
+            or task.approval is None
+            or task.approval.get("request_id") != request_id
+        ):
+            return {"ok": False, "error": APPROVAL_GONE}
+        try:
+            await self.delegation.approve(key, choice, expected=task.approval)
+        except (ApprovalNotActive, TaskNotFound):
+            return {"ok": False, "error": APPROVAL_GONE}
+        except DelegationError:
+            return {"ok": False, "error": APPROVAL_FAILED}
+        self._settled(key, task.approval)
+        event = "approved" if choice == "once" else "denied"
+        await self._fact(
+            "list_tasks", {}, {"id": short_id(key), "event": event, "by": "button"}
+        )
+        self._task_row(task, approval=choice, by="button")
+        return {"ok": True}
+
+    async def cancel_from_page(self, key: str) -> dict[str, Any]:
+        if self.delegation is None:
+            return {"ok": False, "error": DELEGATE_UNAVAILABLE}
+        task = await self.delegation.repo.get(key)
+        if task is None:
+            return {"ok": False, "error": TASK_UNKNOWN}
+        if not task.is_open:
+            return {"ok": False, "error": TASK_CLOSED}
+        self.in_tool.add(key)
+        self._spawn(self._cancel_by_button(key))
+        return {"ok": True}
+
+    async def _cancel_by_button(self, key: str) -> None:
+        assert self.delegation is not None
+        try:
+            final = await self.delegation.cancel(key)
+        except DelegationError as error:
+            logging.getLogger("voca.tasks").warning("cancel failed: %s: %r", key, error)
+            return
+        finally:
+            self.in_tool.discard(key)
+        view = task_view(final, self.active)
+        output = {"id": view["id"], "event": "cancelled", "by": "button"}
+        output.update(
+            {
+                field: view[field]
+                for field in ("status", "error", "result")
+                if field in view
+            }
+        )
+        await self._fact("list_tasks", {}, output)
+
+    async def _pick_task(
+        self,
+        id: str | None,
+        allowed: Callable[[Task], bool],
+        unfit: str = TASK_UNKNOWN,
+    ) -> Task:
+        assert self.delegation is not None
+        found = await self.delegation.repo.list_open()
+        candidates = [task for task in found if allowed(task)]
+        if (
+            id
+            and not any(task.tool_call_id.startswith(id) for task in candidates)
+            and any(task.tool_call_id.startswith(id) for task in found)
+        ):
+            raise ToolError(unfit)
+        if id:
+            exact = [task for task in candidates if task.tool_call_id == id]
+            if exact:
+                return exact[0]
+            candidates = [
+                task for task in candidates if task.tool_call_id.startswith(id)
+            ]
+            if not candidates:
+                closed = await self.delegation.repo.get(id)
+                if closed is not None and not closed.is_open:
+                    raise ToolError(TASK_CLOSED)
+        if not candidates:
+            raise ToolError(TASK_UNKNOWN)
+        if len(candidates) > 1:
+            raise ToolError(TASK_AMBIGUOUS)
+        return candidates[0]
 
     async def stop_delegation(self) -> None:
         self.stopped = True
@@ -628,11 +879,21 @@ class VocaAgent(Agent):
     async def on_user_turn_completed(
         self, turn_ctx: llm.ChatContext, new_message: llm.ChatMessage
     ) -> None:
-        choice = match(new_message.text_content)
-        if choice is not None and self.active is not None:
-            await self._answer(self.active, choice)
-            raise StopResponse()
+        parsed = parse(new_message.text_content)
         changed = False
+        if parsed is not None and self.active is not None:
+            active = self.active
+            started = new_message.metrics.get("started_speaking_at")
+            if isinstance(parsed, NearMiss) or (
+                started is not None and started < self.heard_at
+            ):
+                await self._unclear(active)
+                raise StopResponse()
+            await self._answer(active, parsed.choice, speak=not parsed.tail)
+            if not parsed.tail:
+                raise StopResponse()
+            new_message.content = [parsed.tail]
+            changed = True
         loaded = self.loader.load()
         if (loaded.sha256, loaded.source, loaded.error) != (
             self.current.sha256,
@@ -692,6 +953,102 @@ class VocaAgent(Agent):
         else:
             self.enqueue(found)
         return DELEGATE_ACCEPTED
+
+    @function_tool
+    async def list_tasks(self) -> str:
+        """Показать поручения Hermes: открытые и последние завершённые, статус, ждёт ли подтверждения, краткий результат. Вызывай, когда спрашивают о поручениях."""
+        if self.delegation is None:
+            raise ToolError(DELEGATE_UNAVAILABLE)
+        found = await self.delegation.repo.list_open()
+        closed = [
+            task for task in await self.delegation.repo.list_all() if not task.is_open
+        ]
+        found.extend(closed[:RECENT_LIMIT])
+        tasks = [task_view(task, self.active) for task in found]
+        return json.dumps({"tasks": tasks}, ensure_ascii=False)
+
+    @function_tool
+    async def cancel_task(self, id: str | None = None) -> str:
+        """Отменить поручение Hermes. id — из list_tasks; можно не указывать, если поручение одно."""
+        if self.delegation is None:
+            raise ToolError(DELEGATE_UNAVAILABLE)
+        task = await self._pick_task(id, lambda task: True)
+        key = task.tool_call_id
+        self.in_tool.add(key)
+        try:
+            final = await self.delegation.cancel(key)
+        except TaskNotOpen:
+            raise ToolError(TASK_CLOSED) from None
+        except DelegationError:
+            raise ToolError(ACTION_FAILED) from None
+        finally:
+            self.in_tool.discard(key)
+        return json.dumps(task_view(final, self.active), ensure_ascii=False)
+
+    @function_tool
+    async def steer_task(self, text: str, id: str | None = None) -> str:
+        """Уточнить идущее поручение Hermes: text — уточнение по-русски."""
+        if self.delegation is None:
+            raise ToolError(DELEGATE_UNAVAILABLE)
+        found = await self.delegation.repo.list_open()
+        if found and not any(task.status == TaskStatus.RUNNING for task in found):
+            raise ToolError(NOT_STEERABLE)
+        task = await self._pick_task(
+            id, lambda task: task.status == TaskStatus.RUNNING, NOT_STEERABLE
+        )
+        try:
+            await self.delegation.steer(task.tool_call_id, text)
+        except NotSteerable:
+            raise ToolError(NOT_STEERABLE) from None
+        except DelegationError:
+            raise ToolError(ACTION_FAILED) from None
+        output = {
+            "id": short_id(task.tool_call_id),
+            "event": "steered",
+            "accepted": True,
+        }
+        return json.dumps(output, ensure_ascii=False)
+
+    @function_tool
+    async def deny_approval(self, id: str | None = None) -> str:
+        """Отклонить запрос подтверждения Hermes. Подтвердить запрос может только пользователь."""
+        if self.delegation is None:
+            raise ToolError(DELEGATE_UNAVAILABLE)
+        if id is None and self.active is not None:
+            found = await self.delegation.repo.get(self.active.key)
+            if found is None:
+                raise ToolError(APPROVAL_GONE)
+            task = found
+        else:
+            task = await self._pick_task(
+                id,
+                lambda task: (
+                    task.status == TaskStatus.WAITING_APPROVAL
+                    and task.approval is not None
+                ),
+                NO_REQUEST,
+            )
+        key = task.tool_call_id
+        try:
+            await self.delegation.approve(key, "deny", expected=task.approval)
+        except (ApprovalNotActive, TaskNotFound):
+            raise ToolError(APPROVAL_GONE) from None
+        except DelegationError:
+            raise ToolError(APPROVAL_FAILED) from None
+        self._settled(key, task.approval or {})
+        self._task_row(task, approval="deny", by="model")
+        return json.dumps({"id": short_id(key), "event": "denied"}, ensure_ascii=False)
+
+    @function_tool
+    async def repeat_approval(self) -> None:
+        """Повторить вслух активный запрос подтверждения Hermes."""
+        if self.active is None:
+            raise ToolError(NO_REQUEST)
+        item = self.active
+        item.attempts = 0
+        self.active = None
+        self.announcements.appendleft(item)
+        self.wake.set()
 
     async def llm_node(
         self,

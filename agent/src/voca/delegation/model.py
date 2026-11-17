@@ -52,6 +52,9 @@ TIMEOUT = "timeout"
 LOST_BEFORE_LAUNCH = "lost before launch"
 LOST = "lost"
 GATEWAY_RESTART = "interrupted by gateway restart"
+CANCELLED = "cancelled"
+STOP_USER = "user"
+STOP_TIMEOUT = "timeout"
 
 
 @dataclass(frozen=True)
@@ -65,6 +68,7 @@ class Task:
     error: str | None = None
     delivered_at: float | None = None
     stop_requested_at: float | None = None
+    stop_reason: str | None = None
     approval: dict[str, Any] | None = None
 
     def transition(self, status: TaskStatus, **changes: Any) -> "Task":

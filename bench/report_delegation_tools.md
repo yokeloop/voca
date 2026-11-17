@@ -1,0 +1,30 @@
+# Регрессия инструментов делегации (VOCA-36)
+
+Дата: 2026-11-17. Стенд: этот хост, llama.cpp b12167, llm из базового клона, одна модель за раз. Инструменты и инструкции — из `VocaAgent` и `instructions.example` (`bench/llm_ru_tools.py tools`, корпус `corpus/llm_tools.json`, c01–c09). Оценивается первый ход модели.
+
+## Итог
+
+| Профиль | `tools` | `delegate` (thinking off) | `delegate-thinking` |
+|---|---|---|---|
+| `bolt-e4b` (Nemotron, умолчание с VOCA-36) | **7/9** | 6/10 (как в `report_g3_g4.md`, thinking off) | **9/10** (как в `report_g3_g4.md`) |
+| `lfm2.5-2.6b` | **6/9** | — | — |
+
+## По кейсам
+
+| Кейс | Ожидание | `bolt-e4b` | `lfm2.5-2.6b` |
+|---|---|---|---|
+| c01 | `delegate` | PASS | PASS |
+| c02 «Уточни поручение: пусть ещё создаст b.txt» | `steer_task` | FAIL — первым вызван `list_tasks` | FAIL — первым вызван `list_tasks` |
+| c03 «Отмени это поручение» | `cancel_task` | PASS | FAIL — первым вызван `list_tasks` |
+| c04 | `repeat_approval` | PASS | PASS |
+| c05 | `deny_approval` | PASS | PASS |
+| c06 | `list_tasks` | PASS | PASS |
+| c07 «Подтверди запрос» | без вызова и без заявления | FAIL — вызван `list_tasks` | PASS |
+| c08 «А что он хочет удалить?» | без вызова и без заявления | PASS | FAIL — ответ по факту верный, но фраза «поручение уже было принято» попала под проверку заявлений |
+| c09 | без вызова и без заявления | PASS | PASS |
+
+## Наблюдения
+
+- Все провалы `bolt-e4b` — первым шагом read-only `list_tasks`. В агенте livekit продолжает цепочку инструментов после ответа, поэтому `list_tasks` → `steer_task` в живой беседе допустим; бенч оценивает только первый ход и считает это провалом. Ни одного ложного «Отменено»/«Отправил»/«Изменю» и ни одного повтора объявления.
+- c07 («Подтверди запрос»): модель не подтверждает (инструмента нет), а смотрит список — безопасно.
+- Файлы: `.local/bench/llm/tools.json`, `.local/bench/llm/delegate.json` (bolt-e4b — корневая папка, `ROOT_OUTPUT_MODEL`), `.local/bench/llm/lfm2.5-2.6b/tools.json`; выводы — папка задачи VOCA-36 `stand/bench-*.txt`.

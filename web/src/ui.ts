@@ -1,5 +1,16 @@
 import { ConnectionState } from "livekit-client";
-import type { CardsState, HistoryItem, TaskCard, Transcript } from "./room";
+import type {
+  ActionResult,
+  CardsState,
+  HistoryItem,
+  TaskCard,
+  Transcript,
+} from "./room";
+
+export type TaskAction = {
+  kind: "approve" | "deny" | "cancel";
+  card: TaskCard;
+};
 
 const AGENT_LABELS: Record<string, string> = {
   initializing: "агент запускается",
@@ -16,6 +27,13 @@ let tasks: HTMLOListElement;
 let transcript: HTMLOListElement;
 const rows = new Map<string, HTMLLIElement>();
 const taskRows = new Map<string, HTMLLIElement>();
+let onTaskAction: ((action: TaskAction) => Promise<ActionResult>) | undefined;
+
+export function setTaskActions(
+  handler: (action: TaskAction) => Promise<ActionResult>,
+): void {
+  onTaskAction = handler;
+}
 
 export function render(app: HTMLElement): HTMLButtonElement {
   const title = document.createElement("h1");
@@ -138,6 +156,13 @@ const TASK_LABELS: Record<TaskCard["status"], string> = {
   failed: "не выполнено",
 };
 
+const OPEN = new Set<TaskCard["status"]>([
+  "queued",
+  "running",
+  "waiting_approval",
+  "unknown",
+]);
+
 function paragraph(text: string): HTMLParagraphElement {
   const element = document.createElement("p");
   element.textContent = text;
@@ -165,14 +190,54 @@ function fillTask(row: HTMLLIElement, card: TaskCard): void {
     parts.push(
       paragraph(`Hermes просит: ${card.approval.description ?? ""}`),
       preformatted(card.approval.command ?? ""),
-      paragraph("Скажите „Подтверждаю“ или „Отклоняю“"),
+      paragraph(
+        "Подтвердите на экране или скажите „Подтверждаю“ или „Отклоняю“",
+      ),
     );
+  }
+  const buttons: HTMLButtonElement[] = [];
+  const action = (kind: TaskAction["kind"], label: string) => {
+    const element = document.createElement("button");
+    element.type = "button";
+    element.textContent = label;
+    element.addEventListener("click", async () => {
+      for (const item of buttons) {
+        item.disabled = true;
+      }
+      const result =
+        onTaskAction === undefined
+          ? { ok: false, error: "нет подключения" }
+          : await onTaskAction({ kind, card });
+      if (!result.ok) {
+        for (const item of buttons) {
+          item.disabled = false;
+        }
+        setErrorLine(`ошибка: ${result.error}`);
+      }
+    });
+    buttons.push(element);
+  };
+  if (
+    card.status === "waiting_approval" &&
+    card.approval !== null &&
+    card.approval.request_id !== null
+  ) {
+    action("approve", "Подтвердить");
+    action("deny", "Отклонить");
+  }
+  if (OPEN.has(card.status)) {
+    action("cancel", "Отменить задачу");
   }
   if (card.result !== null) {
     parts.push(preformatted(card.result));
   }
   if (card.error !== null) {
     parts.push(paragraph(`ошибка: ${card.error}`));
+  }
+  if (buttons.length > 0) {
+    const actions = document.createElement("p");
+    actions.append(...buttons);
+    parts.push(actions);
   }
   row.replaceChildren(...parts);
 }

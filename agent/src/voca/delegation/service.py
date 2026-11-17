@@ -5,8 +5,11 @@ from dataclasses import replace
 from typing import Any, Literal
 
 from voca.delegation.model import (
+    CANCELLED,
     LOST,
     LOST_BEFORE_LAUNCH,
+    STOP_TIMEOUT,
+    STOP_USER,
     TERMINAL,
     TIMEOUT,
     UNAVAILABLE,
@@ -17,11 +20,13 @@ from voca.delegation.ports import (
     ApprovalNotActive,
     DelegationBackend,
     DelegationError,
+    NotSteerable,
     OutcomeUnknown,
     Rejected,
     RunNotFound,
     RunState,
     TaskNotFound,
+    TaskNotOpen,
     TaskRepository,
     Unavailable,
 )
@@ -89,14 +94,21 @@ class DelegationService:
             task = await self._get(key)
             if not task.is_open or task.status == TaskStatus.QUEUED:
                 return task
-            if self._expired(task):
+            if task.stop_reason == STOP_USER:
+                if self._cancel_lapsed(task):
+                    return await self._save(
+                        task.transition(
+                            TaskStatus.FAILED,
+                            error=CANCELLED,
+                            delivered_at=self.clock(),
+                        )
+                    )
+            elif self._expired(task):
                 return await self._expire(task)
             run_id = task.run_id
             assert run_id is not None
             try:
-                state = await self.backend.get_run(
-                    run_id, stop_requested=task.stop_requested_at is not None
-                )
+                state = await self.backend.get_run(run_id, stop_reason=task.stop_reason)
             except RunNotFound:
                 return await self._save(task.transition(TaskStatus.FAILED, error=LOST))
             except DelegationError:
@@ -112,7 +124,21 @@ class DelegationService:
                 return task
             await self.sleep(POLL_S)
 
+    def _cancel_lapsed(self, task: Task) -> bool:
+        started = task.stop_requested_at
+        return started is not None and self.clock() - started > STOP_WINDOW_S
+
     async def _apply(self, task: Task, state: RunState) -> Task:
+        current = await self.repo.get(task.tool_call_id) or task
+        if not current.is_open:
+            return current
+        if current.stop_reason == STOP_USER:
+            if task.stop_reason != STOP_USER or state.status not in TERMINAL:
+                return current
+            current = replace(current, delivered_at=self.clock())
+        return await self._settle(current, state)
+
+    async def _settle(self, task: Task, state: RunState) -> Task:
         approval = (
             state.approval if state.status == TaskStatus.WAITING_APPROVAL else None
         )
@@ -132,24 +158,26 @@ class DelegationService:
     async def _expire(self, task: Task) -> Task:
         run_id = task.run_id
         assert run_id is not None
-        task = await self._save(replace(task, stop_requested_at=self.clock()))
+        task = await self._save(
+            replace(task, stop_requested_at=self.clock(), stop_reason=STOP_TIMEOUT)
+        )
         try:
-            state = await self.backend.stop(run_id)
+            state = await self.backend.stop(run_id, STOP_TIMEOUT)
         except DelegationError:
             state = None
         if state is not None and state.status in TERMINAL:
-            return await self._apply(task, state)
+            return await self._settle(task, state)
         deadline = self.clock() + STOP_WINDOW_S
         while self.clock() < deadline:
             await self.sleep(POLL_S)
             try:
-                state = await self.backend.get_run(run_id, stop_requested=True)
+                state = await self.backend.get_run(run_id, stop_reason=STOP_TIMEOUT)
             except RunNotFound:
                 return await self._save(task.transition(TaskStatus.FAILED, error=LOST))
             except DelegationError:
                 continue
             if state.status in TERMINAL:
-                return await self._apply(task, state)
+                return await self._settle(task, state)
         return await self._save(task.transition(TaskStatus.FAILED, error=TIMEOUT))
 
     async def _relaunch_refused(self, task: Task) -> None:
@@ -163,7 +191,7 @@ class DelegationService:
                 await self._save(task.transition(TaskStatus.FAILED, error=UNAVAILABLE))
             return
         try:
-            await self.backend.stop(run_id)
+            await self.backend.stop(run_id, STOP_TIMEOUT)
         except DelegationError:
             pass
         await self._save(
@@ -213,6 +241,61 @@ class DelegationService:
             raise ApprovalNotActive(key)
         assert task.run_id is not None
         await self.backend.approve(task.run_id, choice, task.approval)
+
+    async def cancel(self, key: str) -> Task:
+        task = await self._get(key)
+        if not task.is_open:
+            raise TaskNotOpen(key)
+        now = self.clock()
+        run_id = task.run_id
+        if run_id is None:
+            return await self._save(
+                task.transition(
+                    TaskStatus.FAILED,
+                    error=CANCELLED,
+                    stop_requested_at=now,
+                    stop_reason=STOP_USER,
+                    delivered_at=now,
+                )
+            )
+        task = await self._save(
+            replace(task, stop_requested_at=now, stop_reason=STOP_USER)
+        )
+        state: RunState | None
+        try:
+            state = await self.backend.stop(run_id, STOP_USER)
+        except DelegationError:
+            state = None
+        if state is None or state.status not in TERMINAL:
+            state = None
+            deadline = self.clock() + STOP_WINDOW_S
+            while self.clock() < deadline:
+                await self.sleep(POLL_S)
+                try:
+                    polled = await self.backend.get_run(run_id, stop_reason=STOP_USER)
+                except RunNotFound:
+                    break
+                except DelegationError:
+                    continue
+                if polled.status in TERMINAL:
+                    state = polled
+                    break
+        current = await self._get(key)
+        if not current.is_open:
+            if current.delivered_at is None:
+                current = await self._save(replace(current, delivered_at=self.clock()))
+            return current
+        done = replace(current, delivered_at=self.clock())
+        if state is not None:
+            return await self._settle(done, state)
+        return await self._save(done.transition(TaskStatus.FAILED, error=CANCELLED))
+
+    async def steer(self, key: str, text: str) -> None:
+        task = await self._get(key)
+        if task.status != TaskStatus.RUNNING:
+            raise NotSteerable(key)
+        assert task.run_id is not None
+        await self.backend.steer(task.run_id, text)
 
     async def mark_delivered(self, key: str) -> Task:
         task = await self._get(key)

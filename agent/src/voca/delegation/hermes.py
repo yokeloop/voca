@@ -3,9 +3,16 @@ from typing import Any, Literal
 import httpx
 
 from voca.delegation import model
-from voca.delegation.model import GATEWAY_RESTART, TaskStatus
+from voca.delegation.model import (
+    CANCELLED,
+    GATEWAY_RESTART,
+    STOP_TIMEOUT,
+    STOP_USER,
+    TaskStatus,
+)
 from voca.delegation.ports import (
     ApprovalNotActive,
+    NotSteerable,
     OutcomeUnknown,
     Rejected,
     RunNotFound,
@@ -35,7 +42,7 @@ def approval_of(body: dict[str, Any]) -> dict[str, Any] | None:
     return {key: approval[key] for key in APPROVAL_FIELDS if key in approval}
 
 
-def map_run(body: dict[str, Any], stop_requested: bool) -> RunState:
+def map_run(body: dict[str, Any], stop_reason: str | None) -> RunState:
     run_id = str(body.get("run_id", ""))
     status = body.get("status")
     if status in RUNNING:
@@ -48,8 +55,11 @@ def map_run(body: dict[str, Any], stop_requested: bool) -> RunState:
         error = str(body["error"]) if body.get("error") else status
         return RunState(run_id, TaskStatus.FAILED, error=error)
     if status == "cancelled":
-        error = model.TIMEOUT if stop_requested else GATEWAY_RESTART
-        return RunState(run_id, TaskStatus.FAILED, error=error)
+        if stop_reason == STOP_USER:
+            return RunState(run_id, TaskStatus.FAILED, error=CANCELLED)
+        if stop_reason == STOP_TIMEOUT:
+            return RunState(run_id, TaskStatus.FAILED, error=model.TIMEOUT)
+        return RunState(run_id, TaskStatus.FAILED, error=GATEWAY_RESTART)
     if status == "unknown":
         admission = {
             "admission_id": body.get("admission_id"),
@@ -120,20 +130,20 @@ class HermesBackend:
             raise Rejected(error_code(response))
         raise OutcomeUnknown(error_code(response))
 
-    async def get_run(self, run_id: str, stop_requested: bool) -> RunState:
+    async def get_run(self, run_id: str, stop_reason: str | None) -> RunState:
         response = await self._send("GET", f"/v1/runs/{run_id}")
         if response.status_code == 200:
-            return map_run(body_of(response), stop_requested)
+            return map_run(body_of(response), stop_reason)
         if response.status_code == 404:
             raise RunNotFound(error_code(response))
         raise OutcomeUnknown(error_code(response))
 
-    async def stop(self, run_id: str) -> RunState | None:
+    async def stop(self, run_id: str, reason: str) -> RunState | None:
         response = await self._send("POST", f"/v1/runs/{run_id}/stop")
         if response.status_code == 200:
             body = body_of(response)
             if body.get("status") in HERMES_TERMINAL:
-                return map_run(body, stop_requested=True)
+                return map_run(body, reason)
             return None
         if response.status_code == 409:
             return None
@@ -168,6 +178,18 @@ class HermesBackend:
         )
         if response.status_code != 200:
             raise OutcomeUnknown(error_code(response))
+
+    async def steer(self, run_id: str, text: str) -> None:
+        response = await self._send("POST", f"/v1/runs/{run_id}/steer", {"input": text})
+        if response.status_code == 200:
+            return
+        if response.status_code == 409:
+            raise NotSteerable(error_code(response))
+        if response.status_code == 404:
+            raise RunNotFound(error_code(response))
+        if response.is_client_error:
+            raise Rejected(error_code(response))
+        raise OutcomeUnknown(error_code(response))
 
     async def aclose(self) -> None:
         await self.client.aclose()

@@ -52,6 +52,7 @@ export interface TaskApproval {
   description: string | null;
   command: string | null;
   choices: string[] | null;
+  request_id: string | null;
 }
 
 export interface TaskCard {
@@ -260,4 +261,33 @@ export async function connect(
 
 export async function disconnect(room: Room): Promise<void> {
   await room.disconnect();
+}
+
+export interface ActionResult {
+  ok: boolean;
+  error?: string;
+}
+
+export async function act(
+  room: Room,
+  method: "voca.approve" | "voca.cancel_task",
+  payload: Record<string, string>,
+): Promise<ActionResult> {
+  const agent = [...room.remoteParticipants.values()].find(
+    (participant) => participant.attributes[AGENT_STATE] !== undefined,
+  );
+  if (agent === undefined) {
+    return { ok: false, error: "агент не в комнате" };
+  }
+  try {
+    const response = await room.localParticipant.performRpc({
+      destinationIdentity: agent.identity,
+      method,
+      payload: JSON.stringify(payload),
+      responseTimeout: 45000,
+    });
+    return JSON.parse(response) as ActionResult;
+  } catch (error) {
+    return { ok: false, error: String(error) };
+  }
 }

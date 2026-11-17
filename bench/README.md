@@ -20,7 +20,15 @@ Scripts:
   no llama-server needed.
 - `llm_ru_tools.py` (VOCA-4) — G3: `dialogs`, `delegate`, `all` (the default),
   `dialogs-thinking` (the twenty dialogs with thinking on, VOCA-7),
-  `delegate-thinking` (the ten scenarios with thinking on).
+  `delegate-thinking` (the ten scenarios with thinking on);
+  `tools` (VOCA-36) — the nine cases of `corpus/llm_tools.json`: a context of
+  messages and delegation facts, then one user turn; the first tool call must be
+  the expected one (`delegate`, `steer_task`, `cancel_task`, `repeat_approval`,
+  `deny_approval`, `list_tasks`), and a `none` case passes with no call (only
+  `list_tasks` in `c08`, `c09`) and a Russian answer without a claimed action
+  or the announcement text. The tools and instructions come from `VocaAgent`
+  with `instructions.example`, the model from the agent's `make_llm`; the
+  result goes to `tools.json`.
 - `llm_speed.py` (VOCA-4) — G4: `turns`, `points`, `all` (the default);
   `--thinking` (VOCA-7) sends the thinking kwargs with `max_tokens` 1024,
   measures TTFT to the first output (reasoning or content), also records the
@@ -95,9 +103,9 @@ Scripts:
   lives in `voca.app.wiring`, `audio_stand.py` re-exports it), WAV helpers, the
   server health check.
 
-`scripts/up.sh llm` starts the default profile `lfm2.5-2.6b`, the agent's
-model (VOCA-9). The G3/G4 baselines of `report_g3_g4.md` were measured on
-`bolt-e4b`; to repeat them, start `VOCA_LLM_PROFILE=bolt-e4b scripts/up.sh llm`
+`scripts/up.sh llm` starts the default profile `bolt-e4b`, the agent's
+model (VOCA-36); the G3/G4 baselines of `report_g3_g4.md` were measured on it.
+LFM2.5-2.6B starts with `VOCA_LLM_PROFILE=lfm2.5-2.6b scripts/up.sh llm`
 (README 0.3).
 
 The `llm_*` scripts need `scripts/up.sh llm`; their corpora are
@@ -128,6 +136,7 @@ Reports, one per measurement task:
 - `report_tts_prepare.md` (VOCA-12)
 - `report_g5.md` (VOCA-14)
 - `report_g6.md` (VOCA-16)
+- `report_delegation_tools.md` (VOCA-36)
 
 Corpora are plain text or JSON in `bench/corpus/`. Voice recordings stay out of the
 repository, in `.local/bench/`; each report names the recordings it used with

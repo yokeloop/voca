@@ -45,6 +45,8 @@ def task_printer() -> Callable[["Task"], None]:
         line = f"{task.tool_call_id}\t{task.status}\t{task.run_id or '-'}"
         if task.stop_requested_at is not None:
             line += "\tstop"
+            if task.stop_reason is not None:
+                line += f" {task.stop_reason}"
         if task.status == "waiting_approval" and task.approval is not None:
             line += (
                 f"\n  description: {task.approval.get('description')}"

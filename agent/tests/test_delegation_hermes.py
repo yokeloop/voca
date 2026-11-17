@@ -10,6 +10,7 @@ from voca.delegation.hermes import HermesBackend, map_run
 from voca.delegation.model import TaskStatus
 from voca.delegation.ports import (
     ApprovalNotActive,
+    NotSteerable,
     OutcomeUnknown,
     Rejected,
     RunNotFound,
@@ -132,15 +133,15 @@ PENDING_CONTROLS = [
 
 
 @pytest.mark.parametrize(
-    ("body", "stop_requested", "expected"),
+    ("body", "stop_reason", "expected"),
     [
-        ({"status": "started"}, False, RunState("r", TaskStatus.RUNNING)),
-        ({"status": "queued"}, False, RunState("r", TaskStatus.RUNNING)),
-        ({"status": "running"}, False, RunState("r", TaskStatus.RUNNING)),
-        ({"status": "stopping"}, True, RunState("r", TaskStatus.RUNNING)),
+        ({"status": "started"}, None, RunState("r", TaskStatus.RUNNING)),
+        ({"status": "queued"}, None, RunState("r", TaskStatus.RUNNING)),
+        ({"status": "running"}, None, RunState("r", TaskStatus.RUNNING)),
+        ({"status": "stopping"}, "timeout", RunState("r", TaskStatus.RUNNING)),
         (
             {"status": "waiting_for_approval", "approval": APPROVAL},
-            False,
+            None,
             RunState("r", TaskStatus.WAITING_APPROVAL, approval=APPROVAL),
         ),
         (
@@ -150,42 +151,47 @@ PENDING_CONTROLS = [
                 "pending_controls": PENDING_CONTROLS,
                 "execution_generation": 3,
             },
-            False,
+            None,
             RunState("r", TaskStatus.WAITING_APPROVAL, approval=AUTHORITY_APPROVAL),
         ),
         (
             {"status": "completed", "output": "готово"},
-            False,
+            None,
             RunState("r", TaskStatus.SUCCEEDED, result="готово"),
         ),
         (
             {"status": "failed", "error": "boom"},
-            False,
+            None,
             RunState("r", TaskStatus.FAILED, error="boom"),
         ),
         (
             {"status": "cancelled"},
-            True,
+            "user",
+            RunState("r", TaskStatus.FAILED, error="cancelled"),
+        ),
+        (
+            {"status": "cancelled"},
+            "timeout",
             RunState("r", TaskStatus.FAILED, error="timeout"),
         ),
         (
             {"status": "cancelled"},
-            False,
+            None,
             RunState("r", TaskStatus.FAILED, error="interrupted by gateway restart"),
         ),
         (
             {"status": "interrupted", "error": "owner died"},
-            False,
+            None,
             RunState("r", TaskStatus.FAILED, error="owner died"),
         ),
         (
             {"status": "interrupted"},
-            False,
+            None,
             RunState("r", TaskStatus.FAILED, error="interrupted"),
         ),
         (
             {"status": "unknown", "admission_id": "a1", "execution_generation": 2},
-            False,
+            None,
             RunState(
                 "r",
                 TaskStatus.UNKNOWN,
@@ -195,46 +201,46 @@ PENDING_CONTROLS = [
     ],
 )
 def test_map_run_all_statuses(
-    body: dict[str, Any], stop_requested: bool, expected: RunState
+    body: dict[str, Any], stop_reason: str | None, expected: RunState
 ) -> None:
-    assert map_run({"run_id": "r", **body}, stop_requested) == expected
+    assert map_run({"run_id": "r", **body}, stop_reason) == expected
 
 
 def test_map_run_unknown_status() -> None:
     with pytest.raises(OutcomeUnknown):
-        map_run({"run_id": "r", "status": "teleported"}, False)
+        map_run({"run_id": "r", "status": "teleported"}, None)
 
 
 def test_get_run_not_found() -> None:
     client, requests = backend(reply(404, error_body("run_not_found")))
     with pytest.raises(RunNotFound):
-        asyncio.run(closing(client, client.get_run("run_1", False)))
+        asyncio.run(closing(client, client.get_run("run_1", None)))
     assert requests[0].method == "GET"
     assert requests[0].url.path == "/v1/runs/run_1"
     client, _ = backend(reply(500))
     with pytest.raises(OutcomeUnknown):
-        asyncio.run(closing(client, client.get_run("run_1", False)))
+        asyncio.run(closing(client, client.get_run("run_1", None)))
     client, _ = backend(reply(200, {"run_id": "run_1", "status": "running"}))
-    state = asyncio.run(closing(client, client.get_run("run_1", False)))
+    state = asyncio.run(closing(client, client.get_run("run_1", None)))
     assert state == RunState("run_1", TaskStatus.RUNNING)
 
 
 def test_stop_responses() -> None:
     client, requests = backend(reply(200, {"run_id": "run_1", "status": "stopping"}))
-    assert asyncio.run(closing(client, client.stop("run_1"))) is None
+    assert asyncio.run(closing(client, client.stop("run_1", "timeout"))) is None
     assert requests[0].method == "POST"
     assert requests[0].url.path == "/v1/runs/run_1/stop"
     assert requests[0].content == b""
     client, _ = backend(
         reply(200, {"run_id": "run_1", "status": "completed", "output": "успел"})
     )
-    assert asyncio.run(closing(client, client.stop("run_1"))) == RunState(
+    assert asyncio.run(closing(client, client.stop("run_1", "timeout"))) == RunState(
         "run_1", TaskStatus.SUCCEEDED, result="успел"
     )
     client, _ = backend(reply(409, error_body("run_not_active")))
-    assert asyncio.run(closing(client, client.stop("run_1"))) is None
+    assert asyncio.run(closing(client, client.stop("run_1", "timeout"))) is None
     client, _ = backend(reply(200, {"run_id": "run_1", "status": "cancelled"}))
-    assert asyncio.run(closing(client, client.stop("run_1"))) == RunState(
+    assert asyncio.run(closing(client, client.stop("run_1", "timeout"))) == RunState(
         "run_1", TaskStatus.FAILED, error="timeout"
     )
 
@@ -284,3 +290,27 @@ def test_resolve_unknown_body() -> None:
     asyncio.run(closing(client, client.resolve_unknown("run_1", admission)))
     assert requests[0].url.path == "/v1/runs/run_1/resolve-unknown"
     assert json.loads(requests[0].content) == admission
+
+
+def test_steer_request() -> None:
+    client, requests = backend(reply(200, {"run_id": "run_1", "status": "running"}))
+    asyncio.run(closing(client, client.steer("run_1", "добавь b.txt")))
+    assert requests[0].method == "POST"
+    assert requests[0].url.path == "/v1/runs/run_1/steer"
+    assert json.loads(requests[0].content) == {"input": "добавь b.txt"}
+
+
+@pytest.mark.parametrize(
+    ("status", "code", "error"),
+    [
+        (409, "run_not_accepting_steer", NotSteerable),
+        (409, "steer_not_accepted", NotSteerable),
+        (400, "invalid_steer_input", Rejected),
+        (404, "run_not_found", RunNotFound),
+        (500, "internal", OutcomeUnknown),
+    ],
+)
+def test_steer_responses(status: int, code: str, error: type[Exception]) -> None:
+    client, _ = backend(reply(status, error_body(code)))
+    with pytest.raises(error):
+        asyncio.run(closing(client, client.steer("run_1", "добавь b.txt")))

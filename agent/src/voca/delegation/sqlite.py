@@ -7,11 +7,14 @@ from typing import Any
 
 from voca.delegation.model import Task, TaskStatus
 
-SCHEMA_VERSION = 1
-MIGRATION = Path(__file__).parent / "migrations" / "001-tasks.sql"
+SCHEMA_VERSION = 2
+MIGRATIONS = (
+    Path(__file__).parent / "migrations" / "001-tasks.sql",
+    Path(__file__).parent / "migrations" / "002-stop-reason.sql",
+)
 COLUMNS = (
     "tool_call_id, text, status, run_id, result, error, "
-    "created_at, delivered_at, stop_requested_at, approval"
+    "created_at, delivered_at, stop_requested_at, approval, stop_reason"
 )
 
 
@@ -43,6 +46,7 @@ def task_of(row: tuple[Any, ...]) -> Task:
         delivered_at=row[7],
         stop_requested_at=row[8],
         approval=None if approval is None else json.loads(approval),
+        stop_reason=row[10],
     )
 
 
@@ -71,8 +75,9 @@ class SqliteTaskRepository:
                     raise TaskStoreError(
                         f"схема базы задач новее приложения: user_version {version} > {SCHEMA_VERSION}"
                     )
-                if version == 0:
-                    db.executescript(MIGRATION.read_text(encoding="utf-8"))
+                for step in range(version, SCHEMA_VERSION):
+                    db.executescript(MIGRATIONS[step].read_text(encoding="utf-8"))
+                if version < SCHEMA_VERSION:
                     db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
                 db.execute("COMMIT")
             except BaseException:
@@ -90,7 +95,7 @@ class SqliteTaskRepository:
 
     def _insert(self, task: Task) -> tuple[Task, bool]:
         cursor = self.db.execute(
-            f"INSERT INTO tasks ({COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            f"INSERT INTO tasks ({COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(tool_call_id) DO NOTHING",
             (
                 task.tool_call_id,
@@ -103,6 +108,7 @@ class SqliteTaskRepository:
                 task.delivered_at,
                 task.stop_requested_at,
                 dump_approval(task),
+                task.stop_reason,
             ),
         )
         if cursor.rowcount == 0:
@@ -114,7 +120,7 @@ class SqliteTaskRepository:
     def _save(self, task: Task) -> None:
         self.db.execute(
             "UPDATE tasks SET status = ?, run_id = ?, result = ?, error = ?, "
-            "delivered_at = ?, stop_requested_at = ?, approval = ? "
+            "delivered_at = ?, stop_requested_at = ?, approval = ?, stop_reason = ? "
             "WHERE tool_call_id = ?",
             (
                 task.status.value,
@@ -124,6 +130,7 @@ class SqliteTaskRepository:
                 task.delivered_at,
                 task.stop_requested_at,
                 dump_approval(task),
+                task.stop_reason,
                 task.tool_call_id,
             ),
         )

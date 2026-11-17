@@ -103,7 +103,7 @@ uv run --project agent python bench/tts_pipeline.py think
 
 ### 0.3 LLM stand
 
-llama-server with the agent's model LFM2.5-2.6B (profile `lfm2.5-2.6b`, the default since VOCA-9, 0.3.1). Gates G3 and G4 were measured on Bolt-E4B in profile B (the per-layer embeddings stay in RAM) on b11869: [bench/report_g3_g4.md](bench/report_g3_g4.md). LFM2.5-2.6B on the E0 cases: [bench/report_lfm2_5_2_6b.md](bench/report_lfm2_5_2_6b.md).
+llama-server with the agent's model Nemotron Bolt-E4B (profile `bolt-e4b`, the default since VOCA-36, 0.3.1); LFM2.5-2.6B (`lfm2.5-2.6b`) is an alternative. Gates G3 and G4 were measured on Bolt-E4B in profile B (the per-layer embeddings stay in RAM) on b11869: [bench/report_g3_g4.md](bench/report_g3_g4.md). LFM2.5-2.6B on the E0 cases: [bench/report_lfm2_5_2_6b.md](bench/report_lfm2_5_2_6b.md).
 
 **llama.cpp.** CUDA release `b12167` (`build 12167, commit 240d68fcf`), build `ubuntu-cuda-13.4-x64`, two archives:
 
@@ -127,28 +127,28 @@ scripts/fetch.sh --check
 (cd agent && uv sync --locked)
 scripts/up.sh llm
 curl http://127.0.0.1:8081/health
-curl -fsS http://127.0.0.1:8081/v1/models   # "id": "lfm2.5-2.6b"
+curl -fsS http://127.0.0.1:8081/v1/models   # "id": "bolt-e4b"
 ```
 
 These measurements belong to `bolt-e4b`; the LFM2.5-2.6B runs and their commands are in [bench/report_lfm2_5_2_6b.md](bench/report_lfm2_5_2_6b.md). Repeating G3/G4 of [bench/report_g3_g4.md](bench/report_g3_g4.md) on `bolt-e4b`:
 
 ```sh
 scripts/down.sh llm
-VOCA_LLM_PROFILE=bolt-e4b scripts/up.sh llm
+scripts/up.sh llm
 uv run --project agent python bench/llm_template.py
 uv run --project agent python bench/llm_ru_tools.py
 uv run --project agent python bench/llm_speed.py
 scripts/down.sh llm
 ```
 
-`scripts/up.sh llm` runs `scripts/llama.sh`, which loads the profile `VOCA_LLM_PROFILE` (0.3.1), checks the binary, the model and port 8081, then starts; for the default profile `lfm2.5-2.6b`:
+`scripts/up.sh llm` runs `scripts/llama.sh`, which loads the profile `VOCA_LLM_PROFILE` (0.3.1), checks the binary, the model and port 8081, then starts; for the default profile `bolt-e4b`:
 
 ```sh
-~/Apps/llama.cpp/llama-b12167/llama-server -m ~/models/LiquidAI/LFM2.5-2.6B-Q4_K_M.gguf --alias lfm2.5-2.6b \
+~/Apps/llama.cpp/llama-b12167/llama-server -m ~/models/unsloth/NVIDIA-Nemotron-3.5-Bolt-E4B-UD-Q4_K_XL.gguf --alias bolt-e4b \
   --jinja --host 127.0.0.1 --port 8081 \
   -c 16384 -fa on -ctk q8_0 -ctv q8_0 \
   --parallel 1 -t 2 -ngl 99 \
-  --temp 0.1 --top-k 50 --repeat-penalty 1.1
+  --cache-reuse 256 --override-tensor 'per_layer.*=CPU' --temp 1.0 --top-p 0.95
 ```
 
 It waits up to 120 s for `/health`. Port 8081 listens on `127.0.0.1` only. The client sends `thinking_budget_tokens` (`[model].thinking_budget`, 128) in `extra_body` and no chat template kwargs. Sampling comes from the profile on the server; the client sends only the sampling values set in `[model]` of the agent config (`temperature`, `top_k`, `top_p`, `repeat_penalty`; [AGENTS.md](AGENTS.md#agent-config)). LFM2.5-2.6B always thinks: its template opens `<think>` and does not read `enable_thinking` ([bench/report_lfm2_5_2_6b.md](bench/report_lfm2_5_2_6b.md)).
@@ -157,15 +157,15 @@ It waits up to 120 s for `/health`. Port 8081 listens on `127.0.0.1` only. The c
 
 ### 0.3.1 LLM profiles
 
-`VOCA_LLM_PROFILE` (default `lfm2.5-2.6b`, set in `.env` or the environment) picks the model llama-server loads. A profile is the bash file `scripts/llm-profiles/<name>.sh` with two variables: `model` (the GGUF path) and `args` (the profile's own flags: sampling from the model card and special flags). The shared flags (`--jinja`, `127.0.0.1:8081`, `-c 16384`, `-fa on`, q8_0 KV cache, `--parallel 1`, `-t 2`, `-ngl 99`) stay in `scripts/llama.sh`, and `--alias` is the profile name, so `GET /v1/models` names the profile. An unknown profile stops `scripts/llama.sh` with «профиль VOCA_LLM_PROFILE=<name> не найден» and nothing starts.
+`VOCA_LLM_PROFILE` (default `bolt-e4b`, set in `.env` or the environment) picks the model llama-server loads. A profile is the bash file `scripts/llm-profiles/<name>.sh` with two variables: `model` (the GGUF path) and `args` (the profile's own flags: sampling from the model card and special flags). The shared flags (`--jinja`, `127.0.0.1:8081`, `-c 16384`, `-fa on`, q8_0 KV cache, `--parallel 1`, `-t 2`, `-ngl 99`) stay in `scripts/llama.sh`, and `--alias` is the profile name, so `GET /v1/models` names the profile. An unknown profile stops `scripts/llama.sh` with «профиль VOCA_LLM_PROFILE=<name> не найден» and nothing starts.
 
-`lfm2.5-2.6b` is the agent's model: the engineer's decision of 2026-11-11 recorded in mypi home `projects/yokeloop/voca/INDEX.md` («Решения инженера по стеку»), measurements in [bench/report_lfm2_5_2_6b.md](bench/report_lfm2_5_2_6b.md); the architecture documents derive:8kki4ynb and derive:eb1id854 are updated separately. `bolt-e4b` (Nemotron, the main model until VOCA-9) and `lfm3-1.7b` remain alternatives and start only with an explicit `VOCA_LLM_PROFILE=<name>`.
+`bolt-e4b` (Nemotron) is the agent's model: the engineer's decision of 2026-11-17 (VOCA-36, the E3 acceptance) recorded in mypi home `projects/yokeloop/voca/INDEX.md` («Решения инженера по стеку»); it revises the decision of 2026-11-11, which made `lfm2.5-2.6b` the agent's model (measurements in [bench/report_lfm2_5_2_6b.md](bench/report_lfm2_5_2_6b.md)); the architecture documents derive:8kki4ynb and derive:eb1id854 are updated separately. `lfm2.5-2.6b` and `lfm3-1.7b` remain alternatives and start only with an explicit `VOCA_LLM_PROFILE=<name>`.
 
 | Profile | Model | Sampling (model card) | Special flags |
 | --- | --- | --- | --- |
-| `bolt-e4b` (alternative) | HF `unsloth/NVIDIA-Nemotron-3.5-Bolt-E4B-GGUF`, revision `b738967d6da3441a7d1c71fcec15e49e32e16ecd`, `NVIDIA-Nemotron-3.5-Bolt-E4B-UD-Q4_K_XL.gguf`, 5.06 GB, sha256 `84ff34f5834b929043f5ae74799e8d562d4056998f6a5923ceb44831e8ad84d6` | `--temp 1.0 --top-p 0.95` | `--cache-reuse 256`, `--override-tensor 'per_layer.*=CPU'` (profile B) |
+| `bolt-e4b` (default, the agent's model) | HF `unsloth/NVIDIA-Nemotron-3.5-Bolt-E4B-GGUF`, revision `b738967d6da3441a7d1c71fcec15e49e32e16ecd`, `NVIDIA-Nemotron-3.5-Bolt-E4B-UD-Q4_K_XL.gguf`, 5.06 GB, sha256 `84ff34f5834b929043f5ae74799e8d562d4056998f6a5923ceb44831e8ad84d6` | `--temp 1.0 --top-p 0.95` | `--cache-reuse 256`, `--override-tensor 'per_layer.*=CPU'` (profile B) |
 | `lfm3-1.7b` | HF `LiquidAI/LFM3-1.7B-GGUF`, revision `cd0c74c575b5c416f3011b5b4c298077f26ca8c2`, `LFM3-1.7B-Q4_K_M.gguf`, 1 099 627 808 bytes, sha256 `3793e1e6e2266919d6e015287221b41100175a98eddaba92e111aed3b05c93c4` | General preset: `--temp 0.1 --top-k 50 --repeat-penalty 1.1` | none: no `--cache-reuse` (unsupported by this context, checkpoints are used), no `per_layer` override; ≈ 1.4 GB VRAM |
-| `lfm2.5-2.6b` (default, the agent's model) | HF `LiquidAI/LFM2.5-2.6B-GGUF`, revision `e7caca5d835a3901a8e0d63e94009429bafafdfc`, `LFM2.5-2.6B-Q4_K_M.gguf`, 1 674 455 040 bytes, sha256 `02a8b7e17487d326e46d68ce0ba24211e1b80a14c4cd0597fa73c1cd697f52ed` | card: `--temp 0.1 --top-k 50 --repeat-penalty 1.1` | none: no `--cache-reuse` (shifted prefixes are not reused; the prefix cache is), no `per_layer` override; always thinks; ≈ 2.0 GB VRAM |
+| `lfm2.5-2.6b` (alternative) | HF `LiquidAI/LFM2.5-2.6B-GGUF`, revision `e7caca5d835a3901a8e0d63e94009429bafafdfc`, `LFM2.5-2.6B-Q4_K_M.gguf`, 1 674 455 040 bytes, sha256 `02a8b7e17487d326e46d68ce0ba24211e1b80a14c4cd0597fa73c1cd697f52ed` | card: `--temp 0.1 --top-k 50 --repeat-penalty 1.1` | none: no `--cache-reuse` (shifted prefixes are not reused; the prefix cache is), no `per_layer` override; always thinks; ≈ 2.0 GB VRAM |
 
 `scripts/fetch.sh` places the models of all profiles in `$VOCA_MODELS_DIR` (`unsloth/`, `LiquidAI/`).
 
@@ -173,12 +173,12 @@ It waits up to 120 s for `/health`. Port 8081 listens on `127.0.0.1` only. The c
 
 ```sh
 scripts/down.sh llm
-VOCA_LLM_PROFILE=bolt-e4b scripts/up.sh llm   # or VOCA_LLM_PROFILE=bolt-e4b in .env
+VOCA_LLM_PROFILE=lfm2.5-2.6b scripts/up.sh llm   # or VOCA_LLM_PROFILE=lfm2.5-2.6b in .env
 curl -fsS http://127.0.0.1:8081/health
-curl -fsS http://127.0.0.1:8081/v1/models       # "id": "bolt-e4b"
+curl -fsS http://127.0.0.1:8081/v1/models          # "id": "lfm2.5-2.6b"
 ```
 
-`scripts/up.sh llm` without `VOCA_LLM_PROFILE` goes back to `lfm2.5-2.6b`.
+`scripts/up.sh llm` without `VOCA_LLM_PROFILE` goes back to `bolt-e4b`.
 
 Exactly one model is loaded at a time: there is one `llm` service on one port, 8081.
 
@@ -322,7 +322,7 @@ scripts/down.sh
 
 Exit codes: 0 succeeded, 1 failed or unavailable, 2 usage, config or missing variables, 130 interrupted.
 
-**States.** `queued` → `running` → `succeeded` | `failed`, plus `waiting_approval` (Hermes asks to approve a dangerous command: `description`, `command`, `choices` are printed) and `unknown` (Hermes canonical mode; VOCA calls `resolve-unknown`). Failure reasons: `unavailable` (the request was refused: no connection, 4xx, 429, 503; an unknown outcome — a read timeout, a cut connection, 5xx other than 503 — is retried once with the same key), `timeout` (`[delegation].run_timeout` passed: VOCA sends `/stop`, waits 30 s for a final status; `completed` within that time still counts), `interrupted by gateway restart` (`cancelled` without a VOCA `/stop`), `lost` (404), `lost before launch`.
+**States.** `queued` → `running` → `succeeded` | `failed`, plus `waiting_approval` (Hermes asks to approve a dangerous command: `description`, `command`, `choices` are printed) and `unknown` (Hermes canonical mode; VOCA calls `resolve-unknown`). Failure reasons: `unavailable` (the request was refused: no connection, 4xx, 429, 503; an unknown outcome — a read timeout, a cut connection, 5xx other than 503 — is retried once with the same key), `timeout` (`[delegation].run_timeout` passed: VOCA sends `/stop`, waits 30 s for a final status; `completed` within that time still counts), `cancelled` («отменено пользователем»: `cancelled` after a VOCA `/stop` on the user's request — the tool `cancel_task` or the card's button), `interrupted by gateway restart` (`cancelled` without a VOCA `/stop`), `lost` (404), `lost before launch`. The column `stop_reason` (`user`|`timeout`) of `tasks` says why VOCA sent `/stop`, so a restart still maps `cancelled` to the right reason; schema migration 1 → 2 adds it and sets `timeout` on rows already stopped.
 
 **Approval in `session_authority` mode.** Hermes in canonical `session_authority` mode (the `voca` profile, Hermes `3cbe7b1`) returns `approval: null` and puts the request into `pending_controls` (`kind: approval`, `prompt_id`, `execution_generation`); VOCA takes the first such entry and answers `POST /v1/runs/{id}/approval` with exactly `{"request_id": <prompt_id>, "execution_generation": <int>, "choice": "once"|"deny"}`; without `pending_controls` it reads `approval` and sends `{"choice", "request_id"}` as before.
 
@@ -339,20 +339,49 @@ Exit codes: 0 succeeded, 1 failed or unavailable, 2 usage, config or missing var
 - Restart: a new job delivers what was not delivered and, through `recover()`, carries open tasks to their end, abandoned `cli-*` tasks included.
 - Risk: if the process dies between the playout and writing `delivered_at`, the result is spoken again.
 
+**Tools.** Besides `delegate` the model has five tools; there is no tool to approve a request — only the user approves, by voice or with the button.
+
+- `list_tasks()` — `{"tasks": [...]}`: every open task by creation time, then up to 5 latest finished ones; each `{"id", "text"` (up to 60 characters)`, "status"}` plus `"result"` (up to 300 characters, cut at a sentence boundary) for `succeeded`, `"error"` (the spoken reason) for `failed`, `"approval": {"request", "command", "active"}` for `waiting_approval`.
+- `cancel_task(id?)` — `/stop` with the reason `user`, waits up to 30 s for a final status (like the deadline), then the task's view `{"id", "status", "error" | "result"}`; a run that completed before the stop stays `succeeded`. The cancel sets the outcome itself and marks the task delivered, so it is not spoken. If the cancel is cut short (a restart during the window), the task's watcher settles it the same way: it keeps polling with the reason `user` instead of the deadline, takes the final status as `cancelled`, marks it delivered, and after 30 s without a final status sets `failed`/`cancelled` itself.
+- `steer_task(text, id?)` — `POST /v1/runs/{id}/steer` `{"input": text}`, only for a `running` task; answers `{"id", "event": "steered", "accepted": true}`; the task's state does not change.
+- `deny_approval(id?)` — denies a request; without `id` the active one. Answers `{"id", "event": "denied"}`.
+- `repeat_approval()` — the active request is announced again; the tool returns nothing, so the model does not reply after it.
+- `id` is the task's `tool_call_id`; a unique prefix is accepted; without `id` the only matching open task is taken. Errors are honest tool errors: «Нет такого поручения», «Неясно, какое поручение: назовите id из list_tasks», «Поручение уже завершено», «Поручение сейчас не принимает уточнений», «Сейчас нет запроса подтверждения», «Не удалось связаться с Hermes», «Запрос подтверждения уже не активен», «Не удалось передать подтверждение».
+
+**Facts in the context.** Every delegation event the model did not cause itself is put into its context as a pair `function_call` + `function_call_output` with the name of a real tool (livekit drops pairs of unknown tools when a context is restored): a voice denial is `deny_approval`, the result is `delegate` (above), everything else is `list_tasks` with the output `{"id", "event", "by": "voice"|"button"|"hermes", …}`.
+
+| `event` | When | Extra fields |
+| --- | --- | --- |
+| `approval_requested` | each playback of an announcement | `text`, `request`, `command`, `interrupted` |
+| `approved` | «Подтверждаю» or the button | |
+| `denied` | «Отклоняю» (`deny_approval`) or the button | |
+| `approval_not_recognized` | a near miss, both key words, or an echo | |
+| `approval_failed` | the answer did not go through (`is_error`) | `error` |
+| `approval_expired` | Hermes refused by itself (`by: hermes`) | |
+| `cancelled` | the card's «Отменить задачу» | `status`, `error` \| `result` |
+
+The pairs are kept in the session snapshot and survive a restart; they are not archive rows (like the result pair of VOCA-33). A fact goes in before the agent's reply. The model's own tool calls reach the context and the archive as usual.
+
 **Voice approval.**
 
-- Announcement: «Hermes просит подтверждения по поручению «<up to 60 characters of the task text>»: <description>. Скажите „Подтверждаю“ или „Отклоняю“.». `command` is not spoken; it is in the card. audio.cpp rejects „“ (HTTP 500), so speech preparation maps them to «» (VOCA-34 stand). The announcement goes through the same queue as the results, ahead of them; the reply goes into the context, the archive and `voca.history`.
-- One request is active: the last one announced and played without interruption. An interrupted announcement is repeated once, when the user stops speaking. The next announcement waits until the active request is answered or expires; results are spoken meanwhile.
-- Phrases: «Подтверждаю» → `once`, «Отклоняю» → `deny`. Normalisation: lower case, `ё` → `е`, whitespace and punctuation cut at the edges; only a whole match counts. «да», «подтверди», «подтверждаю, но…» are an ordinary LLM turn. `session`/`always` are not given by voice.
-- With an active request the phrase is checked before the LLM. The turn stops, and the agent answers «Подтверждено», «Отклонено», «Запрос подтверждения уже не активен» (409 or the request changed) or «Не удалось передать подтверждение» (network, 5xx, other 4xx; the request stays active). Without an active request the phrase is an ordinary turn.
+- Announcement: «Hermes просит подтверждения по поручению «<up to 60 characters of the task text>»: <description in Russian>. Подтвердите на экране или скажите „Подтверждаю“ или „Отклоняю“.». The description is translated by a dictionary of the Hermes `3cbe7b1` descriptions (`conversation/descriptions.py`; a variant suffix « (…)» is ignored, «arbitrary program execution via …» is «запуск произвольной программы»), an unknown one is «опасная команда». `command` is not spoken; the card keeps the English description and the command. audio.cpp rejects „“ (HTTP 500), so speech preparation maps them to «» (VOCA-34 stand). The announcement goes through the same queue as the results, ahead of them.
+- The announcement is spoken with `add_to_chat_ctx=False`: it is neither in the context, nor in the archive, nor in `voca.history`; the model gets the fact `approval_requested`, the page the card.
+- Queue: one announced request is active, the next ones wait for its answer (a phrase, the button, a denial by the model, the expiry or a cancel); results are spoken meanwhile. An interrupted announcement is repeated once, when the user stops speaking; after that it is active anyway.
+- Phrase: the first word decides. «Подтверждаю» → `once`, «Отклоняю» → `deny` (lower case, `ё` → `е`). Without a tail the turn stops and the agent answers «Подтверждено» or «Отклонено». With a tail («Отклоняю, отмени вообще задачу.») the answer is sent, the fact goes into the context, no fixed reply is spoken, and the tail goes to the LLM as the user's turn.
+- «Не разобрал подтверждение. Скажите „Подтверждаю“ или „Отклоняю“, или ответьте на экране»: the first word is 1–2 edits from a key word («подверждаю», «отклоню»), the phrase holds both key words (the echo of the announcement does), or the phrase started before the announcement finished playing (the echo window, `started_speaking_at`). The request keeps waiting, the rest of the phrase is dropped.
+- Any other phrase («да», «Да, подтверждаю», «А что он удалит?») is an ordinary LLM turn; the request stays active. Without an active request every phrase is an ordinary turn.
+- Answer failures: «Запрос подтверждения уже не активен» (409 or the request changed; released) or «Не удалось передать подтверждение» (network, 5xx, other 4xx; the request stays active).
 - The phrase reaches neither the context, nor the archive, nor `voca.history`; it is only in the `user_input_transcribed` row. The agent's answer is in the archive. A finished summary is adopted on the next ordinary turn.
-- Expiry: Hermes refuses by itself after `approvals.timeout` (300 s on the `voca` profile), the task returns to `running`, the request is released, and the announcement is not repeated. The phrase within 2 s of the expiry gives «уже не активен», later it is an ordinary LLM turn.
+- «Повтори запрос» → the model calls `repeat_approval`, and the active request is announced again.
+- Buttons: «Подтвердить» and «Отклонить» on the card answer the request silently; the card changes and the fact goes into the context.
+- An answered request is not announced again while Hermes still reports it (until the next poll).
+- Expiry: Hermes refuses by itself after `approvals.timeout` (300 s on the `voca` profile), the task returns to `running`, the request is released with the fact `approval_expired`, and the announcement is not repeated. The phrase within 2 s of the expiry gives «уже не активен», later it is an ordinary LLM turn.
 - A restart or a new job announces every task waiting for approval.
 - Deviation from research 2.7 and 6.3 item 7 (the engineer's decision, VOCA-34): the card shows neither the choice nor «истёк». After an answer or the expiry it is «выполняется» again. The trace of an answer is the `task` row with `approval` and the agent's reply in the archive.
 
-**Events.** The agent writes a `task` row on every change of a task: `tool_call_id`, `status`, `run_id`, `error`, `delivered`; the delivery row also has `interrupted`; an approval announcement writes a `task` row with `announced: true` and `interrupted`; a voice answer writes one with `approval` (`once`|`deny`). An announcement and the agent's answer that were heard also give `turn` rows like a delivery. A delivery that was heard also gives a `turn` row: `user_text` from the previous turn, `turn` not incremented; walkthroughs match it to the `task` row by `ts`. `voca bench delegate` writes nothing to `.local/events.jsonl`.
+**Events.** The agent writes a `task` row on every change of a task: `tool_call_id`, `status`, `run_id`, `error`, `delivered`; the delivery row also has `interrupted`; an approval announcement writes a `task` row with `announced: true` and `interrupted`; an answer writes one with `approval` (`once`|`deny`) and `by` (`voice`|`model`|`button`). The agent's answer that was heard also gives `turn` rows like a delivery. A delivery that was heard also gives a `turn` row: `user_text` from the previous turn, `turn` not incremented; walkthroughs match it to the `task` row by `ts`. `voca bench delegate` writes nothing to `.local/events.jsonl`.
 
-**Cards.** After «Подключиться» the agent sends the page every task (a `tasks` message on `voca.cards`) and the page shows them above the transcript, newest first: the status, the text, the full result, the error and «озвучено» once the result was delivered. A task waiting for approval shows what Hermes asks (`description`, `command`) and the hint «Скажите „Подтверждаю“ или „Отклоняю“». Tasks of `voca bench delegate` show up too; they are marked delivered by the CLI. A rejoin or a new `history` does not clear the cards. Format: [AGENTS.md](AGENTS.md#client-channel).
+**Cards.** After «Подключиться» the agent sends the page every task (a `tasks` message on `voca.cards`) and the page shows them above the transcript, newest first: the status, the text, the full result, the error and «озвучено» once the result was delivered. A task waiting for approval shows what Hermes asks (`description`, `command`), the hint «Подтвердите на экране или скажите „Подтверждаю“ или „Отклоняю“» and the buttons «Подтвердить» and «Отклонить»; every open task has «Отменить задачу». A button calls the agent over RPC (`voca.approve`, `voca.cancel_task`; `voca.cancel_task` answers as soon as the cancel has started, and the outcome comes as a `task` message); while the call runs the card's buttons are disabled, an error re-enables them and shows «ошибка: …», a success is shown by the next `task` message. Tasks of `voca bench delegate` show up too; they are marked delivered by the CLI. A rejoin or a new `history` does not clear the cards. Format: [AGENTS.md](AGENTS.md#client-channel).
 
 **Stand (VOCA-31, 2026-11-16).** Against `https://hermes.priney.com` (Hermes 0.22.2) on a temporary `VOCA_DELEGATION__PATH`: a simple task went `queued` → `running` → `succeeded` in about 4 s; the same `--key` again printed the same `run_id` with one row in `tasks`; a run interrupted by Ctrl-C (exit 130) stayed `running` and `--recover` carried it to `succeeded`. First observation of `/stop`: with `--timeout 20` VOCA sent `/stop` 20.2 s after the task was created; `/stop` answered `200` with `status: stopping` (not a final status); the run became `cancelled` about 0.5 s later (a direct probe), and the task saw it on the first poll of the 30 s window, 2 s after `/stop`: `failed`, `error: timeout`. Approval probe: the task «create `/tmp/voca-approval-once` with `a.txt` and remove it with `rm -r`» never reached `waiting_for_approval` — Hermes ran `rm -r` without asking and the run ended `completed` (`pending_controls` empty, `approval` null); there was nothing to answer there. On the `voca` profile (`https://hermes-voca.priney.com`, Hermes `3cbe7b1`) the `rm -r` task reached `waiting_approval`, and both answers went through `voca bench delegate --approve` from a second process: `once` — the run ended `succeeded` and the directory was removed; `deny` — the run ended `succeeded` with the command not run and the directory kept.
 
