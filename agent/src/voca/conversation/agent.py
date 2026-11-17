@@ -44,6 +44,12 @@ FAILURE_REASONS = {
     TIMEOUT: "не дождался результата",
     GATEWAY_RESTART: "Hermes перезапускался",
 }
+APPROVAL_LIMIT = 60
+APPROVAL_PROMPT = "Скажите „Подтверждаю“ или „Отклоняю“."
+APPROVAL_REPLIES = {"once": "Подтверждено", "deny": "Отклонено"}
+APPROVAL_GONE = "Запрос подтверждения уже не активен"
+APPROVAL_FAILED = "Не удалось передать подтверждение"
+ANNOUNCE_ATTEMPTS = 2
 
 
 @dataclass
@@ -77,6 +83,14 @@ def delivery_text(task: Task) -> str:
         return f"Готово по поручению: {result}" if result else "Готово по поручению."
     reason = FAILURE_REASONS.get(task.error or "", "Hermes вернул ошибку")
     return f"Поручение не выполнено: {reason}."
+
+
+def announcement_text(task: Task) -> str:
+    head = clip(task.text, APPROVAL_LIMIT)
+    description = clip(str((task.approval or {}).get("description") or "")).rstrip(".")
+    if description:
+        return f"Hermes просит подтверждения по поручению «{head}»: {description}. {APPROVAL_PROMPT}"
+    return f"Hermes просит подтверждения по поручению «{head}». {APPROVAL_PROMPT}"
 
 
 def records(ctx: llm.ChatContext) -> list[Item]:
