@@ -329,7 +329,14 @@ def test_deny_wrong_state_with_id(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    "text", ["Ну окей, давай подтвердим его.", "А что там за скрипт?", "Да"]
+    "text",
+    [
+        "Ну окей, давай подтвердим его.",
+        "А что там за скрипт?",
+        "Да",
+        "Нет, подтверди его",
+        "Мне надо, чтобы ты его подтвердил",
+    ],
 )
 def test_deny_approval_without_refusal(tmp_path: Path, text: str) -> None:
     async def main() -> None:
