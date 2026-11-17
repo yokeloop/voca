@@ -21,7 +21,7 @@ from livekit.agents import (
 from livekit.agents.voice import Agent, AgentSession, ModelSettings
 
 from voca.clientio.cards import CardState
-from voca.conversation.approval import Choice, Phrase, parse
+from voca.conversation.approval import Choice, NearMiss, parse
 from voca.conversation.compaction import (
     SUMMARY_KEY,
     Limits,
@@ -78,6 +78,7 @@ APPROVAL_PROMPT = "Подтвердите на экране или скажит�
 APPROVAL_REPLIES = {"once": "Подтверждено", "deny": "Отклонено"}
 APPROVAL_GONE = "Запрос подтверждения уже не активен"
 APPROVAL_FAILED = "Не удалось передать подтверждение"
+APPROVAL_UNCLEAR = "Не разобрал подтверждение. Скажите „Подтверждаю“ или „Отклоняю“, или ответьте на экране"
 ANNOUNCE_ATTEMPTS = 2
 
 
@@ -609,6 +610,24 @@ class VocaAgent(Agent):
         if approved and task is not None:
             self._task_row(task, approval=choice, by="voice")
 
+    async def _unclear(self, active: Announcement) -> None:
+        assert self.speaker is not None
+        await self._fact(
+            "list_tasks",
+            {},
+            {
+                "id": short_id(active.key),
+                "event": "approval_not_recognized",
+                "by": "voice",
+            },
+        )
+        try:
+            self.speaker.say(
+                APPROVAL_UNCLEAR, allow_interruptions=True, add_to_chat_ctx=True
+            )
+        except RuntimeError:
+            pass
+
     def _settled(self, key: str, approval: dict[str, Any]) -> None:
         self.answered[key] = approval
         self.announcements = deque(
@@ -787,10 +806,20 @@ class VocaAgent(Agent):
         self, turn_ctx: llm.ChatContext, new_message: llm.ChatMessage
     ) -> None:
         parsed = parse(new_message.text_content)
-        if isinstance(parsed, Phrase) and not parsed.tail and self.active is not None:
-            await self._answer(self.active, parsed.choice, speak=True)
-            raise StopResponse()
         changed = False
+        if parsed is not None and self.active is not None:
+            active = self.active
+            started = new_message.metrics.get("started_speaking_at")
+            if isinstance(parsed, NearMiss) or (
+                started is not None and started < self.heard_at
+            ):
+                await self._unclear(active)
+                raise StopResponse()
+            await self._answer(active, parsed.choice, speak=not parsed.tail)
+            if not parsed.tail:
+                raise StopResponse()
+            new_message.content = [parsed.tail]
+            changed = True
         loaded = self.loader.load()
         if (loaded.sha256, loaded.source, loaded.error) != (
             self.current.sha256,

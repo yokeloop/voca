@@ -11,7 +11,7 @@ from livekit.agents import StopResponse, llm
 from livekit.agents.voice import AgentSession
 
 from voca.clientio.cards import CardState
-from voca.conversation.agent import VocaAgent, announcement_text
+from voca.conversation.agent import APPROVAL_UNCLEAR, VocaAgent, announcement_text
 from voca.conversation.compaction import Limits
 from voca.conversation.instructions import InstructionLoader
 from voca.conversation.summarizer import Failure, Summarizer, Summary
@@ -313,8 +313,12 @@ def waiting(
     )
 
 
-def said(text: str) -> llm.ChatMessage:
-    return llm.ChatMessage(role="user", content=[text])
+def said(text: str, started: float | None = None) -> llm.ChatMessage:
+    if started is None:
+        return llm.ChatMessage(role="user", content=[text])
+    return llm.ChatMessage(
+        role="user", content=[text], metrics={"started_speaking_at": started}
+    )
 
 
 def finished(key: str, result: str = "Ответ.", created_at: float = 1.0) -> Task:
@@ -769,5 +773,133 @@ def test_pending_summary_waits_for_next_turn(tmp_path: Path) -> None:
         assert agent.pending is None
         assert summaries(agent) == 1
         await agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_phrase_with_tail_goes_to_llm(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path)
+        session = FakeSession()
+        await activate(stand, session, waiting("a"))
+        turn_ctx = stand.agent.chat_ctx.copy()
+        message = said("Подтверждаю. А что дальше?")
+        await stand.agent.on_user_turn_completed(turn_ctx, message)
+        assert stand.backend.approved == [("run_a", "once", APPROVAL)]
+        assert message.text_content == "А что дальше?"
+        assert "approved" in events_of(turn_ctx)
+        assert "Подтверждено" not in spoken(session)
+        assert stand.agent.active is None
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_deny_with_tail(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path)
+        session = FakeSession()
+        await activate(stand, session, waiting("a"))
+        turn_ctx = stand.agent.chat_ctx.copy()
+        message = said("Отклоняю, отмени вообще задачу.")
+        await stand.agent.on_user_turn_completed(turn_ctx, message)
+        assert stand.backend.approved == [("run_a", "deny", APPROVAL)]
+        assert ("deny_approval", {"id": "a", "event": "denied", "by": "voice"}) in (
+            facts(turn_ctx)
+        )
+        assert message.text_content == "отмени вообще задачу"
+        assert "Отклонено" not in spoken(session)
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+@pytest.mark.parametrize("text", ["подверждаю", "Подтверждаем", "отклоню"])
+def test_near_miss_says_unclear(tmp_path: Path, text: str) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path)
+        session = FakeSession()
+        await activate(stand, session, waiting("a"))
+        active = stand.agent.active
+        await stopped(stand.agent, text)
+        assert spoken(session)[-1] == APPROVAL_UNCLEAR
+        assert session.calls[-1] == (APPROVAL_UNCLEAR, True, True)
+        assert stand.backend.approved == []
+        assert stand.agent.active is active
+        assert facts(stand.agent.chat_ctx)[-1] == (
+            "list_tasks",
+            {"id": "a", "event": "approval_not_recognized", "by": "voice"},
+        )
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_both_keywords_unclear(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path)
+        session = FakeSession()
+        await activate(stand, session, waiting("a"))
+        await stopped(stand.agent, "Подтверждаю или отклоняю")
+        assert spoken(session)[-1] == APPROVAL_UNCLEAR
+        assert stand.backend.approved == []
+        assert stand.agent.active is not None
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_echo_window_unclear(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path)
+        session = FakeSession()
+        await activate(stand, session, waiting("a"))
+        agent = stand.agent
+        with pytest.raises(StopResponse):
+            await agent.on_user_turn_completed(
+                agent.chat_ctx.copy(), said("Подтверждаю", agent.heard_at - 1)
+            )
+        assert spoken(session)[-1] == APPROVAL_UNCLEAR
+        assert stand.backend.approved == []
+        assert agent.active is not None
+        with pytest.raises(StopResponse):
+            await agent.on_user_turn_completed(
+                agent.chat_ctx.copy(), said("Подтверждаю", agent.heard_at + 1)
+            )
+        assert stand.backend.approved == [("run_a", "once", APPROVAL)]
+        await agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_other_phrase_with_active_goes_to_llm(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path)
+        session = FakeSession()
+        await activate(stand, session, waiting("a"))
+        active = stand.agent.active
+        await answer(stand.agent, "А что он удалит?")
+        assert stand.backend.approved == []
+        assert stand.agent.active is active
+        assert len(session.calls) == 1
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_queue_waits_for_answer(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path)
+        session = FakeSession()
+        await activate(stand, session, waiting("a"), waiting("b", created_at=2.0))
+        await settle()
+        assert spoken(session) == [announcement_text(waiting("a"))]
+        await answer(stand.agent, "А что он удалит?")
+        await settle()
+        assert len(session.calls) == 1
+        await stopped(stand.agent, "Подтверждаю")
+        await until(lambda: len(session.calls) == 3)
+        assert spoken(session)[-1] == announcement_text(waiting("b", created_at=2.0))
+        await stand.agent.stop_delegation()
 
     asyncio.run(main())
