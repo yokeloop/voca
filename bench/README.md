@@ -21,7 +21,8 @@ Scripts:
 - `llm_ru_tools.py` (VOCA-4) — G3: `dialogs`, `delegate`, `all` (the default),
   `dialogs-thinking` (the twenty dialogs with thinking on, VOCA-7),
   `delegate-thinking` (the ten scenarios with thinking on);
-  `tools` (VOCA-36) — the nine cases of `corpus/llm_tools.json`: a context of
+  `tools` (VOCA-36) — the ten cases of `corpus/llm_tools.json` (`c10` — the
+  stand's correction of a running task, expected `steer_task`): a context of
   messages and delegation facts, then one user turn; the first tool call must be
   the expected one (`delegate`, `steer_task`, `cancel_task`, `repeat_approval`,
   `deny_approval`, `list_tasks`), and a `none` case passes with no call (only
