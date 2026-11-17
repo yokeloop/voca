@@ -12,6 +12,7 @@ from voca.delegation.ports import (
     RunNotFound,
     RunState,
     TaskNotFound,
+    TaskNotOpen,
     Unavailable,
 )
 from voca.delegation.service import DelegationService
@@ -459,3 +460,87 @@ def test_recover_returns_undelivered() -> None:
     assert repo.tasks["a"].delivered_at == 100
     with pytest.raises(TaskNotFound):
         asyncio.run(service.mark_delivered("missing"))
+
+
+def running(key: str = "k", run_id: str = "run_1") -> Task:
+    return Task(key, "a", TaskStatus.RUNNING, created_at=0, run_id=run_id)
+
+
+def test_cancel_running() -> None:
+    service, repo, backend, clock, _ = make()
+    clock.now = 5
+    repo.tasks["k"] = running()
+    backend.stops = [state("run_1", TaskStatus.FAILED, error="cancelled")]
+    task = asyncio.run(service.cancel("k"))
+    assert task.status == TaskStatus.FAILED
+    assert task.error == "cancelled"
+    assert task.stop_reason == "user"
+    assert task.stop_requested_at == 5
+    assert task.delivered_at is not None
+    assert repo.tasks["k"] == task
+    assert backend.stopped == [("run_1", "user")]
+
+
+def test_cancel_waits_for_terminal() -> None:
+    service, repo, backend, _, _ = make()
+    repo.tasks["k"] = running()
+    backend.stops = [None]
+    backend.runs["run_1"] = [
+        state("run_1", TaskStatus.RUNNING),
+        state("run_1", TaskStatus.FAILED, error="cancelled"),
+    ]
+    task = asyncio.run(service.cancel("k"))
+    assert task.status == TaskStatus.FAILED
+    assert task.error == "cancelled"
+    assert backend.gets == [("run_1", "user"), ("run_1", "user")]
+
+
+def test_cancel_queued_without_run() -> None:
+    service, repo, backend, _, _ = make()
+    repo.tasks["k"] = Task("k", "a", TaskStatus.QUEUED, created_at=0)
+    task = asyncio.run(service.cancel("k"))
+    assert task.status == TaskStatus.FAILED
+    assert task.error == "cancelled"
+    assert task.stop_reason == "user"
+    assert task.delivered_at is not None
+    assert backend.stopped == []
+
+
+def test_cancel_closed_raises() -> None:
+    service, repo, backend, _, _ = make()
+    repo.tasks["k"] = Task("k", "a", TaskStatus.SUCCEEDED, created_at=0, result="ok")
+    with pytest.raises(TaskNotOpen):
+        asyncio.run(service.cancel("k"))
+    assert backend.stopped == []
+
+
+def test_apply_keeps_user_cancel() -> None:
+    service, repo, _, _, seen = make()
+    old = running()
+    current = replace(old, stop_requested_at=1.0, stop_reason="user")
+    repo.tasks["k"] = current
+    gone = state("run_1", TaskStatus.FAILED, error="interrupted by gateway restart")
+    task = asyncio.run(service._apply(old, gone))
+    assert task == current
+    assert repo.tasks["k"] == current
+    assert seen == []
+
+
+def test_apply_keeps_terminal() -> None:
+    service, repo, _, _, seen = make()
+    old = running()
+    current = old.transition(TaskStatus.FAILED, error="cancelled")
+    repo.tasks["k"] = current
+    task = asyncio.run(service._apply(old, state("run_1", TaskStatus.RUNNING)))
+    assert task == current
+    assert repo.tasks["k"] == current
+    assert seen == []
+
+
+def test_expire_sets_timeout_reason() -> None:
+    service, repo, backend, _, _ = make(run_timeout=10)
+    repo.tasks["k"] = running()
+    backend.stops = [state("run_1", TaskStatus.FAILED, error="timeout")]
+    task = asyncio.run(service._expire(repo.tasks["k"]))
+    assert task.stop_reason == "timeout"
+    assert repo.tasks["k"].stop_reason == "timeout"

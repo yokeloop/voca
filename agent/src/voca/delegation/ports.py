@@ -34,6 +34,10 @@ class TaskNotFound(DelegationError):
     pass
 
 
+class TaskNotOpen(DelegationError):
+    pass
+
+
 @dataclass(frozen=True)
 class RunState:
     run_id: str

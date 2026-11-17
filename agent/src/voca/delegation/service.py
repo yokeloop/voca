@@ -5,9 +5,11 @@ from dataclasses import replace
 from typing import Any, Literal
 
 from voca.delegation.model import (
+    CANCELLED,
     LOST,
     LOST_BEFORE_LAUNCH,
     STOP_TIMEOUT,
+    STOP_USER,
     TERMINAL,
     TIMEOUT,
     UNAVAILABLE,
@@ -23,6 +25,7 @@ from voca.delegation.ports import (
     RunNotFound,
     RunState,
     TaskNotFound,
+    TaskNotOpen,
     TaskRepository,
     Unavailable,
 )
@@ -112,6 +115,12 @@ class DelegationService:
             await self.sleep(POLL_S)
 
     async def _apply(self, task: Task, state: RunState) -> Task:
+        current = await self.repo.get(task.tool_call_id) or task
+        if not current.is_open or current.stop_reason == STOP_USER:
+            return current
+        return await self._settle(current, state)
+
+    async def _settle(self, task: Task, state: RunState) -> Task:
         approval = (
             state.approval if state.status == TaskStatus.WAITING_APPROVAL else None
         )
@@ -139,7 +148,7 @@ class DelegationService:
         except DelegationError:
             state = None
         if state is not None and state.status in TERMINAL:
-            return await self._apply(task, state)
+            return await self._settle(task, state)
         deadline = self.clock() + STOP_WINDOW_S
         while self.clock() < deadline:
             await self.sleep(POLL_S)
@@ -150,7 +159,7 @@ class DelegationService:
             except DelegationError:
                 continue
             if state.status in TERMINAL:
-                return await self._apply(task, state)
+                return await self._settle(task, state)
         return await self._save(task.transition(TaskStatus.FAILED, error=TIMEOUT))
 
     async def _relaunch_refused(self, task: Task) -> None:
@@ -214,6 +223,52 @@ class DelegationService:
             raise ApprovalNotActive(key)
         assert task.run_id is not None
         await self.backend.approve(task.run_id, choice, task.approval)
+
+    async def cancel(self, key: str) -> Task:
+        task = await self._get(key)
+        if not task.is_open:
+            raise TaskNotOpen(key)
+        now = self.clock()
+        run_id = task.run_id
+        if run_id is None:
+            return await self._save(
+                task.transition(
+                    TaskStatus.FAILED,
+                    error=CANCELLED,
+                    stop_requested_at=now,
+                    stop_reason=STOP_USER,
+                    delivered_at=now,
+                )
+            )
+        task = await self._save(
+            replace(task, stop_requested_at=now, stop_reason=STOP_USER)
+        )
+        state: RunState | None
+        try:
+            state = await self.backend.stop(run_id, STOP_USER)
+        except DelegationError:
+            state = None
+        if state is None or state.status not in TERMINAL:
+            state = None
+            deadline = self.clock() + STOP_WINDOW_S
+            while self.clock() < deadline:
+                await self.sleep(POLL_S)
+                try:
+                    polled = await self.backend.get_run(run_id, stop_reason=STOP_USER)
+                except RunNotFound:
+                    break
+                except DelegationError:
+                    continue
+                if polled.status in TERMINAL:
+                    state = polled
+                    break
+        if state is not None:
+            final = await self._settle(task, state)
+        else:
+            final = await self._save(
+                task.transition(TaskStatus.FAILED, error=CANCELLED)
+            )
+        return await self._save(replace(final, delivered_at=self.clock()))
 
     async def mark_delivered(self, key: str) -> Task:
         task = await self._get(key)
