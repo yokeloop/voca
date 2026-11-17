@@ -17,6 +17,7 @@ from voca.conversation.agent import (
     clip,
     delivery_text,
     records,
+    result_outcome,
 )
 from voca.conversation.compaction import Limits
 from voca.conversation.context import split_turns
@@ -551,9 +552,20 @@ def test_failed_delivery_puts_reason_in_context(tmp_path: Path) -> None:
 
     agent = asyncio.run(main())
     check_result(
-        agent, finished("b"), {"status": "failed", "error": "не дождался результата"}
+        agent,
+        finished("b"),
+        {"status": "failed", "error": "не дождался результата", "detail": "timeout"},
     )
     assert results(agent)[1].is_error is True
+    assert json.loads(result_outcome(failed("HTTP 500 boom"))) == {
+        "status": "failed",
+        "error": "Hermes вернул ошибку",
+        "detail": "HTTP 500 boom",
+    }
+    assert json.loads(result_outcome(failed(""))) == {
+        "status": "failed",
+        "error": "Hermes вернул ошибку",
+    }
 
 
 def test_result_in_context_once_across_restart(tmp_path: Path) -> None:

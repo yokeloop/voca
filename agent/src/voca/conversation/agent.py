@@ -113,6 +113,8 @@ def result_outcome(task: Task) -> str:
     else:
         reason = FAILURE_REASONS.get(task.error or "", "Hermes вернул ошибку")
         outcome = {"status": task.status.value, "error": reason}
+        if task.error:
+            outcome["detail"] = task.error
     return json.dumps(outcome, ensure_ascii=False)
 
 
