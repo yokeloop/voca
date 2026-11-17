@@ -340,7 +340,7 @@ Exit codes: 0 succeeded, 1 failed or unavailable, 2 usage, config or missing var
 
 **Voice approval.**
 
-- Announcement: «Hermes просит подтверждения по поручению «<up to 60 characters of the task text>»: <description>. Скажите „Подтверждаю“ или „Отклоняю“.». `command` is not spoken; it is in the card. The announcement goes through the same queue as the results, ahead of them; the reply goes into the context, the archive and `voca.history`.
+- Announcement: «Hermes просит подтверждения по поручению «<up to 60 characters of the task text>»: <description>. Скажите „Подтверждаю“ или „Отклоняю“.». `command` is not spoken; it is in the card. audio.cpp rejects „“ (HTTP 500), so speech preparation maps them to «» (VOCA-34 stand). The announcement goes through the same queue as the results, ahead of them; the reply goes into the context, the archive and `voca.history`.
 - One request is active: the last one announced and played without interruption. An interrupted announcement is repeated once, when the user stops speaking. The next announcement waits until the active request is answered or expires; results are spoken meanwhile.
 - Phrases: «Подтверждаю» → `once`, «Отклоняю» → `deny`. Normalisation: lower case, `ё` → `е`, whitespace and punctuation cut at the edges; only a whole match counts. «да», «подтверди», «подтверждаю, но…» are an ordinary LLM turn. `session`/`always` are not given by voice.
 - With an active request the phrase is checked before the LLM. The turn stops, and the agent answers «Подтверждено», «Отклонено», «Запрос подтверждения уже не активен» (409 or the request changed) or «Не удалось передать подтверждение» (network, 5xx, other 4xx; the request stays active). Without an active request the phrase is an ordinary turn.

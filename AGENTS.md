@@ -27,7 +27,8 @@ Hermes. This file is the working contract for agents and contributors.
   `[delegation].path`; `voca bench delegate`), `config.py` (`Settings`: the
   environment and the agent config file, «Agent config»).
   `agent/src/voca/speech/` prepares text before TTS: the tool-call markup
-  filter, LaTeX and tables, numbers as words, stress and the first fragment.
+  filter, LaTeX and tables, the quotes audio.cpp rejects (`„‟‚‹` → `«`,
+  `“”›` → `»`), numbers as words, stress and the first fragment.
   `markup`, `numbers`, `prepare`, `conversation/context`,
   `conversation/compaction`, `conversation/approval`, `conversation/instructions`, `session/model`,
   `delegation/model`, `delegation/ports` and `delegation/service` are pure
