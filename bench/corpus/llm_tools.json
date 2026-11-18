@@ -21,10 +21,6 @@
           "id": "call_c02",
           "event": "submitted"
         }
-      },
-      {
-        "role": "assistant",
-        "content": "Поручил Hermes: «Создай каталог /tmp/voca-c02 с файлом a.txt». Сообщу результат."
       }
     ],
     "user": "Уточни поручение: пусть ещё создаст b.txt",
@@ -46,10 +42,6 @@
           "id": "call_c03",
           "event": "submitted"
         }
-      },
-      {
-        "role": "assistant",
-        "content": "Поручил Hermes: «Создай каталог /tmp/voca-c02 с файлом a.txt». Сообщу результат."
       }
     ],
     "user": "Отмени это поручение",
@@ -71,10 +63,6 @@
           "id": "call_c04",
           "event": "submitted"
         }
-      },
-      {
-        "role": "assistant",
-        "content": "Поручил Hermes: «Удали каталог /tmp/voca-c04 командой rm -r». Сообщу результат."
       },
       {
         "call": "list_tasks",
@@ -108,10 +96,6 @@
           "id": "call_c05",
           "event": "submitted"
         }
-      },
-      {
-        "role": "assistant",
-        "content": "Поручил Hermes: «Удали каталог /tmp/voca-c04 командой rm -r». Сообщу результат."
       },
       {
         "call": "list_tasks",
@@ -153,10 +137,6 @@
         }
       },
       {
-        "role": "assistant",
-        "content": "Поручил Hermes: «Удали каталог /tmp/voca-c04 командой rm -r». Сообщу результат."
-      },
-      {
         "call": "list_tasks",
         "arguments": {},
         "output": {
@@ -190,10 +170,6 @@
         }
       },
       {
-        "role": "assistant",
-        "content": "Поручил Hermes: «Удали каталог /tmp/voca-c04 командой rm -r». Сообщу результат."
-      },
-      {
         "call": "list_tasks",
         "arguments": {},
         "output": {
@@ -225,10 +201,6 @@
           "id": "call_c09",
           "event": "submitted"
         }
-      },
-      {
-        "role": "assistant",
-        "content": "Поручил Hermes: «Подожди 60 секунд и ответь готово». Сообщу результат."
       },
       {
         "role": "user",
@@ -274,10 +246,6 @@
           "id": "call_c10",
           "event": "submitted"
         }
-      },
-      {
-        "role": "assistant",
-        "content": "Поручил Hermes: «Найти расписание автобусов из деревни Леденцы в Нависад.». Сообщу результат."
       },
       {
         "role": "user",
