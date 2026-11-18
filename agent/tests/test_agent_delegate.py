@@ -339,7 +339,7 @@ def test_delegate_returns_at_once(tmp_path: Path) -> None:
         assert {row["delivered"] for row in rows} == {False}
         await settle()
         assert session.calls == [
-            ("Поручил Hermes: «сделай». Сообщу результат.", True, True)
+            ("Поручил Hermes: «сделай». Сообщу результат.", True, False)
         ]
         await stand.agent.stop_delegation()
 
@@ -791,7 +791,7 @@ def test_delegate_speaks_task_text(tmp_path: Path) -> None:
         reply = await stand.agent.delegate(ctx("call-1"), text)
         assert reply.reply_required is False
         ack = f"Поручил Hermes: «{text}». Сообщу результат."
-        assert session.calls == [(ack, True, True)]
+        assert session.calls == [(ack, True, False)]
         assert "Поручение принято" not in reply.output
         await stand.agent.stop_delegation()
 
