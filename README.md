@@ -148,7 +148,8 @@ scripts/down.sh llm
   --jinja --host 127.0.0.1 --port 8081 \
   -c 16384 -fa on -ctk q8_0 -ctv q8_0 \
   --parallel 1 -t 2 -ngl 99 \
-  --cache-reuse 256 --override-tensor 'per_layer.*=CPU' --temp 1.0 --top-p 0.95
+  --cache-reuse 256 --override-tensor 'per_layer.*=CPU' --temp 1.0 --top-p 0.95 \
+  --reasoning-budget-message $'\n\nTime is up. I stop thinking and give the user the final answer now, in Russian, without my reasoning.\n'
 ```
 
 It waits up to 120 s for `/health`. Port 8081 listens on `127.0.0.1` only. The client sends `thinking_budget_tokens` (`[model].thinking_budget`, 128) in `extra_body` and no chat template kwargs. Sampling comes from the profile on the server; the client sends only the sampling values set in `[model]` of the agent config (`temperature`, `top_k`, `top_p`, `repeat_penalty`; [AGENTS.md](AGENTS.md#agent-config)). LFM2.5-2.6B always thinks: its template opens `<think>` and does not read `enable_thinking` ([bench/report_lfm2_5_2_6b.md](bench/report_lfm2_5_2_6b.md)).
@@ -163,7 +164,7 @@ It waits up to 120 s for `/health`. Port 8081 listens on `127.0.0.1` only. The c
 
 | Profile | Model | Sampling (model card) | Special flags |
 | --- | --- | --- | --- |
-| `bolt-e4b` (default, the agent's model) | HF `unsloth/NVIDIA-Nemotron-3.5-Bolt-E4B-GGUF`, revision `b738967d6da3441a7d1c71fcec15e49e32e16ecd`, `NVIDIA-Nemotron-3.5-Bolt-E4B-UD-Q4_K_XL.gguf`, 5.06 GB, sha256 `84ff34f5834b929043f5ae74799e8d562d4056998f6a5923ceb44831e8ad84d6` | `--temp 1.0 --top-p 0.95` | `--cache-reuse 256`, `--override-tensor 'per_layer.*=CPU'` (profile B) |
+| `bolt-e4b` (default, the agent's model) | HF `unsloth/NVIDIA-Nemotron-3.5-Bolt-E4B-GGUF`, revision `b738967d6da3441a7d1c71fcec15e49e32e16ecd`, `NVIDIA-Nemotron-3.5-Bolt-E4B-UD-Q4_K_XL.gguf`, 5.06 GB, sha256 `84ff34f5834b929043f5ae74799e8d562d4056998f6a5923ceb44831e8ad84d6` | `--temp 1.0 --top-p 0.95` | `--cache-reuse 256`, `--override-tensor 'per_layer.*=CPU'` (profile B), `--reasoning-budget-message` (when `thinking_budget_tokens` runs out, llama-server closes the thought channel by force; without the message the model goes on reasoning in the answer, and the reasoning is spoken — VOCA-36 voice check 2) |
 | `lfm3-1.7b` | HF `LiquidAI/LFM3-1.7B-GGUF`, revision `cd0c74c575b5c416f3011b5b4c298077f26ca8c2`, `LFM3-1.7B-Q4_K_M.gguf`, 1 099 627 808 bytes, sha256 `3793e1e6e2266919d6e015287221b41100175a98eddaba92e111aed3b05c93c4` | General preset: `--temp 0.1 --top-k 50 --repeat-penalty 1.1` | none: no `--cache-reuse` (unsupported by this context, checkpoints are used), no `per_layer` override; ≈ 1.4 GB VRAM |
 | `lfm2.5-2.6b` (alternative) | HF `LiquidAI/LFM2.5-2.6B-GGUF`, revision `e7caca5d835a3901a8e0d63e94009429bafafdfc`, `LFM2.5-2.6B-Q4_K_M.gguf`, 1 674 455 040 bytes, sha256 `02a8b7e17487d326e46d68ce0ba24211e1b80a14c4cd0597fa73c1cd697f52ed` | card: `--temp 0.1 --top-k 50 --repeat-penalty 1.1` | none: no `--cache-reuse` (shifted prefixes are not reused; the prefix cache is), no `per_layer` override; always thinks; ≈ 2.0 GB VRAM |
 
