@@ -1065,7 +1065,9 @@ class VocaAgent(Agent):
         if self.speaker is not None:
             try:
                 self.speaker.say(
-                    submitted_text(task), allow_interruptions=True, add_to_chat_ctx=True
+                    submitted_text(task),
+                    allow_interruptions=True,
+                    add_to_chat_ctx=False,
                 )
                 spoken = True
             except RuntimeError:
