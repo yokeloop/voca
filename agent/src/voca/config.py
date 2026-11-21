@@ -19,7 +19,7 @@ from pydantic_settings import (
 )
 
 from voca.conversation.approval import Vocabulary, normalize
-from voca.conversation.verdict import VERDICTS, Prompt
+from voca.conversation.verdict import KINDS, VERDICTS, Prompt, SorterPrompt
 
 WORD = re.compile(r"^\w+$")
 DAILY_AT = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
@@ -55,6 +55,8 @@ class AgentConfig(BaseModel):
     aec_warmup: float = 3.0
     endpointing_min_delay: float = 0.5
     preemptive_generation: bool = False
+    glue_window_s: float = Field(default=3.0, gt=0)
+    action_silence_s: float = Field(default=0.5, ge=0)
 
 
 class ApprovalConfig(BaseModel):
@@ -115,20 +117,46 @@ class DecisionConfig(BaseModel):
         "unclear": "Ответ неясен: колебание, оговорка, противоречие или обрывок, "
         "по которому решение не понять",
     }
+    sorter_instructions: str = (
+        "Ассистент разговаривает с пользователем голосом. В состоянии — последняя "
+        "фраза ассистента, ожидающие запросы подтверждения команд и фраза "
+        "пользователя в виде распознанной речи. Что это за фраза пользователя?"
+    )
+    sorter_criteria: dict[str, str] = {
+        "noise": "шум, обрывок, поддакивание или междометие без смысла: "
+        "«угу», «ага», «yeah», «okay», «ну»",
+        "reply": "осмысленная реплика: ответ, вопрос, просьба или мысль",
+    }
+    sorter_timeout_s: float = Field(default=0.3, gt=0)
+    sorter_keep_words: list[str] = Field(
+        default=["нет", "не", "ни", "стоп", "да", "давай"], min_length=1
+    )
+    sorter_max_words: int = Field(default=4, ge=1)
+    sorter_min_words: int = Field(default=2, ge=1)
 
     @model_validator(mode="after")
     def complete(self) -> Self:
         if set(self.verdicts) != set(VERDICTS):
             raise ValueError("decision.verdicts: нужны " + ", ".join(VERDICTS))
+        if set(self.sorter_criteria) != set(KINDS):
+            raise ValueError("decision.sorter_criteria: нужны " + ", ".join(KINDS))
         texts = {
             "instructions": self.instructions,
             "url": self.url,
             "model": self.model,
             **{f"verdicts.{name}": text for name, text in self.verdicts.items()},
+            "sorter_instructions": self.sorter_instructions,
+            **{
+                f"sorter_criteria.{name}": text
+                for name, text in self.sorter_criteria.items()
+            },
         }
         for name, text in texts.items():
             if not text.strip():
                 raise ValueError(f"decision.{name}: пустой текст")
+        for word in self.sorter_keep_words:
+            if not WORD.match(word):
+                raise ValueError(f"decision.sorter_keep_words: одно слово: {word!r}")
         return self
 
     def prompt(self) -> Prompt:
@@ -136,6 +164,17 @@ class DecisionConfig(BaseModel):
             instructions=self.instructions,
             verdicts=dict(self.verdicts),
             threshold=self.threshold,
+        )
+
+    def sorter_prompt(self) -> SorterPrompt:
+        return SorterPrompt(
+            instructions=self.sorter_instructions,
+            criteria=dict(self.sorter_criteria),
+            keep_words=frozenset(
+                word.lower().replace("ё", "е") for word in self.sorter_keep_words
+            ),
+            max_words=self.sorter_max_words,
+            min_words=self.sorter_min_words,
         )
 
 
