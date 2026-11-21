@@ -28,7 +28,7 @@ from livekit.agents import (
 )
 from livekit.agents.voice import Agent, AgentSession, ModelSettings, SpeechHandle
 from livekit.agents.voice.agent_activity import ActivityClosedError
-from livekit.agents.voice.events import UserStateChangedEvent
+from livekit.agents.voice.events import AgentStateChangedEvent, UserStateChangedEvent
 
 from voca.clientio.cards import CardState
 from voca.conversation.approval import (
@@ -301,9 +301,14 @@ def entries(ctx: llm.ChatContext) -> list[Entry]:
     return found
 
 
-def talking(session: AgentSession[Any]) -> bool:
+def talking(session: AgentSession[Any], voiced: SpeechHandle | None) -> bool:
     speech = session.current_speech
-    return speech is not None and not speech.done() and not speech.interrupted
+    return (
+        speech is not None
+        and speech is voiced
+        and not speech.done()
+        and not speech.interrupted
+    )
 
 
 def last_message_at(ctx: llm.ChatContext) -> float | None:
@@ -383,6 +388,7 @@ class VocaAgent(Agent):
         self.sorter = sorter
         self.sorter_prompt = sorter_prompt
         self.passed: list[str] = []
+        self.voiced: SpeechHandle | None = None
         self.glue_window_s = glue_window_s
         self.action_silence_s = action_silence_s
         self.user_speaking = False
@@ -1114,6 +1120,10 @@ class VocaAgent(Agent):
         self.announcements.appendleft(item)
         self.wake.set()
 
+    def on_agent_state(self, ev: AgentStateChangedEvent) -> None:
+        if ev.new_state == "speaking":
+            self.voiced = self.session.current_speech
+
     def on_user_state(self, ev: UserStateChangedEvent) -> None:
         if ev.new_state == "speaking":
             self.user_speaking = True
@@ -1216,28 +1226,29 @@ class VocaAgent(Agent):
     ) -> AsyncGenerator[stt.SpeechEvent | str]:
         async for event in self._screen(
             Agent.default.stt_node(self, audio, model_settings),
-            lambda: talking(self.session),
+            lambda: talking(self.session, self.voiced),
         ):
             yield event
 
     async def on_user_turn_completed(
         self, turn_ctx: llm.ChatContext, new_message: llm.ChatMessage
     ) -> None:
-        if self.sorter is not None:
-            text = new_message.text_content or ""
-            passed, self.passed = self.passed, []
-            if (
-                text not in passed
-                and text != " ".join(passed)
-                and await self._sort(text, "hook", speaking=False)
-            ):
-                raise StopResponse()
-        changed = False
         glued = glue(
             entries(self.chat_ctx),
             started_at=new_message.metrics.get("started_speaking_at"),
             window_s=self.glue_window_s,
         )
+        if self.sorter is not None:
+            text = new_message.text_content or ""
+            passed, self.passed = self.passed, []
+            if (
+                glued is None
+                and text not in passed
+                and text != " ".join(passed)
+                and await self._sort(text, "hook", speaking=False)
+            ):
+                raise StopResponse()
+        changed = False
         if glued is not None:
             ctx = self.chat_ctx.copy()
             ctx.items = [item for item in ctx.items if item.id not in glued.drop]

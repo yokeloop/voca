@@ -9,6 +9,7 @@ from typing import Any, cast
 
 import pytest
 from livekit.agents import StopResponse, llm, stt
+from livekit.agents.voice.events import AgentStateChangedEvent
 
 from voca.clientio.cards import CardState
 from voca.config import ApprovalConfig, DecisionConfig
@@ -842,14 +843,20 @@ def final(text: str) -> stt.SpeechEvent:
     )
 
 
+async def screened_source(
+    events: list[stt.SpeechEvent | str],
+) -> AsyncIterator[stt.SpeechEvent | str]:
+    for event in events:
+        yield event
+
+
 async def screened(
     agent: VocaAgent, events: list[stt.SpeechEvent | str], speaking: bool
 ) -> list[stt.SpeechEvent | str]:
-    async def source() -> AsyncIterator[stt.SpeechEvent | str]:
-        for event in events:
-            yield event
-
-    return [event async for event in agent._screen(source(), lambda: speaking)]
+    return [
+        event
+        async for event in agent._screen(screened_source(events), lambda: speaking)
+    ]
 
 
 def texts(events: list[stt.SpeechEvent | str]) -> list[str]:
@@ -880,11 +887,36 @@ class FakeSession:
         self.current_speech = speech
 
 
+def is_talking(speech: FakeSpeech | None, voiced: FakeSpeech | None) -> bool:
+    return talking(cast(Any, FakeSession(speech)), cast(Any, voiced))
+
+
 def test_talking_by_current_speech() -> None:
-    assert not talking(cast(Any, FakeSession(None)))
-    assert talking(cast(Any, FakeSession(FakeSpeech())))
-    assert not talking(cast(Any, FakeSession(FakeSpeech(done=True))))
-    assert not talking(cast(Any, FakeSession(FakeSpeech(interrupted=True))))
+    speech = FakeSpeech()
+    assert not is_talking(None, None)
+    assert is_talking(speech, speech)
+    assert not is_talking(speech, None)
+    assert not is_talking(speech, FakeSpeech())
+    done = FakeSpeech(done=True)
+    assert not is_talking(done, done)
+    cut = FakeSpeech(interrupted=True)
+    assert not is_talking(cut, cut)
+
+
+def test_agent_state_marks_voiced_speech(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    agent, _ = sorter_agent(tmp_path, FakeSorter())
+    session = FakeSession(FakeSpeech())
+    monkeypatch.setattr(VocaAgent, "session", property(lambda _: session))
+    agent.on_agent_state(
+        AgentStateChangedEvent(old_state="listening", new_state="thinking")
+    )
+    assert agent.voiced is None
+    agent.on_agent_state(
+        AgentStateChangedEvent(old_state="thinking", new_state="speaking")
+    )
+    assert agent.voiced is session.current_speech
 
 
 def test_stt_drops_noise_while_speaking(tmp_path: Path) -> None:
@@ -1106,3 +1138,69 @@ def test_hook_no_glue_after_heard_answer(tmp_path: Path) -> None:
     assert [item.id for item in turn_ctx.items] == ids
     assert message.text_content == "отчёты, и в ней файл за ноябрь"
     assert not events.exists() or kinds_of(events, "glue") == []
+
+
+def continuation(text: str) -> llm.ChatMessage:
+    return llm.ChatMessage(
+        role="user", content=[text], metrics={"started_speaking_at": 101.5}
+    )
+
+
+def cut_ctx() -> llm.ChatContext:
+    ctx = fragment_ctx()
+    ctx.add_message(role="assistant", content="Сейчас", id="cut", interrupted=True)
+    return ctx
+
+
+def test_hook_glues_short_noise_continuation(tmp_path: Path) -> None:
+    sorter = FakeSorter({"отчёты": NOISE})
+    agent, events = sorter_agent(tmp_path, sorter)
+    message = continuation("отчёты")
+
+    async def main() -> None:
+        await agent.update_chat_ctx(cut_ctx())
+        await agent.on_user_turn_completed(agent.chat_ctx.copy(), message)
+
+    asyncio.run(main())
+    assert message.text_content == "Попроси Гермеса создать папку отчёты"
+    assert kinds_of(events, "glue")[0]["removed"] == 2
+    assert sorter.seen == []
+
+
+def test_stt_passes_continuation_before_first_sound(tmp_path: Path) -> None:
+    sorter = FakeSorter({"отчёты": NOISE, "Угу": NOISE})
+    agent, events = sorter_agent(tmp_path, sorter)
+    speech = FakeSpeech()
+    session = cast(Any, FakeSession(speech))
+    message = continuation("отчёты")
+
+    async def main() -> list[stt.SpeechEvent | str]:
+        await agent.update_chat_ctx(cut_ctx())
+        out = [
+            event
+            async for event in agent._screen(
+                screened_source([final("отчёты")]),
+                lambda: talking(session, agent.voiced),
+            )
+        ]
+        await agent.on_user_turn_completed(agent.chat_ctx.copy(), message)
+        return out
+
+    out = asyncio.run(main())
+    assert texts(out) == ["отчёты"]
+    assert message.text_content == "Попроси Гермеса создать папку отчёты"
+    assert len(kinds_of(events, "glue")) == 1
+    assert sorter.seen == []
+    agent.voiced = cast(Any, speech)
+
+    async def voiced() -> list[stt.SpeechEvent | str]:
+        return [
+            event
+            async for event in agent._screen(
+                screened_source([final("Угу")]),
+                lambda: talking(session, agent.voiced),
+            )
+        ]
+
+    assert asyncio.run(voiced()) == []
+    assert kinds_of(events, "sorter")[-1]["dropped"] is True

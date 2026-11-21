@@ -184,6 +184,7 @@ async def entrypoint(ctx: JobContext) -> None:
             agent.maybe_compact()
 
     session.on("agent_state_changed", on_state)
+    session.on("agent_state_changed", agent.on_agent_state)
     session.on("user_state_changed", agent.on_user_state)
     tracker.attach(session)
     session.on("metrics_collected", cards.on_metrics)

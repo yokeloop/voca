@@ -13,7 +13,7 @@ Hermes. This file is the working contract for agents and contributors.
   `PreparedTTS`, `build_session`, `SpeechLanguageClient`), `conversation/`
   (`VocaAgent`: the tool-call markup filter in `llm_node`, the `delegate`,
   `list_tasks`, `list_notifications`, `cancel_task`, `steer_task` and `repeat_approval`
-  tools, the delegation facts in the context and the delivery of results, approval announcements and the reply to an active request judged first in `on_user_turn_completed` (echo, decision model, fallback word), the reply sorter in `stt_node` (while the agent speaks) and in `on_user_turn_completed` (in silence), the glue of unanswered fragments, `delegate` held until `[agent].action_silence_s` of user silence, instructions, accepting a finished
+  tools, the delegation facts in the context and the delivery of results, approval announcements and the reply to an active request judged first in `on_user_turn_completed` (echo, decision model, fallback word), the reply sorter in `stt_node` (while the agent's reply sounds or is paused) and in `on_user_turn_completed` (in silence and before the reply's first sound; a reply that glues is never noise), the glue of unanswered fragments, `delegate` held until `[agent].action_silence_s` of user silence, instructions, accepting a finished
   summary and the emergency context trim in `on_user_turn_completed`, the threshold trigger `maybe_compact`,
   the idle and daily check `check_due`, failures spoken aloud;
   `instructions.py`: `InstructionLoader` with the last valid set; `context.py`: `trim_chat_ctx` — the emergency path at
