@@ -179,13 +179,21 @@ def make_summarizer(settings: Settings) -> Summarizer:
 def make_decider(settings: Settings) -> DecisionClient:
     decision = settings.decision
     if not decision.enabled:
-        return DecisionClient(None, model=decision.model, prompt=decision.prompt())
+        return DecisionClient(
+            None,
+            model=decision.model,
+            prompt=decision.prompt(),
+            sorter=decision.sorter_prompt(),
+            sorter_timeout_s=decision.sorter_timeout_s,
+        )
     return DecisionClient(
         httpx.AsyncClient(
             base_url=decision.url.rstrip("/"), timeout=decision.timeout_s
         ),
         model=decision.model,
         prompt=decision.prompt(),
+        sorter=decision.sorter_prompt(),
+        sorter_timeout_s=decision.sorter_timeout_s,
     )
 
 

@@ -275,3 +275,17 @@ def test_make_decider_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
         return result
 
     assert asyncio.run(main()) == DecisionFailure("disabled", 0)
+
+
+def test_make_decider_sorter() -> None:
+    async def main() -> None:
+        decider = make_decider(Settings())
+        try:
+            assert decider.sorter == Settings().decision.sorter_prompt()
+            assert decider.sorter_timeout_s == 0.3
+            assert decider.client is not None
+            assert decider.client.timeout.read == 1.5
+        finally:
+            await decider.aclose()
+
+    asyncio.run(main())
