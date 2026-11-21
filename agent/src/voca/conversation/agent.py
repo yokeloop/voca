@@ -48,6 +48,7 @@ from voca.conversation.descriptions import describe
 from voca.conversation.instructions import InstructionLoader, InstructionSet
 from voca.conversation.summarizer import Failure, Summarizer, Summary
 from voca.conversation.verdict import Decider, Decision, DecisionFailure, Situation
+from voca.delegation.events import Event, EventKind
 from voca.delegation.model import CANCELLED, GATEWAY_RESTART, TIMEOUT, Task, TaskStatus
 from voca.delegation.ports import (
     ApprovalNotActive,
@@ -180,6 +181,27 @@ def heard(handle: SpeechHandle) -> bool:
         item.type == "message" and item.role == "assistant" and item.text_content
         for item in handle.chat_items
     )
+
+
+def notification_view(event: Event, task: Task, now: float) -> dict[str, Any]:
+    view: dict[str, Any] = {
+        "id": str(event.id),
+        "task": short_id(event.tool_call_id),
+        "kind": event.kind.value,
+        "state": event.state.value,
+        "age_s": int(now - event.created_at),
+        "text": clip(task.text, APPROVAL_LIMIT),
+    }
+    if event.kind == EventKind.APPROVAL:
+        view["danger"] = None if event.danger is None else event.danger.value
+        if task.approval is not None:
+            view["request"] = describe(task.approval.get("description"))
+            view["command"] = task.approval.get("command")
+    elif event.kind == EventKind.RESULT:
+        view["result"] = clip(task.result or "", TOOL_RESULT_LIMIT)
+    else:
+        view["error"] = FAILURE_REASONS.get(task.error or "", FAILURE_DEFAULT)
+    return view
 
 
 def records(ctx: llm.ChatContext) -> list[Item]:
@@ -1114,6 +1136,20 @@ class VocaAgent(Agent):
         found.extend(closed[:RECENT_LIMIT])
         tasks = [task_view(task, self.active) for task in found]
         return json.dumps({"tasks": tasks}, ensure_ascii=False)
+
+    @function_tool
+    async def list_notifications(self) -> str:
+        """Показать незакрытые события Hermes по порядку поступления: запросы подтверждения с уровнем опасности, результаты и сбои, которые ещё не прозвучали до конца. Вызывай, когда спрашивают, что пришло от Hermes."""
+        if self.delegation is None:
+            raise ToolError(DELEGATE_UNAVAILABLE)
+        now = self.delegation.clock()
+        notifications = []
+        for event in await self.delegation.repo.list_events(open_only=True):
+            task = await self.delegation.repo.get(event.tool_call_id)
+            if task is None:
+                continue
+            notifications.append(notification_view(event, task, now))
+        return json.dumps({"notifications": notifications}, ensure_ascii=False)
 
     @function_tool
     async def cancel_task(self, id: str | None = None) -> str:

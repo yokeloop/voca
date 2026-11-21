@@ -21,12 +21,15 @@ from tests.test_agent_approval import (
 from voca.config import ApprovalConfig
 from voca.conversation.agent import (
     APPROVAL_GONE,
+    DELEGATE_UNAVAILABLE,
     NO_REQUEST,
     NOT_STEERABLE,
     TASK_AMBIGUOUS,
     TASK_CLOSED,
     announcement_text,
 )
+from voca.delegation.danger import Danger
+from voca.delegation.events import Event, EventKind, EventState
 from voca.delegation.model import Task, TaskStatus
 from voca.delegation.ports import RunState
 
@@ -49,6 +52,7 @@ def test_tool_names(tmp_path: Path) -> None:
     assert names == {
         "delegate",
         "list_tasks",
+        "list_notifications",
         "cancel_task",
         "steer_task",
         "repeat_approval",
@@ -90,6 +94,73 @@ def test_list_tasks_clips_result(tmp_path: Path) -> None:
         stand.put(finished("a", "слово " * 3800))
         [task] = json.loads(await stand.agent.list_tasks())["tasks"]
         assert 0 < len(task["result"]) <= 300
+
+    asyncio.run(main())
+
+
+def test_list_notifications_open_events(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path)
+        stand.put(waiting("a"))
+        stand.put(finished("b"))
+        stand.repo.events = {
+            ("a", "approval", "r1"): Event(
+                "a",
+                EventKind.APPROVAL,
+                "r1",
+                EventState.ARRIVED,
+                1.0,
+                1.0,
+                Danger.HIGH,
+                id=1,
+            ),
+            ("b", "result", ""): Event(
+                "b", EventKind.RESULT, "", EventState.ARRIVED, 2.0, 2.0, id=2
+            ),
+            ("b", "failure", ""): Event(
+                "b",
+                EventKind.FAILURE,
+                "",
+                EventState.CLOSED,
+                0.5,
+                3.0,
+                closed_reason="delivered",
+                id=3,
+            ),
+        }
+        listed = json.loads(await stand.agent.list_notifications())
+        assert list(listed) == ["notifications"]
+        first, second = listed["notifications"]
+        assert first == {
+            "id": "1",
+            "task": "a",
+            "kind": "approval",
+            "state": "arrived",
+            "age_s": 9,
+            "text": "Удали каталог /tmp/x",
+            "danger": "high",
+            "request": "удаление в корневом каталоге",
+            "command": "rm -r /tmp/x",
+        }
+        assert second == {
+            "id": "2",
+            "task": "b",
+            "kind": "result",
+            "state": "arrived",
+            "age_s": 8,
+            "text": "t",
+            "result": "Ответ.",
+        }
+
+    asyncio.run(main())
+
+
+def test_list_notifications_unavailable(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path)
+        stand.agent.delegation = None
+        with pytest.raises(ToolError, match=DELEGATE_UNAVAILABLE):
+            await stand.agent.list_notifications()
 
     asyncio.run(main())
 
