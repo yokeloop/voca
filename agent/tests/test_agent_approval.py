@@ -1222,6 +1222,40 @@ def test_decision_unrelated_goes_to_llm(tmp_path: Path) -> None:
     asyncio.run(main())
 
 
+def test_glue_reaches_turn_when_request_unrelated(tmp_path: Path) -> None:
+    glued = "Попроси Гермеса создать папку отчёты, и в ней файл за ноябрь"
+
+    async def main() -> None:
+        decider = FakeDecider({glued: decided("unrelated")})
+        stand = Stand(tmp_path, decider=decider)
+        session = FakeSession()
+        await activate(stand, session, waiting("a"))
+        base = stand.agent.heard_at
+        ctx = stand.agent.chat_ctx.copy()
+        ctx.add_message(
+            role="user",
+            content="Попроси Гермеса создать папку",
+            id="fragment",
+            metrics={
+                "started_speaking_at": base + 98.0,
+                "stopped_speaking_at": base + 100.0,
+            },
+        )
+        ctx.add_message(role="assistant", content="Сейчас", id="cut", interrupted=True)
+        await stand.agent.update_chat_ctx(ctx)
+        turn_ctx = stand.agent.chat_ctx.copy()
+        message = said("отчёты, и в ней файл за ноябрь", base + 101.5)
+        await stand.agent.on_user_turn_completed(turn_ctx, message)
+        assert message.text_content == glued
+        assert [situation.phrase for situation in decider.seen] == [glued]
+        ids = [item.id for item in turn_ctx.items]
+        assert "fragment" not in ids and "cut" not in ids
+        assert stand.agent.active is not None
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
 def test_decision_situation(tmp_path: Path) -> None:
     async def main() -> None:
         decider = FakeDecider({PHRASE_OK: decided("unrelated")})

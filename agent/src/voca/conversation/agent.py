@@ -1254,7 +1254,7 @@ class VocaAgent(Agent):
             changed = True
         active = self.active or self.barged
         if active is not None and self.delegation is not None:
-            changed = await self._on_request(active, new_message)
+            changed = await self._on_request(active, new_message) or changed
         loaded = self.loader.load()
         if (loaded.sha256, loaded.source, loaded.error) != (
             self.current.sha256,
