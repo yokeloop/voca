@@ -33,6 +33,8 @@ preemptive_generation = true
 glue_window_s = 3.0
 # Seconds of user silence `delegate` waits before sending a task to Hermes.
 action_silence_s = 0.5
+# Seconds of silence (neither the user nor the agent speaks) before the agent tells about waiting Hermes results and failures; at the end of the agent's own answer it tells at once.
+event_silence_s = 1.5
 
 [session]
 # SQLite file of the session history.
