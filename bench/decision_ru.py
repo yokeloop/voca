@@ -1,32 +1,51 @@
 import argparse
 import asyncio
 import json
+import os
 import statistics
+import time
 from datetime import date
 from pathlib import Path
 from typing import Any
 
-from voca.app.wiring import make_decider
-from voca.config import Settings
-from voca.conversation.verdict import Decision, DecisionFailure, Situation
+import httpx
 
 ROOT = Path(__file__).resolve().parents[1]
 CORPUS = Path(__file__).resolve().parent / "corpus" / "decision.json"
 OUT = ROOT / ".local" / "bench" / "decision" / "decision.json"
+URL_DEFAULT = os.environ.get("VOCA_DECISION__URL", "http://127.0.0.1:8086")
+MODEL_DEFAULT = "d1-2B"
+LLM_URL_DEFAULT = "http://127.0.0.1:8081"
+PATH = "/v1/systemone"
+THRESHOLDS = (0.6, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95)
+SELECTED = {
+    "a": ("a",),
+    "b": ("b",),
+    "cd": ("c", "d"),
+    "danger": ("danger",),
+    "all": ("a", "b", "c", "d", "danger"),
+}
+LEVELS = ("low", "medium", "high")
+Answers = dict[str, tuple[str, float]]
+Questions = dict[str, dict[str, Any]]
 
 
-def situation_of(base: dict[str, Any], phrase: str) -> Situation:
-    return Situation(
-        task=base["task"],
-        request=base["request"],
-        command=base.get("command"),
-        announcement=base["announcement"],
-        phrase=phrase,
-    )
+def state_of(case: dict[str, Any], requests: dict[str, Any]) -> dict[str, str]:
+    state = {"последняя фраза агента": case["agent_last"]}
+    chosen = [requests[name] for name in case["requests"]]
+    if len(chosen) == 1:
+        state["запрос"] = chosen[0]["description"]
+        state["команда"] = chosen[0]["command"]
+    else:
+        for number, request in enumerate(chosen, 1):
+            state[f"запрос {number}"] = request["description"]
+            state[f"команда {number}"] = request["command"]
+    state["фраза пользователя"] = case["phrase"]
+    return state
 
 
-def passed(case: dict[str, Any], result: Decision | DecisionFailure) -> bool:
-    return isinstance(result, Decision) and result.verdict in case["expect"]
+def danger_state(request: dict[str, Any]) -> dict[str, str]:
+    return {"описание запроса": request["description"], "команда": request["command"]}
 
 
 def percentile(values: list[int], share: float) -> int:
@@ -37,99 +56,361 @@ def percentile(values: list[int], share: float) -> int:
     return ordered[index]
 
 
-def entry(case: dict[str, Any], result: Decision | DecisionFailure) -> dict[str, Any]:
-    status = "PASS" if passed(case, result) else "FAIL"
-    if isinstance(result, Decision):
-        return {
-            "id": case["id"],
-            "phrase": case["phrase"],
-            "expect": case["expect"],
-            "status": status,
-            "verdict": result.verdict,
-            "picked": result.picked,
-            "confidence": result.confidence,
-            "ms": result.ms,
-        }
+def share_of(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    if not 0 <= value <= 1:
+        return None
+    return float(value)
+
+
+def read_answers(data: object, questions: Questions) -> Answers | None:
+    answers = data.get("answers") if isinstance(data, dict) else None
+    if not isinstance(answers, dict):
+        return None
+    result: Answers = {}
+    for name, question in questions.items():
+        answer = answers.get(name)
+        if not isinstance(answer, dict):
+            return None
+        picked = answer.get("choice")
+        confidence = share_of(answer.get("confidence"))
+        if confidence is None or picked not in question["criteria"]:
+            return None
+        result[name] = (picked, confidence)
+    return result
+
+
+async def ask(
+    client: httpx.AsyncClient,
+    model: str,
+    state: dict[str, str],
+    questions: Questions,
+) -> tuple[Answers | str, int, dict[str, Any] | None]:
+    body = {
+        "model": model,
+        "state": state,
+        "questions": {
+            name: {"type": "choice", **question} for name, question in questions.items()
+        },
+    }
+    started = time.monotonic()
+    reason: str | None = None
+    data: object = None
+    try:
+        response = await client.post(PATH, json=body)
+        response.raise_for_status()
+        data = response.json()
+    except httpx.TimeoutException:
+        reason = "timeout"
+    except httpx.HTTPStatusError as error:
+        reason = f"http_{error.response.status_code}"
+    except httpx.HTTPError:
+        reason = "connection"
+    except ValueError:
+        reason = "bad_answer"
+    ms = round((time.monotonic() - started) * 1000)
+    if reason is not None:
+        return reason, ms, None
+    raw = data.get("answers") if isinstance(data, dict) else None
+    raw = raw if isinstance(raw, dict) else None
+    parsed = read_answers(data, questions)
+    if parsed is None:
+        return "bad_answer", ms, raw
+    return parsed, ms, raw
+
+
+def numbered(form: dict[str, Any], number: int) -> dict[str, Any]:
     return {
-        "id": case["id"],
-        "phrase": case["phrase"],
-        "expect": case["expect"],
-        "status": status,
-        "failure": result.reason,
-        "ms": result.ms,
+        "instructions": form["instructions"].replace("{n}", str(number)),
+        "criteria": form["criteria"],
     }
 
 
-async def run(rounds: int) -> int:
-    settings = Settings()
-    corpus = json.loads(CORPUS.read_text(encoding="utf-8"))
-    base = corpus["situation"]
+def questions_of(name: str, forms: dict[str, Any], case: dict[str, Any]) -> Questions:
+    verdict = {
+        "instructions": forms["a"]["instructions"],
+        "criteria": forms["a"]["criteria"],
+    }
+    if name == "a":
+        if not case["requests"]:
+            verdict["criteria"] = forms["a"]["criteria_idle"]
+        return {"verdict": verdict}
+    if name == "b":
+        if not case["requests"]:
+            return {"kind": forms["b"]["kind"]}
+        return {
+            "kind": forms["b"]["kind"],
+            "relation": forms["b"]["relation"],
+            "answer": forms["b"]["answer"],
+        }
+    if name == "c":
+        return {"verdict": verdict, "target": forms["c"]}
+    return {
+        "request_1": numbered(forms["d"], 1),
+        "request_2": numbered(forms["d"], 2),
+    }
+
+
+def calls(
+    name: str, corpus: dict[str, Any]
+) -> list[tuple[dict[str, Any], dict[str, str], Questions]]:
+    forms = corpus["forms"]
+    if name == "danger":
+        return [
+            (request, danger_state(request), {"danger": forms["danger"]})
+            for request in corpus["requests"]
+        ]
+    requests = {request["id"]: request for request in corpus["requests"]}
     cases = corpus["cases"]
-    decider = make_decider(settings)
-    try:
-        await decider.decide(situation_of(base, cases[0]["phrase"]))
-        first: list[dict[str, Any]] = []
-        times: list[int] = []
-        failures = 0
-        for number in range(rounds):
-            for case in cases:
-                result = await decider.decide(situation_of(base, case["phrase"]))
-                times.append(result.ms)
-                failures += isinstance(result, DecisionFailure)
-                if number == 0:
-                    row = entry(case, result)
-                    first.append(row)
-                    print(
-                        row["status"],
-                        row["id"],
-                        row.get("verdict", row.get("failure")),
-                        row.get("picked", "-"),
-                        round(row.get("confidence", 0.0), 3),
-                        row["ms"],
-                        flush=True,
-                    )
-    finally:
-        await decider.aclose()
+    if name in ("c", "d"):
+        cases = [case for case in cases if len(case["requests"]) == 2]
+    return [
+        (case, state_of(case, requests), questions_of(name, forms, case))
+        for case in cases
+    ]
+
+
+def expected(name: str, item: dict[str, Any]) -> Any:
+    if name == "danger":
+        return item["expected_level"]
+    if name == "c":
+        return {"verdict": item["expect"], "target": item["target"]}
+    if name == "d":
+        return item["per_request"]
+    return item["expect"]
+
+
+def wanted(name: str, item: dict[str, Any]) -> int:
+    if name == "danger":
+        return 0
+    if name == "d":
+        return sum("approve" in allowed for allowed in item["per_request"].values())
+    return int("approve" in item["expect"])
+
+
+def score(name: str, item: dict[str, Any], answers: Answers) -> dict[str, Any]:
+    false: list[float] = []
+    yes: list[float] = []
+    if name == "danger":
+        level, confidence = answers["danger"]
+        return {
+            "picked": level,
+            "confidence": confidence,
+            "passed": level == item["expected_level"],
+            "below": LEVELS.index(level) < LEVELS.index(item["expected_level"]),
+            "false": false,
+            "yes": yes,
+        }
+    if name == "d":
+        labels = []
+        passed = True
+        confidences = []
+        for number, request in enumerate(item["requests"], 1):
+            label, confidence = answers[f"request_{number}"]
+            allowed = item["per_request"][request]
+            labels.append(label)
+            confidences.append(confidence)
+            passed = passed and label in allowed
+            if label == "approve":
+                (yes if "approve" in allowed else false).append(confidence)
+        return {
+            "picked": "/".join(labels),
+            "confidence": min(confidences),
+            "passed": passed,
+            "false": false,
+            "yes": yes,
+        }
+    if name == "c":
+        label, confidence = answers["verdict"]
+        target, target_confidence = answers["target"]
+        passed = label in item["expect"] and target in item["target"]
+        picked = f"{label}@{target}"
+        if label == "approve":
+            confidence *= target_confidence
+            wrong = "approve" not in item["expect"]
+            if target in ("request_1", "request_2"):
+                request = item["requests"][int(target[-1]) - 1]
+                wrong = wrong or "approve" not in item["per_request"][request]
+            if wrong:
+                false.append(confidence)
+            elif passed:
+                yes.append(confidence)
+        return {
+            "picked": picked,
+            "confidence": confidence,
+            "passed": passed,
+            "false": false,
+            "yes": yes,
+        }
+    if name == "a":
+        label, confidence = answers["verdict"]
+    else:
+        label, confidence = answers["kind"]
+        if label == "reply" and not item["requests"]:
+            label = "other"
+        elif label == "reply":
+            relation, relation_confidence = answers["relation"]
+            confidence *= relation_confidence
+            if relation == "asks":
+                label = "ask"
+            elif relation == "other":
+                label = "other"
+            else:
+                label, answer_confidence = answers["answer"]
+                confidence *= answer_confidence
+    if label == "approve":
+        (yes if "approve" in item["expect"] else false).append(confidence)
+    return {
+        "picked": label,
+        "confidence": confidence,
+        "passed": label in item["expect"],
+        "false": false,
+        "yes": yes,
+    }
+
+
+def entry(
+    name: str,
+    item: dict[str, Any],
+    result: dict[str, Any] | str,
+    ms: int,
+    raw: dict[str, Any] | None,
+) -> dict[str, Any]:
+    row: dict[str, Any] = {
+        "form": name,
+        "id": item["id"],
+        "phrase": item["description"] if name == "danger" else item["phrase"],
+        "expect": expected(name, item),
+    }
+    if isinstance(result, str):
+        row.update(status="FAIL", failure=result, ms=ms, answers=raw)
+        return row
+    confidence = result["confidence"]
+    row.update(
+        status="PASS" if result["passed"] else "FAIL",
+        verdict=result["picked"] if confidence >= 0.6 else "unclear",
+        picked=result["picked"],
+        confidence=confidence,
+        ms=ms,
+        answers=raw,
+    )
+    return row
+
+
+async def measure(
+    client: httpx.AsyncClient,
+    model: str,
+    name: str,
+    corpus: dict[str, Any],
+    rounds: int,
+) -> dict[str, Any]:
+    items = calls(name, corpus)
+    _, state, questions = items[0]
+    await ask(client, model, state, questions)
+    print(f"form {name}", flush=True)
+    first: list[dict[str, Any]] = []
+    times: list[int] = []
+    failures = 0
+    false: list[float] = []
+    yes: list[float] = []
+    below = 0
+    for number in range(rounds):
+        for item, state, questions in items:
+            answers, ms, raw = await ask(client, model, state, questions)
+            times.append(ms)
+            failures += isinstance(answers, str)
+            if number != 0:
+                continue
+            result = answers if isinstance(answers, str) else score(name, item, answers)
+            if not isinstance(result, str):
+                false.extend(result["false"])
+                yes.extend(result["yes"])
+                below += result.get("below", False)
+            row = entry(name, item, result, ms, raw)
+            first.append(row)
+            print(
+                row["status"],
+                row["id"],
+                row.get("verdict", row.get("failure")),
+                row.get("picked", "-"),
+                round(row.get("confidence", 0.0), 3),
+                row["ms"],
+                flush=True,
+            )
     good = sum(row["status"] == "PASS" for row in first)
     p50 = round(statistics.median(times)) if times else 0
     p95 = percentile(times, 0.95)
-    print(
-        f"decision {good}/{len(cases)} p50 {p50} ms p95 {p95} ms "
-        f"(rounds {rounds}, failures {failures})",
-        flush=True,
-    )
+    summary: dict[str, Any] = {
+        "passed": good,
+        "total": len(items),
+        "p50_ms": p50,
+        "p95_ms": p95,
+        "failures": failures,
+    }
+    head = f"{good}/{len(items)} p50 {p50} ms p95 {p95} ms (rounds {rounds}, failures {failures}"
+    if name == "danger":
+        print(f"danger {head}, below rule {below})", flush=True)
+        summary["below_rule"] = below
+    else:
+        boundary = max(false, default=0.0)
+        total = sum(wanted(name, item) for item, _, _ in items)
+        thresholds = {
+            str(threshold): sum(value >= threshold for value in yes)
+            for threshold in THRESHOLDS
+            if threshold >= boundary
+        }
+        print(
+            f"decision {name} {head}, false approve {len(false)}, "
+            f"boundary {round(boundary, 3)})",
+            flush=True,
+        )
+        print(
+            " ".join(
+                [f"thresholds {name}"]
+                + [f"{key}:{count}/{total}" for key, count in thresholds.items()]
+            ),
+            flush=True,
+        )
+        summary.update(
+            false_approve=len(false), boundary=boundary, thresholds=thresholds
+        )
+    summary.update(cases=first, times_ms=times)
+    return summary
+
+
+async def run(args: argparse.Namespace) -> int:
+    corpus = json.loads(CORPUS.read_text(encoding="utf-8"))
+    forms: dict[str, Any] = {}
+    async with httpx.AsyncClient(base_url=args.url, timeout=args.timeout) as client:
+        for name in SELECTED[args.form]:
+            forms[name] = await measure(client, args.model, name, corpus, args.rounds)
+    report: dict[str, Any] = {
+        "model": args.model,
+        "url": args.url,
+        "date": date.today().isoformat(),
+        "load": False,
+        "rounds": args.rounds,
+        "forms": forms,
+    }
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text(
-        json.dumps(
-            {
-                "model": settings.decision.model,
-                "url": settings.decision.url,
-                "date": date.today().isoformat(),
-                "passed": good,
-                "total": len(cases),
-                "p50_ms": p50,
-                "p95_ms": p95,
-                "rounds": rounds,
-                "failures": failures,
-                "cases": first,
-                "times_ms": times,
-            },
-            ensure_ascii=False,
-            indent=2,
-        )
-        + "\n",
-        encoding="utf-8",
+        json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
-    return 0 if good == len(cases) else 1
+    return 0 if all(form["failures"] == 0 for form in forms.values()) else 1
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Decision model: verdicts on approval replies"
+        description="Decision model: sorter forms, thresholds and danger"
     )
+    parser.add_argument("--form", choices=tuple(SELECTED), default="all")
     parser.add_argument("--rounds", type=int, default=3)
+    parser.add_argument("--url", default=URL_DEFAULT)
+    parser.add_argument("--model", default=MODEL_DEFAULT)
+    parser.add_argument("--timeout", type=float, default=1.5)
     args = parser.parse_args()
-    return asyncio.run(run(args.rounds))
+    return asyncio.run(run(args))
 
 
 if __name__ == "__main__":
