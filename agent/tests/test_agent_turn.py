@@ -1023,3 +1023,86 @@ def test_sorter_none_is_passthrough(tmp_path: Path) -> None:
     message = llm.ChatMessage(role="user", content=["Угу"])
     asyncio.run(agent.on_user_turn_completed(llm.ChatContext.empty(), message))
     assert not events.exists() or kinds_of(events, "sorter") == []
+
+
+def fragment_ctx() -> llm.ChatContext:
+    ctx = llm.ChatContext.empty()
+    ctx.add_message(role="assistant", content="Здравствуйте.")
+    ctx.add_message(
+        role="user",
+        content="Попроси Гермеса создать папку",
+        id="fragment",
+        metrics={"started_speaking_at": 98.0, "stopped_speaking_at": 100.0},
+    )
+    return ctx
+
+
+def glue_turn(
+    tmp_path: Path, ctx: llm.ChatContext
+) -> tuple[VocaAgent, llm.ChatContext, llm.ChatMessage, Path]:
+    agent, _, events, _ = make_agent(tmp_path)
+    message = llm.ChatMessage(
+        role="user",
+        content=["отчёты, и в ней файл за ноябрь"],
+        metrics={"started_speaking_at": 101.5, "stopped_speaking_at": 103.0},
+    )
+
+    async def main() -> llm.ChatContext:
+        await agent.update_chat_ctx(ctx)
+        turn_ctx = agent.chat_ctx.copy()
+        await agent.on_user_turn_completed(turn_ctx, message)
+        return turn_ctx
+
+    return agent, asyncio.run(main()), message, events
+
+
+def test_hook_glues_fragment(tmp_path: Path) -> None:
+    ctx = fragment_ctx()
+    ctx.add_message(role="assistant", content="Сейчас", id="cut", interrupted=True)
+    agent, turn_ctx, message, events = glue_turn(tmp_path, ctx)
+    assert (
+        message.text_content
+        == "Попроси Гермеса создать папку отчёты, и в ней файл за ноябрь"
+    )
+    for items in (agent.chat_ctx.items, turn_ctx.items):
+        ids = [item.id for item in items]
+        assert "fragment" not in ids and "cut" not in ids
+        assert len(ids) == 1
+    row = kinds_of(events, "glue")[0]
+    assert row["removed"] == 2
+    assert row["fragment"] == "Попроси Гермеса создать папку"
+    assert row["gap_s"] == 1.5
+
+
+def test_hook_glue_drops_not_sent_delegate(tmp_path: Path) -> None:
+    ctx = fragment_ctx()
+    ctx.items.append(
+        llm.FunctionCall(id="call", call_id="c1", name="delegate", arguments="{}")
+    )
+    ctx.items.append(
+        llm.FunctionCallOutput(
+            id="out",
+            call_id="c1",
+            name="delegate",
+            output=json.dumps({"id": "c1", "event": "not_sent"}),
+            is_error=False,
+        )
+    )
+    agent, turn_ctx, message, events = glue_turn(tmp_path, ctx)
+    ids = [item.id for item in agent.chat_ctx.items]
+    assert "call" not in ids and "out" not in ids and "fragment" not in ids
+    assert [item.id for item in turn_ctx.items] == ids
+    assert kinds_of(events, "glue")[0]["removed"] == 3
+    assert message.text_content is not None
+    assert message.text_content.startswith("Попроси Гермеса создать папку ")
+
+
+def test_hook_no_glue_after_heard_answer(tmp_path: Path) -> None:
+    ctx = fragment_ctx()
+    ctx.add_message(role="assistant", content="Хорошо.")
+    ids = [item.id for item in ctx.items]
+    agent, turn_ctx, message, events = glue_turn(tmp_path, ctx)
+    assert [item.id for item in agent.chat_ctx.items] == ids
+    assert [item.id for item in turn_ctx.items] == ids
+    assert message.text_content == "отчёты, и в ней файл за ноябрь"
+    assert not events.exists() or kinds_of(events, "glue") == []

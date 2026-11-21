@@ -53,6 +53,7 @@ from voca.conversation.compaction import (
 )
 from voca.conversation.context import Item, approx_tokens, split_turns, trim_chat_ctx
 from voca.conversation.descriptions import describe
+from voca.conversation.glue import Entry, glue
 from voca.conversation.instructions import InstructionLoader, InstructionSet
 from voca.conversation.summarizer import Failure, Summarizer, Summary
 from voca.conversation.verdict import (
@@ -265,6 +266,40 @@ def records(ctx: llm.ChatContext) -> list[Item]:
     return items
 
 
+def entries(ctx: llm.ChatContext) -> list[Entry]:
+    found: list[Entry] = []
+    for item in ctx.items:
+        if item.type == "message":
+            found.append(
+                Entry(
+                    item.id,
+                    item.type,
+                    role=item.role,
+                    text=item.text_content or "",
+                    interrupted=item.interrupted,
+                    started_at=item.metrics.get("started_speaking_at"),
+                    stopped_at=item.metrics.get("stopped_speaking_at"),
+                )
+            )
+        elif item.type == "function_call":
+            found.append(
+                Entry(item.id, item.type, call_id=item.call_id, name=item.name)
+            )
+        elif item.type == "function_call_output":
+            found.append(
+                Entry(
+                    item.id,
+                    item.type,
+                    call_id=item.call_id,
+                    name=item.name,
+                    output=item.output,
+                )
+            )
+        else:
+            found.append(Entry(item.id, item.type))
+    return found
+
+
 def talking(session: AgentSession[Any]) -> bool:
     speech = session.current_speech
     return speech is not None and not speech.done() and not speech.interrupted
@@ -347,6 +382,8 @@ class VocaAgent(Agent):
         self.sorter = sorter
         self.sorter_prompt = sorter_prompt
         self.passed: list[str] = []
+        self.glue_window_s = glue_window_s
+        self.action_silence_s = action_silence_s
 
     def set_present(self, present: bool) -> None:
         if present:
@@ -1163,6 +1200,25 @@ class VocaAgent(Agent):
             ):
                 raise StopResponse()
         changed = False
+        glued = glue(
+            entries(self.chat_ctx),
+            started_at=new_message.metrics.get("started_speaking_at"),
+            window_s=self.glue_window_s,
+        )
+        if glued is not None:
+            ctx = self.chat_ctx.copy()
+            ctx.items = [item for item in ctx.items if item.id not in glued.drop]
+            await self.update_chat_ctx(ctx)
+            new_message.content = [
+                f"{glued.fragment} {new_message.text_content or ''}".strip()
+            ]
+            self.log.write(
+                "glue",
+                removed=len(glued.drop),
+                fragment=glued.fragment,
+                gap_s=round(glued.gap_s, 3),
+            )
+            changed = True
         active = self.active or self.barged
         if active is not None and self.delegation is not None:
             changed = await self._on_request(active, new_message)
