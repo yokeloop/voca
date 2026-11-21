@@ -2,10 +2,13 @@ import asyncio
 import sqlite3
 import stat
 from contextlib import closing
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
+from voca.delegation.danger import Danger
+from voca.delegation.events import Event, EventKind, EventState
 from voca.delegation.model import Task, TaskStatus
 from voca.delegation.sqlite import MIGRATIONS, SqliteTaskRepository, TaskStoreError
 
@@ -62,6 +65,85 @@ def test_migrates_v1_to_v2(tmp_path: Path) -> None:
     assert plain.stop_reason is None
 
 
+def test_migrates_v2_to_v3(tmp_path: Path) -> None:
+    path = tmp_path / "tasks.sqlite3"
+    with closing(sqlite3.connect(path, autocommit=True)) as db:
+        db.executescript(MIGRATIONS[0].read_text(encoding="utf-8"))
+        db.executescript(MIGRATIONS[1].read_text(encoding="utf-8"))
+        db.execute("PRAGMA user_version = 2")
+        db.execute(
+            "INSERT INTO tasks (tool_call_id, text, status, result, created_at) "
+            "VALUES ('ok', 'a', 'succeeded', 'готово', 1.0)"
+        )
+        db.execute(
+            "INSERT INTO tasks (tool_call_id, text, status, error, created_at, "
+            "delivered_at, stop_reason) "
+            "VALUES ('cancelled', 'b', 'failed', 'cancelled', 2.0, 5.0, 'user')"
+        )
+        db.execute(
+            "INSERT INTO tasks (tool_call_id, text, status, run_id, created_at, approval) "
+            "VALUES ('asks', 'c', 'waiting_approval', 'r', 3.0, ?)",
+            ('{"description": "d", "command": "rm -r x", "request_id": "r1"}',),
+        )
+        db.execute(
+            "INSERT INTO tasks (tool_call_id, text, status, created_at) "
+            "VALUES ('plain', 'd', 'running', 4.0)"
+        )
+    repo = SqliteTaskRepository.open(path)
+
+    async def main() -> tuple[list[Task | None], list[Event]]:
+        tasks = [await repo.get(key) for key in ("ok", "cancelled", "asks", "plain")]
+        return tasks, await repo.list_events(open_only=False)
+
+    (ok, cancelled, asks, plain), events = asyncio.run(main())
+    repo.close()
+    with closing(sqlite3.connect(path)) as db:
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert ok == Task("ok", "a", TaskStatus.SUCCEEDED, 1.0, result="готово")
+    assert cancelled == Task(
+        "cancelled",
+        "b",
+        TaskStatus.FAILED,
+        2.0,
+        error="cancelled",
+        delivered_at=5.0,
+        stop_reason="user",
+    )
+    assert asks == Task(
+        "asks",
+        "c",
+        TaskStatus.WAITING_APPROVAL,
+        3.0,
+        run_id="r",
+        approval={"description": "d", "command": "rm -r x", "request_id": "r1"},
+    )
+    assert plain == Task("plain", "d", TaskStatus.RUNNING, 4.0)
+    assert [
+        (
+            event.tool_call_id,
+            event.kind,
+            event.request_id,
+            event.danger,
+            event.state,
+            event.updated_at,
+            event.closed_reason,
+        )
+        for event in events
+    ] == [
+        ("ok", EventKind.RESULT, "", None, EventState.ARRIVED, 1.0, None),
+        (
+            "cancelled",
+            EventKind.FAILURE,
+            "",
+            None,
+            EventState.CLOSED,
+            5.0,
+            "cancelled",
+        ),
+        ("asks", EventKind.APPROVAL, "r1", Danger.HIGH, EventState.ARRIVED, 3.0, None),
+    ]
+
+
 def test_insert_or_get(tmp_path: Path) -> None:
     path = tmp_path / "tasks.sqlite3"
     repo = SqliteTaskRepository.open(path)
@@ -94,10 +176,12 @@ def test_save_and_lists(tmp_path: Path) -> None:
         await repo.save(
             two.transition(TaskStatus.RUNNING, run_id="r2").transition(
                 TaskStatus.SUCCEEDED, result="готово"
-            )
+            ),
+            4.0,
         )
         await repo.save(
-            three.transition(TaskStatus.FAILED, error="unavailable", delivered_at=5.0)
+            three.transition(TaskStatus.FAILED, error="unavailable", delivered_at=5.0),
+            5.0,
         )
         waiting = one.transition(TaskStatus.RUNNING, run_id="r1").transition(
             TaskStatus.WAITING_APPROVAL,
@@ -105,9 +189,9 @@ def test_save_and_lists(tmp_path: Path) -> None:
             stop_requested_at=9.0,
             stop_reason="user",
         )
-        await repo.save(waiting)
+        await repo.save(waiting, 6.0)
         stored = await repo.get("1")
-        await repo.save(waiting.transition(TaskStatus.RUNNING, approval=None))
+        await repo.save(waiting.transition(TaskStatus.RUNNING, approval=None), 7.0)
         return (
             stored,
             await repo.list_open(),
@@ -130,3 +214,141 @@ def test_save_and_lists(tmp_path: Path) -> None:
     assert [task.tool_call_id for task in everything] == ["3", "2", "1"]
     assert everything[0].delivered_at == 5.0
     assert everything[0].error == "unavailable"
+
+
+def result_event(key: str, at: float) -> Event:
+    return Event(key, EventKind.RESULT, "", EventState.ARRIVED, at, at)
+
+
+def approval_event(key: str, request: str, at: float) -> Event:
+    return Event(
+        key, EventKind.APPROVAL, request, EventState.ARRIVED, at, at, Danger.HIGH
+    )
+
+
+def test_save_records_event_once(tmp_path: Path) -> None:
+    repo = SqliteTaskRepository.open(tmp_path / "tasks.sqlite3")
+    task = Task("k", "a", TaskStatus.QUEUED, 1.0)
+    done = task.transition(TaskStatus.FAILED, error="lost")
+
+    async def main() -> list[Event]:
+        await repo.insert(task)
+        await repo.save(done, 2.0, result_event("k", 2.0))
+        await repo.save(done, 3.0, result_event("k", 3.0))
+        return await repo.list_events(open_only=False)
+
+    events = asyncio.run(main())
+    repo.close()
+    assert len(events) == 1
+    assert events[0].created_at == 2.0
+
+
+def test_delivered_closes_result_event(tmp_path: Path) -> None:
+    repo = SqliteTaskRepository.open(tmp_path / "tasks.sqlite3")
+    task = Task("k", "a", TaskStatus.QUEUED, 1.0)
+    done = task.transition(TaskStatus.RUNNING, run_id="r").transition(
+        TaskStatus.SUCCEEDED, result="ok"
+    )
+
+    async def main() -> list[Event]:
+        await repo.insert(task)
+        await repo.save(done, 2.0, result_event("k", 2.0))
+        await repo.save(replace(done, delivered_at=4.0), 4.5)
+        return await repo.list_events(open_only=False)
+
+    events = asyncio.run(main())
+    repo.close()
+    assert [
+        (event.state, event.closed_reason, event.updated_at) for event in events
+    ] == [(EventState.CLOSED, "delivered", 4.5)]
+
+
+def test_new_request_closes_previous(tmp_path: Path) -> None:
+    repo = SqliteTaskRepository.open(tmp_path / "tasks.sqlite3")
+    task = Task("k", "a", TaskStatus.QUEUED, 1.0)
+    running = task.transition(TaskStatus.RUNNING, run_id="r")
+    first = running.transition(
+        TaskStatus.WAITING_APPROVAL, approval={"description": "d", "request_id": "r1"}
+    )
+    second = replace(first, approval={"description": "d", "request_id": "r2"})
+
+    async def main() -> tuple[list[Event], list[Event]]:
+        await repo.insert(task)
+        await repo.save(first, 2.0, approval_event("k", "r1", 2.0))
+        await repo.save(second, 3.0, approval_event("k", "r2", 3.0))
+        middle = await repo.list_events(open_only=False)
+        await repo.save(second.transition(TaskStatus.RUNNING, approval=None), 4.0)
+        return middle, await repo.list_events(open_only=False)
+
+    middle, final = asyncio.run(main())
+    repo.close()
+    assert [
+        (event.request_id, event.state, event.closed_reason) for event in middle
+    ] == [
+        ("r1", EventState.CLOSED, "resolved"),
+        ("r2", EventState.ARRIVED, None),
+    ]
+    assert [
+        (event.request_id, event.state, event.closed_reason, event.updated_at)
+        for event in final
+    ] == [
+        ("r1", EventState.CLOSED, "resolved", 3.0),
+        ("r2", EventState.CLOSED, "resolved", 4.0),
+    ]
+
+
+def test_list_events_open_only_in_order(tmp_path: Path) -> None:
+    repo = SqliteTaskRepository.open(tmp_path / "tasks.sqlite3")
+    tasks = [Task(key, key, TaskStatus.QUEUED, 1.0) for key in ("a", "b", "c")]
+
+    async def main() -> tuple[list[Event], list[Event]]:
+        for task in tasks:
+            await repo.insert(task)
+        late, early, closed = tasks
+        await repo.save(
+            late.transition(TaskStatus.FAILED, error="lost"),
+            5.0,
+            result_event("a", 5.0),
+        )
+        await repo.save(
+            early.transition(TaskStatus.FAILED, error="lost"),
+            2.0,
+            result_event("b", 2.0),
+        )
+        await repo.save(
+            closed.transition(TaskStatus.FAILED, error="lost", delivered_at=3.0),
+            3.0,
+            result_event("c", 3.0),
+        )
+        return await repo.list_events(open_only=True), await repo.list_events(
+            open_only=False
+        )
+
+    open_events, everything = asyncio.run(main())
+    repo.close()
+    assert [event.tool_call_id for event in open_events] == ["b", "a"]
+    assert [event.tool_call_id for event in everything] == ["b", "c", "a"]
+    assert all(isinstance(event.id, int) for event in everything)
+
+
+def test_events_survive_reopen(tmp_path: Path) -> None:
+    path = tmp_path / "tasks.sqlite3"
+    repo = SqliteTaskRepository.open(path)
+    task = Task("k", "a", TaskStatus.QUEUED, 1.0)
+
+    async def save() -> None:
+        await repo.insert(task)
+        await repo.save(
+            task.transition(TaskStatus.FAILED, error="lost"),
+            2.0,
+            result_event("k", 2.0),
+        )
+
+    asyncio.run(save())
+    repo.close()
+    reopened = SqliteTaskRepository.open(path)
+    events = asyncio.run(reopened.list_events(True))
+    reopened.close()
+    assert [(event.tool_call_id, event.state) for event in events] == [
+        ("k", EventState.ARRIVED)
+    ]

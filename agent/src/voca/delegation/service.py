@@ -54,7 +54,7 @@ class DelegationService:
         self.on_change = on_change
 
     async def _save(self, task: Task) -> Task:
-        await self.repo.save(task)
+        await self.repo.save(task, self.clock())
         if self.on_change is not None:
             self.on_change(task)
         return task
