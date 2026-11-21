@@ -1,8 +1,10 @@
 import argparse
 import asyncio
+import contextlib
 import json
 import os
 import statistics
+import sys
 import time
 from datetime import date
 from pathlib import Path
@@ -28,6 +30,10 @@ SELECTED = {
 LEVELS = ("low", "medium", "high")
 Answers = dict[str, tuple[str, float]]
 Questions = dict[str, dict[str, Any]]
+PROMPT = (
+    "Расскажи подробно, как устроен голосовой ассистент: распознавание речи, "
+    "языковая модель и синтез речи. Ответь по-русски."
+)
 
 
 def state_of(case: dict[str, Any], requests: dict[str, Any]) -> dict[str, str]:
@@ -379,22 +385,82 @@ async def measure(
     return summary
 
 
+async def llm_alive(client: httpx.AsyncClient, llm_url: str) -> bool:
+    try:
+        response = await client.get(f"{llm_url}/health", timeout=5)
+    except httpx.HTTPError:
+        return False
+    return response.status_code == 200
+
+
+async def generate_load(
+    client: httpx.AsyncClient,
+    llm_url: str,
+    model: str,
+    stop: asyncio.Event,
+    done: list[int],
+) -> None:
+    while not stop.is_set():
+        response = await client.post(
+            f"{llm_url}/v1/chat/completions",
+            json={
+                "model": model,
+                "messages": [{"role": "user", "content": PROMPT}],
+                "max_tokens": 1024,
+                "temperature": 0,
+                "stream": False,
+            },
+            timeout=300,
+        )
+        response.raise_for_status()
+        done.append(1)
+
+
 async def run(args: argparse.Namespace) -> int:
     corpus = json.loads(CORPUS.read_text(encoding="utf-8"))
     forms: dict[str, Any] = {}
-    async with httpx.AsyncClient(base_url=args.url, timeout=args.timeout) as client:
-        for name in SELECTED[args.form]:
-            forms[name] = await measure(client, args.model, name, corpus, args.rounds)
+    done: list[int] = []
+    async with (
+        httpx.AsyncClient(base_url=args.url, timeout=args.timeout) as client,
+        httpx.AsyncClient() as llm,
+    ):
+        load: asyncio.Task[None] | None = None
+        stop = asyncio.Event()
+        if args.load:
+            if not await llm_alive(llm, args.llm_url):
+                print(f"llm не отвечает: {args.llm_url}", file=sys.stderr)
+                return 2
+            models = (await llm.get(f"{args.llm_url}/v1/models", timeout=10)).json()
+            load = asyncio.create_task(
+                generate_load(llm, args.llm_url, models["data"][0]["id"], stop, done)
+            )
+            await asyncio.sleep(1.0)
+        try:
+            for name in SELECTED[args.form]:
+                forms[name] = await measure(
+                    client, args.model, name, corpus, args.rounds
+                )
+        finally:
+            if load is not None:
+                stop.set()
+                load.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await load
     report: dict[str, Any] = {
         "model": args.model,
         "url": args.url,
         "date": date.today().isoformat(),
-        "load": False,
+        "load": args.load,
         "rounds": args.rounds,
         "forms": forms,
     }
-    OUT.parent.mkdir(parents=True, exist_ok=True)
-    OUT.write_text(
+    out = OUT
+    if args.load:
+        print(f"load generations {len(done)}", flush=True)
+        report["load_generations"] = len(done)
+        out = OUT.with_name("decision-load.json")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(
         json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
     return 0 if all(form["failures"] == 0 for form in forms.values()) else 1
@@ -409,6 +475,8 @@ def main() -> int:
     parser.add_argument("--url", default=URL_DEFAULT)
     parser.add_argument("--model", default=MODEL_DEFAULT)
     parser.add_argument("--timeout", type=float, default=1.5)
+    parser.add_argument("--load", action="store_true")
+    parser.add_argument("--llm-url", default=LLM_URL_DEFAULT)
     args = parser.parse_args()
     return asyncio.run(run(args))
 
