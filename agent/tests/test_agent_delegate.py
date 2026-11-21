@@ -8,12 +8,12 @@ from types import SimpleNamespace
 from typing import Any, Literal, cast
 
 import pytest
-from livekit.agents import RunContext, ToolError, llm
+from livekit.agents import RunContext, ToolError, llm, stt
 from livekit.agents.voice import AgentSession
 from livekit.agents.voice.events import UserInputTranscribedEvent, UserStateChangedEvent
 
 from voca.clientio.cards import CardState
-from voca.config import ApprovalConfig
+from voca.config import ApprovalConfig, DecisionConfig
 from voca.conversation import agent as agent_module
 from voca.conversation.agent import (
     SPEECH_LIMIT,
@@ -26,6 +26,7 @@ from voca.conversation.agent import (
 from voca.conversation.compaction import Limits
 from voca.conversation.instructions import InstructionLoader
 from voca.conversation.summarizer import Failure, Summarizer, Summary
+from voca.conversation.verdict import DecisionFailure, Sorted
 from voca.delegation.events import Event, EventState
 from voca.delegation.model import Task, TaskStatus
 from voca.delegation.ports import OutcomeUnknown, Rejected, RunState
@@ -507,6 +508,49 @@ def test_delegate_final_wait_bounded(
         quiet = asyncio.get_running_loop().time()
         reply = await asyncio.wait_for(stand.agent.delegate(ctx("call-1"), "сделай"), 1)
         assert asyncio.get_running_loop().time() - quiet >= 0.1
+        assert json.loads(reply.output) == {"id": "call-1", "event": "submitted"}
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+class NoiseSorter:
+    async def sort(self, state: dict[str, str]) -> Sorted | DecisionFailure:
+        return Sorted("noise", 0.9, 10)
+
+
+def test_dropped_noise_releases_hold(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(agent_module, "FINAL_WAIT_S", 5.0)
+
+    async def main() -> None:
+        stand = Stand(tmp_path, action_silence_s=0.05)
+        stand.agent.sorter = NoiseSorter()
+        stand.agent.sorter_prompt = DecisionConfig().sorter_prompt()
+        stand.backend.created = ["run_1"]
+        stand.backend.runs["run_1"] = [RunState("run_1", TaskStatus.RUNNING)]
+        session = FakeSession()
+        stand.start(session)
+        stand.open()
+        call = asyncio.ensure_future(stand.agent.delegate(ctx("call-1"), "сделай"))
+        user_state(stand.agent, "listening", "speaking")
+        user_state(stand.agent, "speaking", "listening")
+        await asyncio.sleep(0.1)
+        assert not call.done()
+
+        async def source() -> Any:
+            yield stt.SpeechEvent(
+                type=stt.SpeechEventType.FINAL_TRANSCRIPT,
+                alternatives=[stt.SpeechData(language="ru", text="Угу")],
+            )
+
+        out = [event async for event in stand.agent._screen(source(), lambda: True)]
+        assert out == []
+        dropped = asyncio.get_running_loop().time()
+        reply = await asyncio.wait_for(call, 2)
+        waited = asyncio.get_running_loop().time() - dropped
+        assert 0.04 <= waited < 1.0
         assert json.loads(reply.output) == {"id": "call-1", "event": "submitted"}
         await stand.agent.stop_delegation()
 
