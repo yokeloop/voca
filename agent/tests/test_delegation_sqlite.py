@@ -23,13 +23,13 @@ def test_wal_and_user_version(tmp_path: Path) -> None:
     SqliteTaskRepository.open(path).close()
     with closing(sqlite3.connect(path)) as db:
         assert db.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 3
 
 
 def test_newer_schema_refused(tmp_path: Path) -> None:
     path = tmp_path / "tasks.sqlite3"
     with closing(sqlite3.connect(path)) as db:
-        db.execute("PRAGMA user_version = 3")
+        db.execute("PRAGMA user_version = 4")
     with pytest.raises(TaskStoreError):
         SqliteTaskRepository.open(path)
 
@@ -55,7 +55,7 @@ def test_migrates_v1_to_v2(tmp_path: Path) -> None:
     stopped, plain = asyncio.run(main())
     repo.close()
     with closing(sqlite3.connect(path)) as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 3
     assert stopped is not None
     assert stopped.stop_reason == "timeout"
     assert plain is not None

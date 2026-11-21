@@ -7,10 +7,11 @@ from typing import Any
 
 from voca.delegation.model import Task, TaskStatus
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 MIGRATIONS = (
     Path(__file__).parent / "migrations" / "001-tasks.sql",
     Path(__file__).parent / "migrations" / "002-stop-reason.sql",
+    Path(__file__).parent / "migrations" / "003-events.sql",
 )
 COLUMNS = (
     "tool_call_id, text, status, run_id, result, error, "
