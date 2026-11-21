@@ -18,12 +18,16 @@ Scripts:
   and the `VocaAgent` tools) sent to a fake server on loopback:
   `thinking_budget_tokens`, `tools` with `delegate`, no `chat_template_kwargs`;
   no llama-server needed.
-- `decision_ru.py` (VOCA-36) — the decision model of voice approval: the
-  twenty phrases of `corpus/decision.json` against `scripts/decision.sh`
-  (`scripts/up.sh decision`) through the agent's `make_decider`, one warm-up
-  call and `--rounds` (3) rounds; prints `PASS|FAIL id verdict picked
-  confidence ms` and `decision N/20 p50 … ms p95 … ms`, writes
-  `.local/bench/decision/decision.json`.
+- `decision_ru.py` (VOCA-36, VOCA-44) — the E10 sorter on the corpus
+  `corpus/decision.json` (at least 100 phrases with 0, 1 and 2 requests; the
+  question texts live in the corpus) against `scripts/decision.sh`
+  (`scripts/up.sh decision`): the forms `--form a|b|cd|danger|all`, one
+  warm-up call per form and `--rounds` (3) rounds; `--load` — the same while
+  the main model generates in the background (`scripts/up.sh llm`,
+  `--llm-url`); prints `PASS|FAIL id verdict picked confidence ms`, the
+  summary `decision <form> N/M p50 … ms p95 … ms (… false approve …,
+  boundary …)` and `thresholds`; writes
+  `.local/bench/decision/decision.json` and `decision-load.json`.
 - `llm_ru_tools.py` (VOCA-4) — G3: `dialogs`, `delegate`, `all` (the default),
   `dialogs-thinking` (the twenty dialogs with thinking on, VOCA-7),
   `delegate-thinking` (the ten scenarios with thinking on);
