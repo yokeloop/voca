@@ -28,6 +28,7 @@ from livekit.agents import (
 )
 from livekit.agents.voice import Agent, AgentSession, ModelSettings, SpeechHandle
 from livekit.agents.voice.agent_activity import ActivityClosedError
+from livekit.agents.voice.events import UserStateChangedEvent
 
 from voca.clientio.cards import CardState
 from voca.conversation.approval import (
@@ -384,6 +385,9 @@ class VocaAgent(Agent):
         self.passed: list[str] = []
         self.glue_window_s = glue_window_s
         self.action_silence_s = action_silence_s
+        self.user_speaking = False
+        self.quiet_at = float("-inf")
+        self.user_changed = asyncio.Event()
 
     def set_present(self, present: bool) -> None:
         if present:
@@ -1110,6 +1114,35 @@ class VocaAgent(Agent):
         self.announcements.appendleft(item)
         self.wake.set()
 
+    def on_user_state(self, ev: UserStateChangedEvent) -> None:
+        if ev.new_state == "speaking":
+            self.user_speaking = True
+        elif ev.old_state == "speaking":
+            self.user_speaking = False
+            self.quiet_at = ev.created_at
+        self.user_changed.set()
+        self.user_changed = asyncio.Event()
+
+    async def _hold(self, handle: SpeechHandle) -> bool:
+        while not handle.interrupted:
+            left = self.action_silence_s - (self.clock() - self.quiet_at)
+            if not self.user_speaking and left <= 0:
+                return True
+            fut = asyncio.ensure_future(
+                asyncio.wait_for(
+                    self.user_changed.wait(),
+                    timeout=None if self.user_speaking else left,
+                )
+            )
+            try:
+                await handle.wait_if_not_interrupted([fut])
+            except TimeoutError:
+                pass
+            finally:
+                if not fut.done():
+                    fut.cancel()
+        return False
+
     async def _sort(self, text: str, branch: str, *, speaking: bool) -> bool:
         assert self.sorter is not None and self.sorter_prompt is not None
         agent_last = ""
@@ -1268,6 +1301,11 @@ class VocaAgent(Agent):
         if self.delegation is None:
             raise ToolError(DELEGATE_UNAVAILABLE)
         key = context.function_call.call_id
+        if not await self._hold(context.speech_handle):
+            output = {"id": short_id(key), "event": "not_sent"}
+            return llm.ToolResult(
+                json.dumps(output, ensure_ascii=False), reply_required=False
+            )
         self.in_tool.add(key)
         try:
             found = await self.delegation.delegate(key, task)

@@ -107,7 +107,11 @@ def test_cut_stream_tail(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
 
 def context(call_id: str) -> RunContext[Any]:
     return cast(
-        RunContext[Any], SimpleNamespace(function_call=SimpleNamespace(call_id=call_id))
+        RunContext[Any],
+        SimpleNamespace(
+            function_call=SimpleNamespace(call_id=call_id),
+            speech_handle=SimpleNamespace(interrupted=False),
+        ),
     )
 
 

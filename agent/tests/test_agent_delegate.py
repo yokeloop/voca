@@ -10,6 +10,7 @@ from typing import Any, Literal, cast
 import pytest
 from livekit.agents import RunContext, ToolError, llm
 from livekit.agents.voice import AgentSession
+from livekit.agents.voice.events import UserStateChangedEvent
 
 from voca.clientio.cards import CardState
 from voca.config import ApprovalConfig
@@ -260,9 +261,31 @@ class FakeSession:
         self.idles += 1
 
 
-def ctx(call_id: str) -> RunContext[Any]:
+class FakeTurn:
+    def __init__(self) -> None:
+        self.interrupted = False
+        self.stop = asyncio.Event()
+
+    def interrupt(self) -> None:
+        self.interrupted = True
+        self.stop.set()
+
+    async def wait_if_not_interrupted(self, aw: list[asyncio.Future[Any]]) -> None:
+        gathered = asyncio.ensure_future(asyncio.gather(*aw, return_exceptions=True))
+        stopped = asyncio.ensure_future(self.stop.wait())
+        await asyncio.wait({gathered, stopped}, return_when=asyncio.FIRST_COMPLETED)
+        stopped.cancel()
+        if not gathered.done():
+            gathered.cancel()
+
+
+def ctx(call_id: str, handle: FakeTurn | None = None) -> RunContext[Any]:
     return cast(
-        RunContext[Any], SimpleNamespace(function_call=SimpleNamespace(call_id=call_id))
+        RunContext[Any],
+        SimpleNamespace(
+            function_call=SimpleNamespace(call_id=call_id),
+            speech_handle=handle or FakeTurn(),
+        ),
     )
 
 
@@ -291,6 +314,7 @@ class Stand:
         limits: Limits | None = None,
         summarizer: Summarizer | None = None,
         chat_ctx: llm.ChatContext | None = None,
+        action_silence_s: float = 0.5,
     ) -> None:
         directory = tmp_path / "instructions"
         shutil.copytree(EXAMPLE, directory, dirs_exist_ok=True)
@@ -314,6 +338,7 @@ class Stand:
             summarizer=summarizer,
             delegation=self.service,
             chat_ctx=chat_ctx,
+            action_silence_s=action_silence_s,
         )
         self.service.on_change = self.agent.on_task_change
         self.history = asyncio.Event()
@@ -366,6 +391,64 @@ def test_delegate_returns_at_once(tmp_path: Path) -> None:
         assert session.calls == [
             ("Поручил Hermes: «сделай». Сообщу результат.", True, False)
         ]
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def user_state(agent: VocaAgent, old: str, new: str) -> None:
+    agent.on_user_state(
+        UserStateChangedEvent(
+            old_state=cast(Any, old), new_state=cast(Any, new), created_at=agent.clock()
+        )
+    )
+
+
+def test_delegate_holds_while_user_speaks(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path, action_silence_s=0.05)
+        stand.backend.created = ["run_1"]
+        stand.backend.runs["run_1"] = [RunState("run_1", TaskStatus.RUNNING)]
+        session = FakeSession()
+        stand.start(session)
+        stand.open()
+        user_state(stand.agent, "listening", "speaking")
+        call = asyncio.ensure_future(stand.agent.delegate(ctx("call-1"), "сделай"))
+        await asyncio.sleep(0.1)
+        assert not call.done()
+        assert stand.backend.posts == []
+        user_state(stand.agent, "speaking", "listening")
+        quiet = asyncio.get_running_loop().time()
+        await asyncio.sleep(0.02)
+        assert not call.done()
+        reply = await asyncio.wait_for(call, 1)
+        assert asyncio.get_running_loop().time() - quiet >= 0.05
+        assert json.loads(reply.output) == {"id": "call-1", "event": "submitted"}
+        assert stand.backend.posts == [("call-1", "сделай")]
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_delegate_not_sent_when_turn_interrupted(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path, action_silence_s=0.05)
+        session = FakeSession()
+        stand.start(session)
+        stand.open()
+        user_state(stand.agent, "listening", "speaking")
+        turn = FakeTurn()
+        call = asyncio.ensure_future(stand.agent.delegate(ctx("call-1", turn), "x"))
+        await asyncio.sleep(0.02)
+        turn.interrupt()
+        reply = await asyncio.wait_for(call, 1)
+        assert isinstance(reply, llm.ToolResult)
+        assert reply.reply_required is False
+        assert json.loads(reply.output) == {"id": "call-1", "event": "not_sent"}
+        assert stand.backend.posts == []
+        await settle()
+        assert session.calls == []
+        assert stand.repo.tasks == {}
         await stand.agent.stop_delegation()
 
     asyncio.run(main())
