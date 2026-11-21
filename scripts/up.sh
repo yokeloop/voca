@@ -3,7 +3,7 @@ set -euo pipefail
 . "$(dirname "$0")/env.sh"
 
 if [ "$#" -eq 0 ]; then
-  set -- livekit audio llm web agent
+  set -- livekit audio llm decision web agent
 fi
 
 run_dir="$VOCA_ROOT/.local/run"
@@ -24,8 +24,8 @@ udp_busy() {
 
 for name in "$@"; do
   case "$name" in
-    livekit | audio | llm | web | agent) ;;
-    *) fail "неизвестный сервис $name: livekit audio llm web agent" ;;
+    livekit | audio | llm | decision | web | agent) ;;
+    *) fail "неизвестный сервис $name: livekit audio llm decision web agent" ;;
   esac
   pid_file="$run_dir/$name.pid"
   if [ -f "$pid_file" ] && kill -0 "$(cat "$pid_file")" 2>/dev/null; then
@@ -59,6 +59,7 @@ for name in "$@"; do
       ;;
     audio) "$VOCA_ROOT/scripts/audiocpp.sh" --check || exit 1 ;;
     llm) "$VOCA_ROOT/scripts/llama.sh" --check || exit 1 ;;
+    decision) "$VOCA_ROOT/scripts/decision.sh" --check || exit 1 ;;
   esac
 done
 
@@ -90,6 +91,11 @@ for name in "$@"; do
     llm)
       command=("$VOCA_ROOT/scripts/llama.sh")
       ready="http://127.0.0.1:8081/health"
+      wait_s=120
+      ;;
+    decision)
+      command=("$VOCA_ROOT/scripts/decision.sh")
+      ready="http://127.0.0.1:$VOCA_DECISION_PORT/health"
       wait_s=120
       ;;
   esac

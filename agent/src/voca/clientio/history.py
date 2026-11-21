@@ -52,6 +52,10 @@ class HistoryChannel:
             return
         self.sending = asyncio.create_task(self._send(identity, self.sending))
 
+    async def sent(self) -> None:
+        while (current := self.sending) is not None and not current.done():
+            await asyncio.wait({current})
+
     async def _send(self, identity: str, previous: asyncio.Task[None] | None) -> None:
         if previous is not None:
             await previous

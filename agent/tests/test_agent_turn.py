@@ -9,6 +9,7 @@ from pathlib import Path
 from livekit.agents import llm
 
 from voca.clientio.cards import CardState
+from voca.config import ApprovalConfig
 from voca.conversation.agent import BLOCK_STRIKES, VocaAgent, records, refusal
 from voca.conversation.compaction import Limits, estimate
 from voca.conversation.instructions import InstructionLoader
@@ -16,6 +17,8 @@ from voca.conversation.summarizer import Failure, Summarizer, Summary
 from voca.telemetry.jsonl import JsonlLog
 
 EXAMPLE = Path(__file__).resolve().parents[2] / "instructions.example"
+
+VOCABULARY = ApprovalConfig().vocabulary()
 
 
 def make_agent(
@@ -36,6 +39,7 @@ def make_agent(
     events = tmp_path / "events.jsonl"
     cards = CardState(instructions)
     agent = VocaAgent(
+        vocabulary=VOCABULARY,
         loader=loader,
         instructions=instructions,
         log=JsonlLog(events, session="t"),

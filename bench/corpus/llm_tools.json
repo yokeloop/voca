@@ -1,0 +1,258 @@
+[
+  {
+    "id": "c01",
+    "history": [],
+    "user": "Отправь Hermes задачу: создай каталог /tmp/voca-c01 с файлом a.txt",
+    "expect": "delegate"
+  },
+  {
+    "id": "c02",
+    "history": [
+      {
+        "role": "user",
+        "content": "Отправь Hermes задачу: создай каталог /tmp/voca-c02 с файлом a.txt"
+      },
+      {
+        "call": "delegate",
+        "arguments": {
+          "task": "Создай каталог /tmp/voca-c02 с файлом a.txt"
+        },
+        "output": {
+          "id": "call_c02",
+          "event": "submitted"
+        }
+      }
+    ],
+    "user": "Уточни поручение: пусть ещё создаст b.txt",
+    "expect": "steer_task"
+  },
+  {
+    "id": "c03",
+    "history": [
+      {
+        "role": "user",
+        "content": "Отправь Hermes задачу: создай каталог /tmp/voca-c02 с файлом a.txt"
+      },
+      {
+        "call": "delegate",
+        "arguments": {
+          "task": "Создай каталог /tmp/voca-c02 с файлом a.txt"
+        },
+        "output": {
+          "id": "call_c03",
+          "event": "submitted"
+        }
+      }
+    ],
+    "user": "Отмени это поручение",
+    "expect": "cancel_task"
+  },
+  {
+    "id": "c04",
+    "history": [
+      {
+        "role": "user",
+        "content": "Поручи Hermes удалить каталог /tmp/voca-c04 командой rm -r"
+      },
+      {
+        "call": "delegate",
+        "arguments": {
+          "task": "Удали каталог /tmp/voca-c04 командой rm -r"
+        },
+        "output": {
+          "id": "call_c04",
+          "event": "submitted"
+        }
+      },
+      {
+        "call": "list_tasks",
+        "arguments": {},
+        "output": {
+          "id": "call_c04",
+          "event": "approval_requested",
+          "text": "Удали каталог /tmp/voca-c04 командой rm -r",
+          "request": "удаление в корневом каталоге",
+          "command": "rm -r /tmp/voca-c04",
+          "interrupted": false
+        }
+      }
+    ],
+    "user": "Повтори запрос",
+    "expect": "repeat_approval"
+  },
+  {
+    "id": "c05",
+    "history": [
+      {
+        "role": "user",
+        "content": "Поручи Hermes удалить каталог /tmp/voca-c04 командой rm -r"
+      },
+      {
+        "call": "delegate",
+        "arguments": {
+          "task": "Удали каталог /tmp/voca-c04 командой rm -r"
+        },
+        "output": {
+          "id": "call_c05",
+          "event": "submitted"
+        }
+      },
+      {
+        "call": "list_tasks",
+        "arguments": {},
+        "output": {
+          "id": "call_c04",
+          "event": "approval_requested",
+          "text": "Удали каталог /tmp/voca-c04 командой rm -r",
+          "request": "удаление в корневом каталоге",
+          "command": "rm -r /tmp/voca-c04",
+          "interrupted": false
+        }
+      }
+    ],
+    "user": "Отклони запрос",
+    "expect": "none"
+  },
+  {
+    "id": "c06",
+    "history": [],
+    "user": "Что с поручениями?",
+    "expect": "list_tasks"
+  },
+  {
+    "id": "c07",
+    "history": [
+      {
+        "role": "user",
+        "content": "Поручи Hermes удалить каталог /tmp/voca-c04 командой rm -r"
+      },
+      {
+        "call": "delegate",
+        "arguments": {
+          "task": "Удали каталог /tmp/voca-c04 командой rm -r"
+        },
+        "output": {
+          "id": "call_c07",
+          "event": "submitted"
+        }
+      },
+      {
+        "call": "list_tasks",
+        "arguments": {},
+        "output": {
+          "id": "call_c04",
+          "event": "approval_requested",
+          "text": "Удали каталог /tmp/voca-c04 командой rm -r",
+          "request": "удаление в корневом каталоге",
+          "command": "rm -r /tmp/voca-c04",
+          "interrupted": false
+        }
+      }
+    ],
+    "user": "Подтверди запрос",
+    "expect": "repeat_approval"
+  },
+  {
+    "id": "c08",
+    "history": [
+      {
+        "role": "user",
+        "content": "Поручи Hermes удалить каталог /tmp/voca-c04 командой rm -r"
+      },
+      {
+        "call": "delegate",
+        "arguments": {
+          "task": "Удали каталог /tmp/voca-c04 командой rm -r"
+        },
+        "output": {
+          "id": "call_c08",
+          "event": "submitted"
+        }
+      },
+      {
+        "call": "list_tasks",
+        "arguments": {},
+        "output": {
+          "id": "call_c04",
+          "event": "approval_requested",
+          "text": "Удали каталог /tmp/voca-c04 командой rm -r",
+          "request": "удаление в корневом каталоге",
+          "command": "rm -r /tmp/voca-c04",
+          "interrupted": false
+        }
+      }
+    ],
+    "user": "А что он хочет удалить?",
+    "expect": "none"
+  },
+  {
+    "id": "c09",
+    "history": [
+      {
+        "role": "user",
+        "content": "Поручи Hermes подождать 60 секунд и ответить готово"
+      },
+      {
+        "call": "delegate",
+        "arguments": {
+          "task": "Подожди 60 секунд и ответь готово"
+        },
+        "output": {
+          "id": "call_c09",
+          "event": "submitted"
+        }
+      },
+      {
+        "role": "user",
+        "content": "Отмени это поручение"
+      },
+      {
+        "call": "cancel_task",
+        "arguments": {
+          "id": null
+        },
+        "output": {
+          "id": "call_c09",
+          "text": "Подожди 60 секунд и ответь готово",
+          "status": "failed",
+          "error": "отменено пользователем"
+        }
+      },
+      {
+        "role": "assistant",
+        "content": "Поручение отменено."
+      }
+    ],
+    "user": "Что с той задачей?",
+    "expect": "none"
+  },
+  {
+    "id": "c10",
+    "history": [
+      {
+        "role": "user",
+        "content": "Дай задачу агенту."
+      },
+      {
+        "role": "user",
+        "content": "про найти расписание автобусов из деревни Леденцы в Нависад."
+      },
+      {
+        "call": "delegate",
+        "arguments": {
+          "task": "Найти расписание автобусов из деревни Леденцы в Нависад."
+        },
+        "output": {
+          "id": "call_c10",
+          "event": "submitted"
+        }
+      },
+      {
+        "role": "user",
+        "content": "Давай немножко поправим, давай попросим его создать файл."
+      }
+    ],
+    "user": "Эа, в которой он запишет это расписание.",
+    "expect": "steer_task"
+  }
+]

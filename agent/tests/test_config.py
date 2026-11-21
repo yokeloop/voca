@@ -1,9 +1,11 @@
+import json
 from pathlib import Path
 
 import pydantic
 import pytest
 
 from voca.config import Settings
+from voca.conversation.verdict import VERDICTS
 
 EXAMPLE = Path(__file__).resolve().parents[2] / "config.example.toml"
 
@@ -40,6 +42,10 @@ def test_defaults_without_file(monkeypatch: pytest.MonkeyPatch) -> None:
     assert settings.session.path == Path.home() / ".voca" / "sessions.sqlite3"
     assert settings.compression.model.url == "https://litellm.priney.com/v1"
     assert settings.litellm_key is None
+    assert settings.delegation.path == Path.home() / ".voca" / "tasks.sqlite3"
+    assert settings.delegation.run_timeout == 900
+    assert settings.hermes_url == ""
+    assert settings.hermes_key is None
     monkeypatch.setenv("VOCA_AGENT_PORT", "9999")
     assert Settings().agent_port == 9999
     monkeypatch.setenv("VOCA_INSTRUCTIONS_DIR", "~/x")
@@ -87,6 +93,39 @@ def test_key_only_from_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
         Settings()
 
 
+def test_delegation_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("VOCA_DELEGATION__RUN_TIMEOUT", "20")
+    assert Settings().delegation.run_timeout == 20
+    monkeypatch.setenv("VOCA_DELEGATION__PATH", "~/t.sqlite3")
+    assert Settings().delegation.path == Path.home() / "t.sqlite3"
+    monkeypatch.delenv("VOCA_DELEGATION__RUN_TIMEOUT")
+    monkeypatch.delenv("VOCA_DELEGATION__PATH")
+    write_config(tmp_path, monkeypatch, "[delegation]\nrun_timeout = 0\n")
+    with pytest.raises(ValueError):
+        Settings()
+    write_config(tmp_path, monkeypatch, "[delegation]\nunknown = 1\n")
+    with pytest.raises(pydantic.ValidationError):
+        Settings()
+
+
+def test_hermes_key_only_from_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("VOCA_HERMES_KEY", "abc")
+    key = Settings().hermes_key
+    assert key is not None
+    assert key.get_secret_value() == "abc"
+    monkeypatch.setenv("VOCA_HERMES_KEY", "")
+    assert Settings().hermes_key is None
+    monkeypatch.delenv("VOCA_HERMES_KEY")
+    monkeypatch.setenv("VOCA_HERMES_URL", "https://h.example")
+    assert Settings().hermes_url == "https://h.example"
+    monkeypatch.delenv("VOCA_HERMES_URL")
+    write_config(tmp_path, monkeypatch, 'hermes_key = "x"\n')
+    with pytest.raises(ValueError, match="VOCA_HERMES_KEY"):
+        Settings()
+
+
 def test_invalid_values(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     for text in (
         "[compression\n",
@@ -110,3 +149,112 @@ def test_example_config_is_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("VOCA_CONFIG", str(EXAMPLE))
     assert EXAMPLE.is_file()
     assert Settings().model_dump() == defaults
+
+
+def test_approval_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    approval = Settings().approval
+    assert approval.confirm == ["Подтверждаю"]
+    assert approval.deny == ["Отклоняю"]
+    assert approval.echo_words == 3
+    monkeypatch.setenv("VOCA_APPROVAL__CONFIRM", '["Принимаю", "Согласен"]')
+    vocabulary = Settings().approval.vocabulary()
+    assert vocabulary.confirm == ("Принимаю", "Согласен")
+    monkeypatch.delenv("VOCA_APPROVAL__CONFIRM")
+    write_config(
+        tmp_path,
+        monkeypatch,
+        '[approval]\ndeny = ["Запрещаю"]\necho_words = 4\n',
+    )
+    vocabulary = Settings().approval.vocabulary()
+    assert vocabulary.deny == ("Запрещаю",)
+    assert vocabulary.echo_words == 4
+    for text in ('[approval]\nconfirm = ["Да ладно"]\n', "[approval]\nconfirm = []\n"):
+        write_config(tmp_path, monkeypatch, text)
+        with pytest.raises(pydantic.ValidationError):
+            Settings()
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        '[approval]\nconfirm = ["Подтверждаю"]\ndeny = ["подтверждаю"]\n',
+        '[approval]\nconfirm = ["Подтверждаю"]\ndeny = ["ПОДТВЕРЖДАЮ"]\n',
+        '[approval]\nrefusal_words = ["нет"]\n',
+        "[approval]\nnear = 2\n",
+        "[approval]\necho_words = 0\n",
+    ],
+)
+def test_approval_settings_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, text: str
+) -> None:
+    write_config(tmp_path, monkeypatch, text)
+    with pytest.raises(pydantic.ValidationError):
+        Settings()
+
+
+def test_approval_words_disjoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write_config(
+        tmp_path, monkeypatch, '[approval]\nconfirm = ["Ёлка"]\ndeny = ["елка"]\n'
+    )
+    with pytest.raises(pydantic.ValidationError):
+        Settings()
+    write_config(
+        tmp_path, monkeypatch, '[approval]\nconfirm = ["Да"]\ndeny = ["Дай"]\n'
+    )
+    assert Settings().approval.vocabulary().deny == ("Дай",)
+
+
+def test_decision_defaults() -> None:
+    decision = Settings().decision
+    assert decision.enabled is True
+    assert decision.url == "http://127.0.0.1:8086"
+    assert decision.model == "d1-2B"
+    assert decision.timeout_s == 1.5
+    prompt = decision.prompt()
+    assert prompt.threshold == 0.6
+    assert set(prompt.verdicts) == set(VERDICTS)
+    assert all(text.strip() for text in prompt.verdicts.values())
+    assert prompt.instructions.strip()
+
+
+def test_decision_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("VOCA_DECISION__URL", "http://127.0.0.1:9999")
+    monkeypatch.setenv("VOCA_DECISION__ENABLED", "false")
+    verdicts = {name: f"свой текст {name}" for name in VERDICTS}
+    monkeypatch.setenv("VOCA_DECISION__VERDICTS", json.dumps(verdicts))
+    decision = Settings().decision
+    assert decision.url == "http://127.0.0.1:9999"
+    assert decision.enabled is False
+    assert decision.prompt().verdicts == verdicts
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        '[decision.verdicts]\napprove = "a"\ndeny = "d"\nrepeat = "r"\nunrelated = "u"\nunclear = "c"\n',
+        (
+            '[decision.verdicts]\napprove = "a"\napprove_more = "am"\ndeny = "d"\n'
+            'deny_more = "dm"\nrepeat = "r"\nunrelated = "u"\nunclear = "c"\nmaybe = "m"\n'
+        ),
+        (
+            '[decision.verdicts]\napprove = " "\napprove_more = "am"\ndeny = "d"\n'
+            'deny_more = "dm"\nrepeat = "r"\nunrelated = "u"\nunclear = "c"\n'
+        ),
+        '[decision]\ninstructions = ""\n',
+        "[decision]\nextra_threshold = 0.5\n",
+        '[decision]\nurl = ""\n',
+        '[decision]\nmodel = ""\n',
+        "[decision]\nthreshold = 0\n",
+        "[decision]\nthreshold = 1.5\n",
+        '[decision]\nextra = "x"\n',
+        "[decision]\ntimeout_s = 0\n",
+    ],
+)
+def test_decision_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, text: str
+) -> None:
+    write_config(tmp_path, monkeypatch, text)
+    with pytest.raises(pydantic.ValidationError):
+        Settings()

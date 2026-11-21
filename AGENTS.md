@@ -11,22 +11,29 @@ Hermes. This file is the working contract for agents and contributors.
   `voca agent {dev|start|console}` runs the LiveKit worker: `app/worker.py`
   (prewarm, entrypoint, `WorkerOptions`), `app/wiring.py` (the plugins,
   `PreparedTTS`, `build_session`, `SpeechLanguageClient`), `conversation/`
-  (`VocaAgent`: the tool-call markup filter in `llm_node`, the `delegate`
-  stub, instructions, accepting a finished summary and the emergency context
-  trim in `on_user_turn_completed`, the threshold trigger `maybe_compact`,
+  (`VocaAgent`: the tool-call markup filter in `llm_node`, the `delegate`,
+  `list_tasks`, `cancel_task`, `steer_task` and `repeat_approval`
+  tools, the delegation facts in the context and the delivery of results, approval announcements and the reply to an active request judged first in `on_user_turn_completed` (echo, decision model, fallback word), instructions, accepting a finished
+  summary and the emergency context trim in `on_user_turn_completed`, the threshold trigger `maybe_compact`,
   the idle and daily check `check_due`, failures spoken aloud;
   `instructions.py`: `InstructionLoader` with the last valid set; `context.py`: `trim_chat_ctx` — the emergency path at
-  `hard_limit`; `compaction.py`: the compaction plan and the summariser
+  `hard_limit`; `approval.py`: the fallback phrase parse (the exact first word, the tail), the echo check and the hint texts; `verdict.py`: the decision model's request body and answer reading (pure); `decision.py`: `DecisionClient`, the HTTP adapter of `POST /v1/systemone`; `descriptions.py`: the Russian descriptions of Hermes approval requests; `compaction.py`: the compaction plan and the summariser
   prompt; `summarizer.py`: the call to `[compression.model]`), `clientio/`
-  (the `voca.cards` and `voca.history` channels), `telemetry/` (`.local/events.jsonl`), `session/`
+  (the `voca.cards` and `voca.history` channels, the `tasks` list on join, `actions.py`: the page's RPC), `telemetry/` (`.local/events.jsonl`), `session/`
   (`SessionStore`: the session snapshot and the archive in one SQLite file,
-  «Session store»; `voca archive search`), `config.py` (`Settings`: the
+  «Session store»; `voca archive search`), `delegation/` (`DelegationService`:
+  tasks given to Hermes through the Runs API, the state machine, polling, the
+  deadline with `/stop`, `recover()` and `approve()`; `hermes.py` — the Runs
+  API adapter and the only status mapping; `sqlite.py` — the task file
+  `[delegation].path`; `voca bench delegate`), `config.py` (`Settings`: the
   environment and the agent config file, «Agent config»).
   `agent/src/voca/speech/` prepares text before TTS: the tool-call markup
-  filter, LaTeX and tables, numbers as words, stress and the first fragment.
+  filter, LaTeX and tables, the quotes audio.cpp rejects (`„‟‚‹` → `«`,
+  `“”›` → `»`), numbers as words, stress and the first fragment.
   `markup`, `numbers`, `prepare`, `conversation/context`,
-  `conversation/compaction`, `conversation/instructions` and `session/model`
-  are pure modules, which
+  `conversation/compaction`, `conversation/approval`, `conversation/descriptions`, `conversation/verdict`, `conversation/instructions`, `session/model`,
+  `delegation/model`, `delegation/ports` and `delegation/service` are pure
+  modules, which
   `tests/test_import_boundaries.py` checks.
 - `instructions.example/` — a sample `SOUL.md`, `user.md` and `agent.md`; the
   real files live outside the repository, in `VOCA_INSTRUCTIONS_DIR`.
@@ -36,7 +43,7 @@ Hermes. This file is the working contract for agents and contributors.
   writes `web/dist/`, which `voca web` serves.
 - `bench/` — stand scripts and their reports; they run in the `agent/`
   environment (`bench/README.md`).
-- `scripts/` — the stand: `up.sh`, `down.sh`, `fetch.sh`, `env.sh`, the
+- `scripts/` — the stand: `up.sh`, `down.sh`, `fetch.sh`, `env.sh`, `decision.sh`, the
   `SHA256SUMS` of every download, the audio.cpp `server.json` template and
   `llm-profiles/`, one llama-server model profile per file.
 - `.local/` — only what VOCA itself creates: logs, pid files, the assembled
@@ -80,7 +87,7 @@ stand's downloads; it is a stand check, not a CI check.
 | `VOCA_LIVEKIT_BIN` | `$VOCA_APPS_DIR/livekit/1.13.11/livekit-server` | livekit-server release binary |
 | `VOCA_AUDIOCPP_BIN` | `$VOCA_APPS_DIR/audio.cpp/0.9.4/audiocpp_server` | audio.cpp server release binary (CPU); its ggml libraries sit next to it |
 | `VOCA_LLAMA_BIN` | `$VOCA_APPS_DIR/llama.cpp/llama-b12167/llama-server` | llama-server of the llama.cpp CUDA release; its libraries sit next to it |
-| `VOCA_LLM_PROFILE` | `lfm2.5-2.6b` | llama-server model profile, `scripts/llm-profiles/<name>.sh`; only this model is loaded. `lfm2.5-2.6b` is the agent's model; `bolt-e4b` and `lfm3-1.7b` are alternatives, set explicitly |
+| `VOCA_LLM_PROFILE` | `bolt-e4b` | llama-server model profile, `scripts/llm-profiles/<name>.sh`; only this model is loaded. `bolt-e4b` is the agent's model; `lfm2.5-2.6b` and `lfm3-1.7b` are alternatives, set explicitly |
 | `VOCA_LIVEKIT_NODE_IP` | `127.0.0.1` | `--node-ip`: the address livekit-server announces for media |
 | `VOCA_LIVEKIT_API_KEY` | `devkey` | Key that signs tokens; the built-in key of `livekit-server --dev` |
 | `VOCA_LIVEKIT_API_SECRET` | `secret` | Secret that signs tokens; the built-in secret of `livekit-server --dev` |
@@ -90,10 +97,15 @@ stand's downloads; it is a stand check, not a CI check.
 | `VOCA_LIVEKIT_URL` | `ws://127.0.0.1:7880` | LiveKit URL the agent worker connects to |
 | `VOCA_AUDIO_URL` | `http://127.0.0.1:8082/v1` | audio.cpp API of the agent's STT and TTS |
 | `VOCA_LLM_URL` | `http://127.0.0.1:8081/v1` | llama-server API of the agent's LLM |
+| `VOCA_DECISION_MODEL` | `$VOCA_MODELS_DIR/LiquidAI/d1-2B-Q4_K_M.gguf` | GGUF of the decision model for `scripts/decision.sh` |
+| `VOCA_DECISION_PORT` | `8086` | Port of the decision model's llama-server (127.0.0.1) |
+| `VOCA_DECISION_THREADS` | `4` | CPU threads of the decision model (`-t`) |
+| `VOCA_DECISION_NGL` | `99` | GPU layers of the decision model (`-ngl`); `0` runs it on the CPU |
+| `VOCA_DECISION__URL` | `http://127.0.0.1:$VOCA_DECISION_PORT` | `[decision].url` of the agent: where it asks the decision model |
 | `VOCA_AGENT_PORT` | `8084` | Health port of the agent worker (127.0.0.1) |
 | `VOCA_STATE_DIR` | `$VOCA_ROOT/.local` | Directory of the agent's `events.jsonl` |
-| `VOCA_HERMES_URL` | empty | Hermes API server URL for `bench/hermes_runs.py`; `https://hermes.priney.com` on the stand |
-| `VOCA_HERMES_KEY` | empty | `API_SERVER_KEY` of the Hermes profile; a secret, only in `.env` |
+| `VOCA_HERMES_URL` | empty | Hermes API server URL for `bench/hermes_runs.py` and the agent (`voca bench delegate`, the `delegate` tool); `https://hermes-voca.priney.com` (the Hermes profile `voca`) on the stand |
+| `VOCA_HERMES_KEY` | empty | `API_SERVER_KEY` of the Hermes profile `voca`; read by `bench/hermes_runs.py` and the agent; a secret, only in `.env` |
 | `VOCA_LITELLM_KEY` | empty | LiteLLM virtual key `voca` for `https://litellm.priney.com` (the session summariser); a secret, only in `.env` |
 
 Everything downloaded lives outside the clone, in the machine's shared
@@ -119,10 +131,32 @@ a section) are no longer read.
 - `[session]` — the session history file and how much of it a client gets.
 - `[compression]` — the compression triggers and the trim.
 - `[compression.model]` — the summariser.
+- `[delegation]` — the task file and the run deadline.
+- `[approval]` — `confirm` and `deny` (single words; the first of each is
+  spoken in the announcement and shown on the card; an exact first word is
+  the fallback answer when the decision model is unavailable) and
+  `echo_words` (words in a row of the announcement that make an echo). No
+  word of the voice protocol is in the code. A `confirm` word equal to a
+  `deny` word after normalisation is refused.
+- `[decision]` — the decision model of voice approval: `enabled` (true),
+  `url` (`http://127.0.0.1:8086`, env `VOCA_DECISION__URL`, set by
+  `scripts/env.sh`), `model` (`d1-2B`), `timeout_s` (1.5), `threshold` (0.6,
+  a lower confidence is `unclear`), `instructions` (the question) and
+  `verdicts` (exactly `approve`, `approve_more`, `deny`, `deny_more`,
+  `repeat`, `unrelated`, `unclear`, each with its Russian description). Empty
+  texts, a missing or an unknown verdict are refused. The model file is not
+  here: `VOCA_DECISION_MODEL` for `scripts/decision.sh`.
 
 `[session].history_on_join` is how many archive rows a joining client gets
 in `voca.history` («Client channel»); `[session].path` is the session store
 («Session store»).
+
+`[delegation].path` (default `~/.voca/tasks.sqlite3`, env
+`VOCA_DELEGATION__PATH`) is the task file: the directory 0700 and the file 0600
+when VOCA creates them, WAL, migrations by `user_version`; a newer schema is
+refused. It is separate from the session store and is backed up with `~/.voca/`
+(E5). `[delegation].run_timeout` (900 s, `VOCA_DELEGATION__RUN_TIMEOUT`) counts
+from a task's creation; after it VOCA sends `/stop` to the run.
 
 Trim: above `hard_limit · context_tokens` estimated tokens (`len(text) // 3`)
 the oldest turns are dropped until `trim_to · context_tokens` remain. The rules
@@ -134,7 +168,9 @@ the start of each job the agent reads `GET /props` of llama-server and writes a
 `context_mismatch` line when `n_ctx` differs.
 
 The summariser key comes only from `VOCA_LITELLM_KEY` (the table above);
-`litellm_key`, `api_key` and any unknown key in the file are rejected. A file
+`litellm_key`, `api_key` and any unknown key in the file are rejected. The
+Hermes URL and key come only from the environment (`VOCA_HERMES_URL`,
+`VOCA_HERMES_KEY`); `hermes_key` in the file is rejected. A file
 with an error makes `voca agent` print `конфиг не прочитан` with the path and
 exit with code 1.
 
@@ -177,14 +213,14 @@ plus a path variable with its default in `scripts/env.sh` and `.env.example`.
 
 ## Stand
 
-`scripts/up.sh [livekit|audio|llm|web|agent …]` (no arguments: all five) checks
+`scripts/up.sh [livekit|audio|llm|decision|web|agent …]` (no arguments: all six) checks
 every named service first and starts nothing when a check fails: the binary or
 build exists, the service is not already running, its ports are free; for
 `agent` — `agent/.venv/bin/voca`, the ruaccent `koziev` link
 (`scripts/ruaccent-setup.sh`) and `VOCA_AGENT_PORT`. It then starts them in
 order with logs in `.local/logs/<name>.log` and pids in
-`.local/run/<name>.pid`, and waits up to 20 s for each (120 s for `audio` and
-`llm`, 60 s for `agent`). `agent` runs `voca agent start`; it is ready when
+`.local/run/<name>.pid`, and waits up to 20 s for each (120 s for `audio`,
+`llm` and `decision`, 60 s for `agent`). `agent` runs `voca agent start`; it is ready when
 `http://127.0.0.1:$VOCA_AGENT_PORT/` answers 200 (503 until the worker has
 registered with livekit-server). `scripts/down.sh [names…]` stops them in
 reverse order, `agent` first.
@@ -200,6 +236,14 @@ and its port (8082) is free; with `--check` it stops there. Otherwise it `exec`s
 `$VOCA_MODELS_DIR/ruaccent/accentuator-b78ae5e/` against `SHA256SUMS` and links
 them into the `ruaccent` package of `agent/.venv`; it is idempotent, and
 `bench/tts_pipeline.py` stops without the link.
+
+`scripts/decision.sh [--check]` checks `VOCA_LLAMA_BIN`, the model
+`VOCA_DECISION_MODEL` (LiquidAI `d1-2B-Q4_K_M.gguf`, in `SHA256SUMS`) and that
+port `VOCA_DECISION_PORT` (8086) is free; with `--check` it stops there.
+Otherwise it `exec`s llama-server with `--alias d1-2B`, `127.0.0.1:8086`,
+`-c 2048`, `--parallel 1`, `-t $VOCA_DECISION_THREADS` (4), `-ngl
+$VOCA_DECISION_NGL` (99: the GPU; `0` runs it on the CPU) and `--cache-ram
+256`. The agent calls `POST /v1/systemone`.
 
 `scripts/llama.sh [--check]` sources the profile
 `scripts/llm-profiles/$VOCA_LLM_PROFILE.sh` (README 0.3.1), which sets `model`
@@ -243,8 +287,42 @@ classes come from `livekit-api` in the `agent/` environment.
   connects and on every change.
 - A component is `down` after an unrecoverable error and `ok` after the first
   metric of that stage.
-- `hermes` is not sent in E1; `instructions_error` is an addition to
-  `derive:eb1id854:§5`.
+- `instructions_error` is an addition to `derive:eb1id854:§5`;
+  `components.hermes` is not sent: tasks travel as `task` messages.
+- The agent sends a JSON `task` message on `voca.cards` on every change of a
+  task given to Hermes: `{"type": "task", "tool_call_id", "status":
+  "queued"|"running"|"waiting_approval"|"unknown"|"succeeded"|"failed",
+  "text", "result": string|null, "error": string|null, "created_at",
+  "delivered_at": number|null, "approval": {"description", "command",
+  "choices", "request_id", "hint"}|null}`. `approval` is set only while the task is
+  `waiting_approval`. `task`, `state` and `tasks` share one send chain, so
+  their order is kept. The agent sends them from the `delegate` tool, its
+  watchers and the delivery.
+- The agent sends a JSON `tasks` message on `voca.cards` to one participant
+  (`destination_identities`): `{"type": "tasks", "tasks": [...]}` — the same
+  objects without `type`, every task in `[delegation].path`, newest first, no
+  limit. Like `history`, it goes out when a participant connects and after
+  `ctx.wait_for_participant()` for a participant that joined before the job,
+  each time after `state`. When the task file does not open, the agent logs
+  `task store not opened` to `.local/logs/agent.log`, keeps running and sends
+  no `tasks` message.
+- The page replaces its task block with every `tasks` message; a `task`
+  message updates one card by `tool_call_id`, and a new one goes on top.
+- The task block is separate from the transcript: neither `history` nor a
+  disconnect clears it. A card shows the status, the text, the full result,
+  the error and «озвучено» once `delivered_at` is set. A `waiting_approval`
+  card also shows `description`, `command`, the agent's `hint` (built from
+  `[approval]`: «Подтвердите на экране или скажите „<confirm>“ или „<deny>“»)
+  and the buttons «Подтвердить» and «Отклонить»
+  (only with a `request_id`); every open card has «Отменить задачу».
+- The page calls RPC methods of the agent participant (the one with
+  `lk.agent.state`): `voca.approve` with `{"tool_call_id", "request_id",
+  "choice": "once"|"deny"}` and `voca.cancel_task` with `{"tool_call_id"}`,
+  response timeout 45 s; `voca.cancel_task` answers once the cancel has
+  started, its outcome comes as a `task` message. The answer is `{"ok": true}` or `{"ok": false,
+  "error"}`; an invalid payload gives «неверный запрос». The agent answers a
+  request only when `request_id` matches the waiting one, speaks nothing and
+  puts a fact into the model's context.
 - The agent sends a JSON `history` message on the text stream topic
   `voca.history` to one participant (`destination_identities`):
   `{"type": "history", "session_id", "items": [{"id", "at", "who":
@@ -388,6 +466,7 @@ classes come from `livekit-api` in the `agent/` environment.
 | 8082 TCP | audio.cpp server (127.0.0.1) |
 | 8081 TCP | llama-server (127.0.0.1) |
 | 8084 TCP | voca agent health (127.0.0.1, `VOCA_AGENT_PORT`) |
+| 8086 TCP | llama-server of the decision model d1-2B (127.0.0.1, `VOCA_DECISION_PORT`; GPU by default) |
 
 Deviation from `derive:eb1id854:§1`: `voca web` listens on 8083, not 8090,
 because 8090 is taken on the stand host (hyperhdr).
@@ -398,8 +477,14 @@ Further deviations from `derive:eb1id854` (E1 research, VOCA-11):
   endpoint, not `dev` and a log line.
 - О5: the worker reads `VOCA_LIVEKIT_URL` and `VOCA_LIVEKIT_API_*`, not
   `LIVEKIT_*`; `ws_url` is passed to the worker explicitly.
-- О7: the agent has a `delegate` stub that raises
-  `ToolError("Делегирование сейчас недоступно")`, not «1.1 without delegate».
+- О7 (closed in VOCA-33): the stub is gone; the `delegate` tool gives the
+  task to Hermes.
+
+Deviation from `derive:8kki4ynb:§6` and `derive:eb1id854:§5` (VOCA-32): the
+page gets the task list as an addressed `tasks` message on `voca.cards`, not
+from the RPC `voca.list_tasks`. RPC v1 caps a response at 15 KB (1504
+«Response payload too large»); the stand list with one long result was
+43208 bytes. A text stream has no such cap, as with `voca.history`.
 
 ## References
 

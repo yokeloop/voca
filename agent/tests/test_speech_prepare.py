@@ -48,3 +48,13 @@ def test_leftover_digits_spelled() -> None:
 
 def test_spell_digits_counts_sequences() -> None:
     assert spell_digits("A1 B20") == ("A один B два ноль", 2)
+
+
+def test_prepare_maps_rejected_quotes() -> None:
+    text = "Скажите „Подтверждаю“ или „Отклоняю”, ‟да‟, ‚нет‘ и ‹может›."
+    assert prepare(text, same).text == (
+        "Скажите «Подтверждаю» или «Отклоняю», «да«, «нет‘ и «может»."
+    )
+    assert prepare("«Ёлка» и \"дом\" и 'сад' и ’", same).text == (
+        "«Ёлка» и \"дом\" и 'сад' и ’"
+    )

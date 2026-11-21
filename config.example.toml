@@ -63,3 +63,44 @@ url = "https://litellm.priney.com/v1"
 model = "glm-5.3-flash"
 # Request timeout in seconds.
 timeout_s = 60
+
+[delegation]
+# Hermes URL and key are not written here: VOCA_HERMES_URL and VOCA_HERMES_KEY in .env only.
+# Tasks given to Hermes (voca bench delegate, later the agent's delegate tool).
+path = "~/.voca/tasks.sqlite3"
+# Seconds from the task's creation after which VOCA sends /stop to the run.
+run_timeout = 900
+
+[approval]
+# confirm/deny: the hint of the announcement and the card, and the fallback when the decision model
+# is unavailable: the exact first word answers the request. Matching lowers case and folds ё to е.
+confirm = ["Подтверждаю"]
+deny = ["Отклоняю"]
+# A phrase repeating this many words in a row of the announcement is its echo.
+echo_words = 3
+
+[decision]
+# The decision model judges the user's reply to an active approval request (VOCA-36):
+# LiquidAI d1-2B on scripts/decision.sh, GPU by default, VOCA_DECISION_NGL=0 in .env runs it on the CPU.
+# The model file is VOCA_DECISION_MODEL in .env (scripts do not read this file).
+# false: every reply takes the fallback (the exact first word of [approval]).
+enabled = true
+# POST <url>/v1/systemone; scripts/env.sh exports VOCA_DECISION__URL, which overrides this.
+url = "http://127.0.0.1:8086"
+model = "d1-2B"
+# Seconds to wait for the verdict; on timeout the fallback answers.
+timeout_s = 1.5
+# A verdict with lower confidence counts as unclear («Не разобрал…»).
+threshold = 0.6
+instructions = "Ассистент озвучил запрос подтверждения команды и ждёт ответа пользователя. Что пользователь отвечает этой фразой на запрос?"
+
+[decision.verdicts]
+# Exactly these seven; approve/deny answer and stop the turn, *_more answer and pass the phrase on,
+# repeat plays the announcement again, unrelated goes to the main model, unclear says «Не разобрал…».
+approve = "Пользователь разрешает выполнить команду: подтверждает, соглашается, разрешает, и больше ничего не просит"
+approve_more = "Пользователь разрешает выполнить команду, и во фразе есть ещё вопрос, просьба или поручение"
+deny = "Пользователь запрещает команду: отклоняет, отказывается, просит не выполнять её, и больше ничего не просит"
+deny_more = "Пользователь запрещает команду, и во фразе есть ещё вопрос, просьба или поручение"
+repeat = "Пользователь просит повторить или ещё раз озвучить запрос"
+unrelated = "Фраза не отвечает на запрос: вопрос, просьба, новое поручение или разговор о другом"
+unclear = "Ответ неясен: колебание, оговорка, противоречие или обрывок, по которому решение не понять"

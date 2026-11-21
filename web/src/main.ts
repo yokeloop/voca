@@ -1,14 +1,17 @@
 import { ConnectionState, DisconnectReason, type Room } from "livekit-client";
-import { connect, deviceName, disconnect, type Handlers } from "./room";
+import { act, connect, deviceName, disconnect, type Handlers } from "./room";
 import {
   render,
   replaceHistory,
+  replaceTasks,
   setCards,
   setConnected,
   setErrorLine,
   setState,
+  setTaskActions,
   stateLabel,
   upsertSegment,
+  upsertTask,
 } from "./ui";
 
 const DELAYS = [1000, 2000, 4000, 8000, 15000];
@@ -21,6 +24,19 @@ const app = document.querySelector<HTMLElement>("#app");
 if (app) {
   const button = render(app);
   let room: Room | undefined;
+  setTaskActions(async ({ kind, card }) => {
+    if (room === undefined) {
+      return { ok: false, error: "нет подключения" };
+    }
+    if (kind === "cancel") {
+      return act(room, "voca.cancel_task", { tool_call_id: card.tool_call_id });
+    }
+    return act(room, "voca.approve", {
+      tool_call_id: card.tool_call_id,
+      request_id: card.approval?.request_id ?? "",
+      choice: kind === "approve" ? "once" : "deny",
+    });
+  });
   let connection = ConnectionState.Disconnected;
   let agent: string | undefined;
   let wanted = false;
@@ -75,6 +91,16 @@ if (app) {
       history(items) {
         if (live()) {
           replaceHistory(items);
+        }
+      },
+      tasks(cards) {
+        if (live()) {
+          replaceTasks(cards);
+        }
+      },
+      task(card) {
+        if (live()) {
+          upsertTask(card);
         }
       },
       agentState(state) {

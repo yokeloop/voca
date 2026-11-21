@@ -18,6 +18,10 @@ from pydantic_settings import (
     TomlConfigSettingsSource,
 )
 
+from voca.conversation.approval import Vocabulary, normalize
+from voca.conversation.verdict import VERDICTS, Prompt
+
+WORD = re.compile(r"^\w+$")
 DAILY_AT = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 
 
@@ -51,6 +55,88 @@ class AgentConfig(BaseModel):
     aec_warmup: float = 3.0
     endpointing_min_delay: float = 0.5
     preemptive_generation: bool = False
+
+
+class ApprovalConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    confirm: list[str] = Field(default=["Подтверждаю"], min_length=1)
+    deny: list[str] = Field(default=["Отклоняю"], min_length=1)
+    echo_words: int = Field(default=3, ge=1)
+
+    @field_validator("confirm", "deny")
+    @classmethod
+    def single_words(cls, value: list[str]) -> list[str]:
+        for word in value:
+            if not WORD.match(word):
+                raise ValueError(f"ключевое слово — одно слово: {word!r}")
+        return value
+
+    @model_validator(mode="after")
+    def distinct_words(self) -> Self:
+        for confirm in self.confirm:
+            for deny in self.deny:
+                if normalize(confirm) == normalize(deny):
+                    raise ValueError(f"confirm {confirm!r} и deny {deny!r} совпадают")
+        return self
+
+    def vocabulary(self) -> Vocabulary:
+        return Vocabulary(
+            confirm=tuple(self.confirm),
+            deny=tuple(self.deny),
+            echo_words=self.echo_words,
+        )
+
+
+class DecisionConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    url: str = "http://127.0.0.1:8086"
+    model: str = "d1-2B"
+    timeout_s: float = Field(default=1.5, gt=0)
+    threshold: float = Field(default=0.6, gt=0, le=1)
+    instructions: str = (
+        "Ассистент озвучил запрос подтверждения команды и ждёт ответа "
+        "пользователя. Что пользователь отвечает этой фразой на запрос?"
+    )
+    verdicts: dict[str, str] = {
+        "approve": "Пользователь разрешает выполнить команду: подтверждает, "
+        "соглашается, разрешает, и больше ничего не просит",
+        "approve_more": "Пользователь разрешает выполнить команду, и во фразе "
+        "есть ещё вопрос, просьба или поручение",
+        "deny": "Пользователь запрещает команду: отклоняет, отказывается, "
+        "просит не выполнять её, и больше ничего не просит",
+        "deny_more": "Пользователь запрещает команду, и во фразе есть ещё "
+        "вопрос, просьба или поручение",
+        "repeat": "Пользователь просит повторить или ещё раз озвучить запрос",
+        "unrelated": "Фраза не отвечает на запрос: вопрос, просьба, новое "
+        "поручение или разговор о другом",
+        "unclear": "Ответ неясен: колебание, оговорка, противоречие или обрывок, "
+        "по которому решение не понять",
+    }
+
+    @model_validator(mode="after")
+    def complete(self) -> Self:
+        if set(self.verdicts) != set(VERDICTS):
+            raise ValueError("decision.verdicts: нужны " + ", ".join(VERDICTS))
+        texts = {
+            "instructions": self.instructions,
+            "url": self.url,
+            "model": self.model,
+            **{f"verdicts.{name}": text for name, text in self.verdicts.items()},
+        }
+        for name, text in texts.items():
+            if not text.strip():
+                raise ValueError(f"decision.{name}: пустой текст")
+        return self
+
+    def prompt(self) -> Prompt:
+        return Prompt(
+            instructions=self.instructions,
+            verdicts=dict(self.verdicts),
+            threshold=self.threshold,
+        )
 
 
 class SessionConfig(BaseModel):
@@ -105,6 +191,18 @@ class CompressionConfig(BaseModel):
         return self
 
 
+class DelegationConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: Path = Field(default=Path("~/.voca/tasks.sqlite3"), validate_default=True)
+    run_timeout: float = Field(default=900.0, gt=0)
+
+    @field_validator("path")
+    @classmethod
+    def expand_path(cls, value: Path) -> Path:
+        return value.expanduser()
+
+
 class ConfigFile(TomlConfigSettingsSource):
     def __call__(self) -> dict[str, Any]:
         data = super().__call__()
@@ -112,6 +210,11 @@ class ConfigFile(TomlConfigSettingsSource):
             raise ValueError(
                 f"{config_path()}: litellm_key в файле не читается — "
                 "ключ только в VOCA_LITELLM_KEY"
+            )
+        if "hermes_key" in data:
+            raise ValueError(
+                f"{config_path()}: hermes_key в файле не читается — "
+                "ключ только в VOCA_HERMES_KEY"
             )
         return data
 
@@ -129,22 +232,27 @@ class Settings(BaseSettings):
     livekit_url: str = "ws://127.0.0.1:7880"
     audio_url: str = "http://127.0.0.1:8082/v1"
     llm_url: str = "http://127.0.0.1:8081/v1"
-    llm_profile: str = "lfm2.5-2.6b"
+    llm_profile: str = "bolt-e4b"
     agent_port: int = 8084
     state_dir: Path = Field(default_factory=default_state_dir)
     instructions_dir: Path = Path("~/.voca/instructions")
     litellm_key: SecretStr | None = None
+    hermes_url: str = ""
+    hermes_key: SecretStr | None = None
     model: ModelConfig = Field(default_factory=ModelConfig)
     agent: AgentConfig = Field(default_factory=AgentConfig)
     session: SessionConfig = Field(default_factory=SessionConfig)
     compression: CompressionConfig = Field(default_factory=CompressionConfig)
+    delegation: DelegationConfig = Field(default_factory=DelegationConfig)
+    approval: ApprovalConfig = Field(default_factory=ApprovalConfig)
+    decision: DecisionConfig = Field(default_factory=DecisionConfig)
 
     @field_validator("instructions_dir")
     @classmethod
     def expand_instructions_dir(cls, value: Path) -> Path:
         return value.expanduser()
 
-    @field_validator("litellm_key", mode="before")
+    @field_validator("litellm_key", "hermes_key", mode="before")
     @classmethod
     def empty_key_is_none(cls, value: object) -> object:
         return None if value == "" else value
