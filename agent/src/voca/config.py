@@ -53,8 +53,8 @@ class AgentConfig(BaseModel):
     interruption_min_duration: float = 0.5
     interruption_min_words: int = 0
     aec_warmup: float = 3.0
-    endpointing_min_delay: float = 0.5
-    preemptive_generation: bool = False
+    endpointing_min_delay: float = 0.2
+    preemptive_generation: bool = True
     glue_window_s: float = Field(default=3.0, gt=0)
     action_silence_s: float = Field(default=0.5, ge=0)
 

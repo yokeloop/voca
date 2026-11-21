@@ -28,8 +28,8 @@ def test_defaults_without_file(monkeypatch: pytest.MonkeyPatch) -> None:
     assert agent.interruption_min_duration == 0.5
     assert agent.interruption_min_words == 0
     assert agent.aec_warmup == 3.0
-    assert agent.endpointing_min_delay == 0.5
-    assert agent.preemptive_generation is False
+    assert agent.endpointing_min_delay == 0.2
+    assert agent.preemptive_generation is True
     model = settings.model
     assert model.thinking_budget == 128
     assert model.context_tokens == 16384

@@ -25,10 +25,10 @@ interruption_min_duration = 0.5
 interruption_min_words = 0
 # Seconds from the start of the session's first agent reply during which interruptions are ignored (once per session); G5 tunes it.
 aec_warmup = 3.0
-# Seconds of silence before the user's turn ends; G6 tunes it.
-endpointing_min_delay = 0.5
-# Start the reply before the user's turn ends; G6 measures it.
-preemptive_generation = false
+# Seconds of silence before the user's turn ends; G6 tunes it, measured in VOCA-46.
+endpointing_min_delay = 0.2
+# Start the reply before the user's turn ends; measured in VOCA-46.
+preemptive_generation = true
 # Seconds between the end of an unanswered fragment and the next reply within which they are glued into one turn.
 glue_window_s = 3.0
 # Seconds of user silence `delegate` waits before sending a task to Hermes.

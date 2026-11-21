@@ -52,8 +52,8 @@ def test_build_session_options() -> None:
             assert options.interruption["mode"] == "vad"
             assert options.interruption["min_duration"] == 0.5
             assert options.interruption["min_words"] == 0
-            assert options.preemptive_generation["enabled"] is False
-            assert options.endpointing["min_delay"] == 0.5
+            assert options.preemptive_generation["enabled"] is True
+            assert options.endpointing["min_delay"] == 0.2
             assert options.aec_warmup_duration == 3.0
             assert options.tts_text_transforms == TTS_TEXT_TRANSFORMS
             assert session.vad is vad
