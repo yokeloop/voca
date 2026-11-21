@@ -10,24 +10,34 @@ from typing import Any, Literal, cast
 import pytest
 from livekit.agents import RunContext, ToolError, llm, stt
 from livekit.agents.voice import AgentSession
-from livekit.agents.voice.events import UserInputTranscribedEvent, UserStateChangedEvent
+from livekit.agents.voice.events import (
+    AgentStateChangedEvent,
+    UserInputTranscribedEvent,
+    UserStateChangedEvent,
+)
 
 from voca.clientio.cards import CardState
 from voca.config import ApprovalConfig, DecisionConfig
 from voca.conversation import agent as agent_module
 from voca.conversation.agent import (
+    EVENT_PROMPT,
+    EVENT_SILENCE_S,
     SPEECH_LIMIT,
     UNHEARD_RETRY_S,
     VocaAgent,
+    announcement_text,
     clip,
-    delivery_text,
+    events_prompt,
+    last_message_at,
+    notification_view,
+    records,
     result_outcome,
 )
 from voca.conversation.compaction import Limits
 from voca.conversation.instructions import InstructionLoader
 from voca.conversation.summarizer import Failure, Summarizer, Summary
 from voca.conversation.verdict import DecisionFailure, Sorted
-from voca.delegation.events import Event, EventState
+from voca.delegation.events import Event, EventState, arrival
 from voca.delegation.model import Task, TaskStatus
 from voca.delegation.ports import OutcomeUnknown, Rejected, RunState
 from voca.delegation.service import DelegationService
@@ -178,6 +188,9 @@ def history(count: int, start: float = 1000.0) -> llm.ChatContext:
     return ctx
 
 
+REPLY = "Кстати, Hermes закончил поручение."
+
+
 def opened() -> asyncio.Event:
     event = asyncio.Event()
     event.set()
@@ -194,6 +207,7 @@ class FakeHandle:
         interrupted: bool,
         gate: asyncio.Event,
         played: str | None = None,
+        error: BaseException | None = None,
     ) -> None:
         self.text = text
         self.played = text if played is None else played
@@ -202,11 +216,15 @@ class FakeHandle:
         self.agent = agent
         self.interrupted = interrupted
         self.gate = gate
+        self.error = error
         self.chat_items: list[llm.ChatItem] = []
+
+    def exception(self) -> BaseException | None:
+        return self.error
 
     async def wait_for_playout(self) -> None:
         await self.gate.wait()
-        if self.add_to_chat_ctx and self.played:
+        if self.add_to_chat_ctx and self.played and self.error is None:
             if self.agent is not None:
                 ctx = self.agent.chat_ctx.copy()
                 self.chat_items.append(
@@ -229,14 +247,18 @@ class FakeSession:
         interrupts: list[bool] | None = None,
         gates: list[asyncio.Event] | None = None,
         played: list[str | None] | None = None,
+        errors: list[BaseException | None] | None = None,
     ) -> None:
         self.closing = closing
         self.played = played or []
+        self.errors = errors or []
         self.agent = agent
         self.interrupts = interrupts or []
         self.gates = gates or []
         self.calls: list[tuple[str, bool, bool]] = []
         self.events: list[tuple[str, str]] = []
+        self.replies: list[tuple[str, Any, bool]] = []
+        self.current_speech: Any = None
         self.idles = 0
 
     def say(
@@ -259,8 +281,31 @@ class FakeSession:
             played,
         )
 
+    def generate_reply(
+        self, *, instructions: str, tool_choice: Any, allow_interruptions: bool
+    ) -> FakeHandle:
+        if self.closing:
+            raise RuntimeError("closing")
+        self.replies.append((instructions, tool_choice, allow_interruptions))
+        self.events.append(("reply", instructions))
+        gate = self.gates.pop(0) if self.gates else opened()
+        interrupted = self.interrupts.pop(0) if self.interrupts else False
+        played = self.played.pop(0) if self.played else None
+        error = self.errors.pop(0) if self.errors else None
+        return FakeHandle(
+            REPLY,
+            True,
+            self.events,
+            self.agent,
+            interrupted,
+            gate,
+            played,
+            error,
+        )
+
     async def wait_for_idle(self) -> None:
         self.idles += 1
+        self.events.append(("idle", ""))
 
 
 class FakeTurn:
@@ -628,8 +673,11 @@ def test_delivery_waits_for_presence_and_history(tmp_path: Path) -> None:
         await settle()
         assert len(session.calls) == 1
         stand.history.set()
-        await until(lambda: len(session.calls) == 2)
-        assert session.calls[1] == ("Готово по поручению: Ответ.", True, True)
+        await until(lambda: len(session.replies) == 1)
+        assert session.replies[0][1] == "none"
+        assert session.replies[0][2] is True
+        assert "Ответ." in session.replies[0][0]
+        assert EVENT_PROMPT in session.replies[0][0]
         await stand.agent.stop_delegation()
 
     asyncio.run(main())
@@ -647,7 +695,7 @@ def test_delivery_once_per_task(tmp_path: Path) -> None:
         await until(lambda: stand.repo.tasks["a"].delivered_at is not None)
         stand.agent.enqueue(task)
         await settle()
-        assert len(session.calls) == 1
+        assert len(session.replies) == 1
         assert stand.repo.tasks["a"].delivered_at is not None
         last = stand.rows("a")[-1]
         assert last["delivered"] is True
@@ -665,7 +713,7 @@ def test_delivered_at_after_playout(tmp_path: Path) -> None:
         stand.start(session)
         stand.agent.enqueue(stand.put(finished("a")))
         stand.open()
-        await until(lambda: len(session.calls) == 1)
+        await until(lambda: len(session.replies) == 1)
         await settle()
         assert stand.repo.tasks["a"].delivered_at is None
         gate.set()
@@ -684,11 +732,11 @@ def test_interrupted_delivery_repeated(tmp_path: Path) -> None:
         stand.agent.enqueue(task)
         stand.open()
         await until(lambda: stand.repo.tasks["a"].delivered_at is not None)
-        assert [call[0] for call in session.calls] == [
-            "Готово по поручению: Ответ.",
-            "Готово по поручению: Ответ.",
-        ]
-        assert session.idles == 1
+        assert len(session.replies) == 2
+        kinds = [kind for kind, _ in session.events]
+        first = kinds.index("reply")
+        second = kinds.index("reply", first + 1)
+        assert "idle" in kinds[first:second]
         rows = stand.rows("a")
         assert any(
             row["interrupted"] is True and row["delivered"] is False for row in rows
@@ -698,7 +746,7 @@ def test_interrupted_delivery_repeated(tmp_path: Path) -> None:
         stand.agent.enqueue(task)
         await stand.agent.enqueue_undelivered()
         await settle()
-        assert len(session.calls) == 2
+        assert len(session.replies) == 2
         await stand.agent.stop_delegation()
 
     asyncio.run(main())
@@ -712,12 +760,12 @@ def test_unheard_delivery_repeated(tmp_path: Path) -> None:
         stand.start(session)
         stand.agent.enqueue(stand.put(finished("a")))
         stand.open()
-        await until(lambda: len(session.calls) == 2)
+        await until(lambda: len(session.replies) == 2)
         await settle()
         assert stand.repo.tasks["a"].delivered_at is None
         gate.set()
         await until(lambda: stand.repo.tasks["a"].delivered_at is not None)
-        assert len(session.calls) == 2
+        assert len(session.replies) == 2
         await stand.agent.stop_delegation()
 
     asyncio.run(main())
@@ -730,20 +778,23 @@ def test_unheard_delivery_waits_before_repeat(tmp_path: Path) -> None:
         release = asyncio.Event()
 
         async def sleep(seconds: float) -> None:
-            pauses.append(seconds)
-            await release.wait()
+            if seconds == UNHEARD_RETRY_S:
+                pauses.append(seconds)
+                await release.wait()
+            else:
+                pauses.append(seconds)
 
         stand.service.sleep = sleep
         session = FakeSession(played=["", None])
         stand.start(session)
         stand.agent.enqueue(stand.put(finished("a")))
         stand.open()
-        await until(lambda: pauses == [UNHEARD_RETRY_S])
+        await until(lambda: pauses == [EVENT_SILENCE_S, UNHEARD_RETRY_S])
         await settle()
-        assert len(session.calls) == 1
+        assert len(session.replies) == 1
         release.set()
         await until(lambda: stand.repo.tasks["a"].delivered_at is not None)
-        assert len(session.calls) == 2
+        assert len(session.replies) == 2
         await stand.agent.stop_delegation()
 
     asyncio.run(main())
@@ -763,14 +814,14 @@ def test_interrupted_delivery_repeats_without_pause(tmp_path: Path) -> None:
         stand.agent.enqueue(stand.put(finished("a")))
         stand.open()
         await until(lambda: stand.repo.tasks["a"].delivered_at is not None)
-        assert pauses == []
-        assert len(session.calls) == 2
+        assert pauses == [EVENT_SILENCE_S]
+        assert len(session.replies) == 2
         await stand.agent.stop_delegation()
 
     asyncio.run(main())
 
 
-def test_say_on_closing_session_keeps_task_undelivered(tmp_path: Path) -> None:
+def test_reply_on_closing_session_keeps_task_undelivered(tmp_path: Path) -> None:
     async def main() -> None:
         stand = Stand(tmp_path)
         stand.start(FakeSession(closing=True))
@@ -780,14 +831,14 @@ def test_say_on_closing_session_keeps_task_undelivered(tmp_path: Path) -> None:
         assert deliverer is not None
         await until(deliverer.done)
         assert stand.repo.tasks["a"].delivered_at is None
-        assert results(stand.agent) == []
+        assert len(results(stand.agent)) == 2
         await stand.agent.stop_delegation()
 
     asyncio.run(main())
 
 
 LONG = " ".join(f"Фраза {n} о маршруте." for n in range(40))
-PLAYED = "Готово по поручению: Фраза 0"
+PLAYED = "Кстати, Hermes закончил: фраза 0"
 DUMP: dict[str, Any] = {
     "exclude_function_call": False,
     "exclude_timestamp": False,
@@ -827,7 +878,7 @@ def test_interrupted_delivery_puts_full_result_in_context(tmp_path: Path) -> Non
         stand.start(session)
         stand.agent.enqueue(task)
         stand.open()
-        await until(lambda: len(session.calls) == 2)
+        await until(lambda: len(session.replies) == 2)
         await settle()
         assert stand.repo.tasks["a"].delivered_at is None
         gate.set()
@@ -845,7 +896,7 @@ def test_interrupted_delivery_puts_full_result_in_context(tmp_path: Path) -> Non
         "message",
     ]
     assert items[2].text_content == PLAYED
-    assert items[3].text_content == delivery_text(finished("a", LONG))
+    assert items[3].text_content == REPLY
 
 
 def test_long_delivery_puts_whole_result_in_context(tmp_path: Path) -> None:
@@ -861,9 +912,7 @@ def test_long_delivery_puts_whole_result_in_context(tmp_path: Path) -> None:
         return stand.agent
 
     agent = asyncio.run(main())
-    spoken = delivery_text(finished("a", LONG))
-    assert len(spoken) < len(LONG)
-    assert agent.chat_ctx.items[-1].text_content == spoken
+    assert agent.chat_ctx.items[-1].text_content == REPLY
     check_result(agent, finished("a"), {"status": "succeeded", "result": LONG})
 
 
@@ -927,7 +976,7 @@ def test_result_in_context_once_across_restart(tmp_path: Path) -> None:
         stand.agent.enqueue(stand.put(finished("a", LONG)))
         stand.open()
         await until(lambda: stand.repo.tasks["a"].delivered_at is not None)
-        assert len(session.calls) == 1
+        assert len(session.replies) == 1
         await stand.agent.stop_delegation()
         return stand.agent
 
@@ -938,7 +987,7 @@ def test_result_in_context_once_across_restart(tmp_path: Path) -> None:
     assert len(spoken) == 2
 
 
-def test_recovered_undelivered_spoken_one_by_one(tmp_path: Path) -> None:
+def test_recovered_undelivered_spoken_together(tmp_path: Path) -> None:
     async def main() -> None:
         stand = Stand(tmp_path)
         stand.put(finished("a", "Первая.", 1.0))
@@ -950,26 +999,21 @@ def test_recovered_undelivered_spoken_one_by_one(tmp_path: Path) -> None:
         gate = asyncio.Event()
         session = FakeSession(gates=[gate])
         await stand.agent.enqueue_undelivered()
-        stand.agent.start_recover()
         stand.start(session)
         stand.open()
-        await until(lambda: len(session.calls) == 1)
+        await until(lambda: len(session.replies) == 1)
+        stand.agent.start_recover()
         await until(lambda: stand.repo.tasks["c"].status == TaskStatus.SUCCEEDED)
         await settle()
-        assert len(session.calls) == 1
+        assert len(session.replies) == 1
+        assert "Первая." in session.replies[0][0]
+        assert "не дождался результата" in session.replies[0][0]
         gate.set()
         await until(
             lambda: all(stand.repo.tasks[key].delivered_at is not None for key in "abc")
         )
-        texts = [
-            "Готово по поручению: Первая.",
-            "Поручение не выполнено: не дождался результата.",
-            "Готово по поручению: Третья.",
-        ]
-        assert [call[0] for call in session.calls] == texts
-        assert session.events == [
-            (kind, text) for text in texts for kind in ("say", "playout")
-        ]
+        assert len(session.replies) == 2
+        assert "Третья." in session.replies[1][0]
         await stand.agent.stop_delegation()
 
     asyncio.run(main())
@@ -1006,8 +1050,7 @@ def test_result_during_pending_summary_stays(tmp_path: Path) -> None:
     spoken = [
         n
         for n, item in enumerate(items)
-        if item.type == "message"
-        and (item.text_content or "").startswith("Готово по поручению: ")
+        if item.type == "message" and item.text_content == REPLY
     ]
     assert len(summaries) == 1
     assert len(spoken) == 1
@@ -1049,10 +1092,6 @@ def test_no_background_after_stop_delegation(tmp_path: Path) -> None:
     asyncio.run(main())
 
 
-def done(result: str | None) -> Task:
-    return Task("k", "t", TaskStatus.SUCCEEDED, created_at=0.0, result=result)
-
-
 def failed(error: str) -> Task:
     return Task("k", "t", TaskStatus.FAILED, created_at=0.0, error=error)
 
@@ -1061,10 +1100,8 @@ def sentence(letter: str, length: int) -> str:
     return letter * (length - 1) + "."
 
 
-def test_delivery_text() -> None:
+def test_clip() -> None:
     first, second, third = (sentence(letter, 120) for letter in "абв")
-    text = delivery_text(done(f"{first} {second} {third}"))
-    assert text == f"Готово по поручению: {first} {second}"
     clipped = clip(f"{first} {second} {third}")
     assert len(clipped) <= SPEECH_LIMIT
     assert clipped.endswith(".")
@@ -1075,24 +1112,6 @@ def test_delivery_text() -> None:
     assert not cut.endswith(" ")
     assert len(cut) > SPEECH_LIMIT - 10
     assert clip("раз\nдва\n\n  три") == "раз два три"
-    assert (
-        delivery_text(done("строка один\nстрока два"))
-        == "Готово по поручению: строка один строка два"
-    )
-    assert (
-        delivery_text(failed("timeout"))
-        == "Поручение не выполнено: не дождался результата."
-    )
-    assert (
-        delivery_text(failed("interrupted by gateway restart"))
-        == "Поручение не выполнено: Hermes перезапускался."
-    )
-    for error in ("lost", "lost before launch", "unavailable", "HTTP 500 boom"):
-        spoken = delivery_text(failed(error))
-        assert spoken == "Поручение не выполнено: Hermes вернул ошибку."
-        assert "boom" not in spoken
-    assert delivery_text(done(None)) == "Готово по поручению."
-    assert delivery_text(done("")) == "Готово по поручению."
 
 
 def test_delegate_speaks_task_text(tmp_path: Path) -> None:
@@ -1132,3 +1151,265 @@ def test_delegate_asks_model_when_not_spoken(
     with caplog.at_level("WARNING", logger="voca.tasks"):
         asyncio.run(main())
     assert sum("not spoken" in record.message for record in caplog.records) == 2
+
+
+def test_event_record_not_in_context(tmp_path: Path) -> None:
+    async def main() -> VocaAgent:
+        stand = Stand(tmp_path)
+        session = FakeSession(agent=stand.agent)
+        stand.start(session)
+        stand.agent.enqueue(stand.put(finished("a")))
+        stand.open()
+        await until(lambda: stand.repo.tasks["a"].delivered_at is not None)
+        await stand.agent.stop_delegation()
+        return stand.agent
+
+    agent = asyncio.run(main())
+    items = agent.chat_ctx.items
+    assert not any(item.type == "message" and item.role == "system" for item in items)
+    assert not any(
+        EVENT_PROMPT in (item.text_content or "")
+        for item in items
+        if item.type == "message"
+    )
+    found = records(agent.chat_ctx)
+    assert [item.kind for item in found] == [
+        "function_call",
+        "function_call_output",
+        "message",
+    ]
+    assert found[0].text.startswith("delegate(")
+    assert found[2].role == "assistant"
+    assert found[2].text == REPLY
+    assert last_message_at(agent.chat_ctx) == items[-1].created_at
+    dumped = json.dumps(agent.chat_ctx.to_dict(**DUMP), ensure_ascii=False)
+    assert EVENT_PROMPT not in dumped
+
+
+def silence_stand(tmp_path: Path) -> tuple[Stand, list[float], asyncio.Event]:
+    stand = Stand(tmp_path)
+    pauses: list[float] = []
+    release = asyncio.Event()
+
+    async def sleep(seconds: float) -> None:
+        pauses.append(seconds)
+        await release.wait()
+
+    stand.service.sleep = sleep
+    return stand, pauses, release
+
+
+def test_event_waits_for_silence(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand, pauses, release = silence_stand(tmp_path)
+        session = FakeSession()
+        stand.start(session)
+        stand.agent.enqueue(stand.put(finished("a")))
+        stand.open()
+        await until(lambda: pauses == [EVENT_SILENCE_S])
+        await settle()
+        assert session.replies == []
+        user_state(stand.agent, "listening", "speaking")
+        release.set()
+        await until(lambda: stand.repo.tasks["a"].delivered_at is not None)
+        assert pauses == [EVENT_SILENCE_S, EVENT_SILENCE_S]
+        assert len(session.replies) == 1
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_final_transcript_restarts_silence(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand, pauses, release = silence_stand(tmp_path)
+        session = FakeSession()
+        stand.start(session)
+        stand.agent.enqueue(stand.put(finished("a")))
+        stand.open()
+        await until(lambda: pauses == [EVENT_SILENCE_S])
+        transcribed(stand.agent, "текст", final=False)
+        transcribed(stand.agent, "текст")
+        release.set()
+        await until(lambda: stand.repo.tasks["a"].delivered_at is not None)
+        assert pauses == [EVENT_SILENCE_S, EVENT_SILENCE_S]
+        assert len(session.replies) == 1
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_event_after_agent_answer_without_pause(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path)
+        pauses: list[float] = []
+
+        async def sleep(seconds: float) -> None:
+            pauses.append(seconds)
+
+        stand.service.sleep = sleep
+        session = FakeSession()
+        monkeypatch.setattr(VocaAgent, "session", property(lambda _: session))
+        stand.start(session)
+        stand.agent.on_agent_state(
+            AgentStateChangedEvent(old_state="listening", new_state="speaking")
+        )
+        stand.agent.enqueue(stand.put(finished("a")))
+        stand.open()
+        await until(lambda: stand.repo.tasks["a"].delivered_at is not None)
+        assert len(session.replies) == 1
+        assert pauses == []
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_two_events_one_reply(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path)
+        session = FakeSession()
+        stand.start(session)
+        stand.agent.enqueue(stand.put(finished("a", "Ответ.", 1.0)))
+        stand.agent.enqueue(
+            stand.put(
+                Task("b", "t", TaskStatus.FAILED, created_at=2.0, error="timeout")
+            )
+        )
+        stand.open()
+        await until(
+            lambda: all(stand.repo.tasks[key].delivered_at is not None for key in "ab")
+        )
+        assert len(session.replies) == 1
+        record = session.replies[0][0]
+        assert '"id": "a"' in record
+        assert '"id": "b"' in record
+        assert "Ответ." in record
+        assert "не дождался результата" in record
+        for key in "ab":
+            last = stand.rows(key)[-1]
+            assert last["interrupted"] is False
+            assert last["delivered"] is True
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_event_record_uses_notification_view(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path)
+        task = finished("a")
+        await stand.repo.save(task, NOW, arrival(task, NOW))
+        session = FakeSession()
+        stand.start(session)
+        stand.agent.enqueue(task)
+        stand.open()
+        await until(lambda: len(session.replies) == 1)
+        (event,) = stand.repo.events.values()
+        view = notification_view(event, task, NOW)
+        assert view["kind"] == "result"
+        assert isinstance(view["id"], str)
+        assert session.replies[0][0] == events_prompt([view])
+        body = session.replies[0][0].split("\n", 1)[1]
+        assert json.loads(body) == {"events": [view]}
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_interrupted_reply_keeps_event_open(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path)
+        gate = asyncio.Event()
+        session = FakeSession(interrupts=[True, False], gates=[opened(), gate])
+        stand.start(session)
+        stand.agent.enqueue(stand.put(finished("a")))
+        stand.open()
+        await until(lambda: len(session.replies) == 2)
+        await settle()
+        assert stand.repo.tasks["a"].delivered_at is None
+        last = stand.rows("a")[-1]
+        assert last["interrupted"] is True
+        assert last["delivered"] is False
+        gate.set()
+        await until(lambda: stand.repo.tasks["a"].delivered_at is not None)
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_failed_reply_waits_for_activity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path)
+        session = FakeSession(errors=[RuntimeError("llm"), None])
+        monkeypatch.setattr(VocaAgent, "session", property(lambda _: session))
+        stand.start(session)
+        stand.agent.enqueue(stand.put(finished("a")))
+        stand.open()
+        await until(lambda: len(session.replies) == 1)
+        await settle()
+        assert len(session.replies) == 1
+        assert stand.repo.tasks["a"].delivered_at is None
+        stand.agent.on_agent_state(
+            AgentStateChangedEvent(old_state="listening", new_state="speaking")
+        )
+        await settle()
+        assert len(session.replies) == 1
+        user_state(stand.agent, "listening", "speaking")
+        await until(lambda: stand.repo.tasks["a"].delivered_at is not None)
+        assert len(session.replies) == 2
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_events_prompt() -> None:
+    prompt = events_prompt([{"id": "1"}])
+    assert prompt.startswith(EVENT_PROMPT)
+    assert prompt.endswith('{"events": [{"id": "1"}]}')
+
+
+APPROVAL = {
+    "description": "delete in root path",
+    "command": "rm -r /tmp/x",
+    "choices": ["once", "deny", "session", "always"],
+    "request_id": "p1",
+    "execution_generation": 3,
+}
+
+
+def waiting(
+    key: str, approval: dict[str, object] = APPROVAL, created_at: float = 1.0
+) -> Task:
+    return Task(
+        key,
+        "Удали каталог /tmp/x",
+        TaskStatus.WAITING_APPROVAL,
+        created_at=created_at,
+        run_id=f"run_{key}",
+        approval=approval,
+    )
+
+
+def test_announcement_waits_during_silence(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand, pauses, release = silence_stand(tmp_path)
+        session = FakeSession()
+        stand.start(session)
+        stand.agent.enqueue(stand.put(finished("a")))
+        stand.open()
+        await until(lambda: pauses == [EVENT_SILENCE_S])
+        stand.agent.on_task_change(stand.put(waiting("b")))
+        release.set()
+        await until(lambda: stand.repo.tasks["a"].delivered_at is not None)
+        kinds = [kind for kind, _ in session.events]
+        said = session.events.index(
+            ("say", announcement_text(waiting("b"), VOCABULARY))
+        )
+        assert said < kinds.index("reply")
+        assert len(session.replies) == 1
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
