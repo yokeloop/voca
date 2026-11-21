@@ -328,12 +328,13 @@ async def measure(
             answers, ms, raw = await ask(client, model, state, questions)
             times.append(ms)
             failures += isinstance(answers, str)
-            if number != 0:
-                continue
             result = answers if isinstance(answers, str) else score(name, item, answers)
             if not isinstance(result, str):
                 false.extend(result["false"])
                 yes.extend(result["yes"])
+            if number != 0:
+                continue
+            if not isinstance(result, str):
                 below += result.get("below", False)
             row = entry(name, item, result, ms, raw)
             first.append(row)
@@ -362,7 +363,7 @@ async def measure(
         summary["below_rule"] = below
     else:
         boundary = max(false, default=0.0)
-        total = sum(wanted(name, item) for item, _, _ in items)
+        total = rounds * sum(wanted(name, item) for item, _, _ in items)
         thresholds = {
             str(threshold): sum(value >= threshold for value in yes)
             for threshold in THRESHOLDS
