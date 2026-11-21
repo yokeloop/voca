@@ -81,6 +81,8 @@ def read_answers(data: object, questions: Questions) -> Answers | None:
             return None
         picked = answer.get("choice")
         confidence = share_of(answer.get("confidence"))
+        if not isinstance(picked, str):
+            return None
         if confidence is None or picked not in question["criteria"]:
             return None
         result[name] = (picked, confidence)
