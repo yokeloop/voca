@@ -531,7 +531,8 @@
       "expect": [
         "noise",
         "other"
-      ]
+      ],
+      "note": "неоднозначно: «Так.» — и пауза, и начало реплики, обе метки допустимы"
     },
     {
       "id": "d034",
@@ -539,8 +540,7 @@
       "requests": [],
       "phrase": "Да.",
       "expect": [
-        "other",
-        "noise"
+        "other"
       ]
     },
     {
@@ -549,8 +549,7 @@
       "requests": [],
       "phrase": "Нет.",
       "expect": [
-        "other",
-        "noise"
+        "other"
       ]
     },
     {
