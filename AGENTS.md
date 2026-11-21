@@ -13,7 +13,7 @@ Hermes. This file is the working contract for agents and contributors.
   `PreparedTTS`, `build_session`, `SpeechLanguageClient`), `conversation/`
   (`VocaAgent`: the tool-call markup filter in `llm_node`, the `delegate`,
   `list_tasks`, `list_notifications`, `cancel_task`, `steer_task` and `repeat_approval`
-  tools, the delegation facts in the context and the delivery of results, approval announcements and the reply to an active request judged first in `on_user_turn_completed` (echo, decision model, fallback word), the reply sorter in `stt_node` (while the agent's reply sounds or is paused) and in `on_user_turn_completed` (in silence and before the reply's first sound; a reply that glues is never noise), the glue of unanswered fragments, `delegate` held until `[agent].action_silence_s` of user silence, instructions, accepting a finished
+  tools, the delegation facts in the context and speech about results and failures in the main model's words (`generate_reply` with a one-turn record, after `[agent].event_silence_s` of silence or at the end of the agent's answer), approval announcements and the reply to an active request judged first in `on_user_turn_completed` (echo, decision model, fallback word), the reply sorter in `stt_node` (while the agent's reply sounds or is paused) and in `on_user_turn_completed` (in silence and before the reply's first sound; a reply that glues is never noise), the glue of unanswered fragments, `delegate` held until `[agent].action_silence_s` of user silence, instructions, accepting a finished
   summary and the emergency context trim in `on_user_turn_completed`, the threshold trigger `maybe_compact`,
   the idle and daily check `check_due`, failures spoken aloud;
   `instructions.py`: `InstructionLoader` with the last valid set; `context.py`: `trim_chat_ctx` — the emergency path at
@@ -130,9 +130,12 @@ a section) are no longer read.
 
 - `[model]` — the context window, the reasoning budget, sampling.
 - `[agent]` — the pipeline settings (G5/G6 tune them), `glue_window_s` (3.0: an
-  unanswered fragment and the next reply within this gap are one turn) and
+  unanswered fragment and the next reply within this gap are one turn),
   `action_silence_s` (0.5: `delegate` waits this much user silence, after the
-  final transcript of any speech that came after the last one, at most 3 s).
+  final transcript of any speech that came after the last one, at most 3 s) and
+  `event_silence_s` (1.5: the silence of both the user and the agent before the
+  agent speaks about waiting results and failures; at the end of the agent's
+  answer it speaks at once).
 - `[session]` — the session history file and how much of it a client gets.
 - `[compression]` — the compression triggers and the trim.
 - `[compression.model]` — the summariser.
