@@ -4,6 +4,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from typing import Any, Literal
 
+from voca.delegation.events import arrival
 from voca.delegation.model import (
     CANCELLED,
     LOST,
@@ -54,7 +55,8 @@ class DelegationService:
         self.on_change = on_change
 
     async def _save(self, task: Task) -> Task:
-        await self.repo.save(task, self.clock())
+        now = self.clock()
+        await self.repo.save(task, now, arrival(task, now))
         if self.on_change is not None:
             self.on_change(task)
         return task
