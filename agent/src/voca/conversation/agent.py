@@ -5,11 +5,18 @@ import re
 import time
 import uuid
 from collections import deque
-from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine
+from collections.abc import (
+    AsyncGenerator,
+    AsyncIterable,
+    Awaitable,
+    Callable,
+    Coroutine,
+)
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any
 
+from livekit import rtc
 from livekit.agents import (
     FlushSentinel,
     RunContext,
@@ -17,9 +24,15 @@ from livekit.agents import (
     ToolError,
     function_tool,
     llm,
+    stt,
 )
 from livekit.agents.voice import Agent, AgentSession, ModelSettings, SpeechHandle
 from livekit.agents.voice.agent_activity import ActivityClosedError
+from livekit.agents.voice.events import (
+    AgentStateChangedEvent,
+    UserInputTranscribedEvent,
+    UserStateChangedEvent,
+)
 
 from voca.clientio.cards import CardState
 from voca.conversation.approval import (
@@ -45,9 +58,20 @@ from voca.conversation.compaction import (
 )
 from voca.conversation.context import Item, approx_tokens, split_turns, trim_chat_ctx
 from voca.conversation.descriptions import describe
+from voca.conversation.glue import Entry, glue
 from voca.conversation.instructions import InstructionLoader, InstructionSet
 from voca.conversation.summarizer import Failure, Summarizer, Summary
-from voca.conversation.verdict import Decider, Decision, DecisionFailure, Situation
+from voca.conversation.verdict import (
+    Decider,
+    Decision,
+    DecisionFailure,
+    Situation,
+    Sorted,
+    Sorter,
+    SorterPrompt,
+    drop,
+    sorter_state,
+)
 from voca.delegation.events import Event, EventKind
 from voca.delegation.model import CANCELLED, GATEWAY_RESTART, TIMEOUT, Task, TaskStatus
 from voca.delegation.ports import (
@@ -89,6 +113,7 @@ APPROVAL_REPLIES = {"once": "Подтверждено", "deny": "Отклоне�
 APPROVAL_GONE = "Запрос подтверждения уже не активен"
 APPROVAL_FAILED = "Не удалось передать подтверждение"
 ANNOUNCE_ATTEMPTS = 2
+FINAL_WAIT_S = 3.0
 
 
 @dataclass
@@ -247,6 +272,50 @@ def records(ctx: llm.ChatContext) -> list[Item]:
     return items
 
 
+def entries(ctx: llm.ChatContext) -> list[Entry]:
+    found: list[Entry] = []
+    for item in ctx.items:
+        if item.type == "message":
+            found.append(
+                Entry(
+                    item.id,
+                    item.type,
+                    role=item.role,
+                    text=item.text_content or "",
+                    interrupted=item.interrupted,
+                    started_at=item.metrics.get("started_speaking_at"),
+                    stopped_at=item.metrics.get("stopped_speaking_at"),
+                )
+            )
+        elif item.type == "function_call":
+            found.append(
+                Entry(item.id, item.type, call_id=item.call_id, name=item.name)
+            )
+        elif item.type == "function_call_output":
+            found.append(
+                Entry(
+                    item.id,
+                    item.type,
+                    call_id=item.call_id,
+                    name=item.name,
+                    output=item.output,
+                )
+            )
+        else:
+            found.append(Entry(item.id, item.type))
+    return found
+
+
+def talking(session: AgentSession[Any], voiced: SpeechHandle | None) -> bool:
+    speech = session.current_speech
+    return (
+        speech is not None
+        and speech is voiced
+        and not speech.done()
+        and not speech.interrupted
+    )
+
+
 def last_message_at(ctx: llm.ChatContext) -> float | None:
     times = [
         item.created_at
@@ -279,7 +348,12 @@ class VocaAgent(Agent):
         delegation: DelegationService | None = None,
         vocabulary: Vocabulary,
         decider: Decider | None = None,
+        sorter: Sorter | None = None,
+        sorter_prompt: SorterPrompt | None = None,
+        glue_window_s: float = 3.0,
+        action_silence_s: float = 0.5,
     ) -> None:
+        assert sorter is None or sorter_prompt is not None
         super().__init__(instructions=instructions.text, chat_ctx=chat_ctx)
         self.loader = loader
         self.current = instructions
@@ -316,6 +390,17 @@ class VocaAgent(Agent):
         self.barged: Announcement | None = None
         self.announced: dict[str, str] = {}
         self.answered: dict[str, dict[str, Any]] = {}
+        self.sorter = sorter
+        self.sorter_prompt = sorter_prompt
+        self.passed: list[str] = []
+        self.voiced: SpeechHandle | None = None
+        self.glue_window_s = glue_window_s
+        self.action_silence_s = action_silence_s
+        self.user_speaking = False
+        self.quiet_at = float("-inf")
+        self.spoke_at = float("-inf")
+        self.final_at = float("-inf")
+        self.user_changed = asyncio.Event()
 
     def set_present(self, present: bool) -> None:
         if present:
@@ -1042,13 +1127,168 @@ class VocaAgent(Agent):
         self.announcements.appendleft(item)
         self.wake.set()
 
+    def on_agent_state(self, ev: AgentStateChangedEvent) -> None:
+        if ev.new_state == "speaking":
+            self.voiced = self.session.current_speech
+
+    def on_user_state(self, ev: UserStateChangedEvent) -> None:
+        if ev.new_state == "speaking":
+            self.user_speaking = True
+            self.spoke_at = ev.created_at
+        elif ev.old_state == "speaking":
+            self.user_speaking = False
+            self.quiet_at = ev.created_at
+        self.user_changed.set()
+        self.user_changed = asyncio.Event()
+
+    def on_user_transcribed(self, ev: UserInputTranscribedEvent) -> None:
+        if not ev.is_final:
+            return
+        self.final_at = ev.created_at
+        self.user_changed.set()
+        self.user_changed = asyncio.Event()
+
+    async def _hold(self, handle: SpeechHandle) -> bool:
+        while not handle.interrupted:
+            now = self.clock()
+            timeout: float | None = None
+            if self.user_speaking:
+                pass
+            elif self.final_at < self.spoke_at and now < self.quiet_at + FINAL_WAIT_S:
+                timeout = self.quiet_at + FINAL_WAIT_S - now
+            else:
+                since = max(self.quiet_at, self.final_at)
+                timeout = self.action_silence_s - (now - since)
+                if timeout <= 0:
+                    return True
+            fut = asyncio.ensure_future(
+                asyncio.wait_for(self.user_changed.wait(), timeout=timeout)
+            )
+            try:
+                await handle.wait_if_not_interrupted([fut])
+            except TimeoutError:
+                pass
+            finally:
+                if not fut.done():
+                    fut.cancel()
+        return False
+
+    async def _sort(self, text: str, branch: str, *, speaking: bool) -> bool:
+        assert self.sorter is not None and self.sorter_prompt is not None
+        agent_last = ""
+        for item in reversed(self.chat_ctx.items):
+            if item.type == "message" and item.role == "assistant":
+                agent_last = item.text_content or ""
+                break
+        requests: list[tuple[str, str | None]] = []
+        if self.delegation is not None:
+            for task in await self.delegation.repo.list_open():
+                if (
+                    task.status == TaskStatus.WAITING_APPROVAL
+                    and task.approval is not None
+                ):
+                    requests.append(
+                        (
+                            describe(task.approval.get("description")),
+                            task.approval.get("command"),
+                        )
+                    )
+        result = await self.sorter.sort(sorter_state(agent_last, requests, text))
+        dropped = drop(text, result, self.sorter_prompt, speaking=speaking)
+        if isinstance(result, Sorted):
+            self.log.write(
+                "sorter",
+                branch=branch,
+                text=text,
+                speaking=speaking,
+                dropped=dropped,
+                ms=result.ms,
+                choice=result.kind,
+                confidence=result.confidence,
+            )
+        else:
+            self.log.write(
+                "sorter",
+                branch=branch,
+                text=text,
+                speaking=speaking,
+                dropped=dropped,
+                ms=result.ms,
+                fallback=result.reason,
+            )
+        return dropped
+
+    async def _screen(
+        self,
+        events: AsyncIterable[stt.SpeechEvent | str],
+        speaking: Callable[[], bool],
+    ) -> AsyncGenerator[stt.SpeechEvent | str]:
+        async for event in events:
+            if (
+                self.sorter is None
+                or not isinstance(event, stt.SpeechEvent)
+                or event.type != stt.SpeechEventType.FINAL_TRANSCRIPT
+                or not event.alternatives
+            ):
+                yield event
+                continue
+            text = event.alternatives[0].text.strip()
+            if not text or not speaking():
+                yield event
+                continue
+            if await self._sort(text, "stt", speaking=True):
+                self.final_at = self.clock()
+                self.user_changed.set()
+                self.user_changed = asyncio.Event()
+                continue
+            self.passed.append(text)
+            yield event
+
+    async def stt_node(
+        self, audio: AsyncIterable[rtc.AudioFrame], model_settings: ModelSettings
+    ) -> AsyncGenerator[stt.SpeechEvent | str]:
+        async for event in self._screen(
+            Agent.default.stt_node(self, audio, model_settings),
+            lambda: talking(self.session, self.voiced),
+        ):
+            yield event
+
     async def on_user_turn_completed(
         self, turn_ctx: llm.ChatContext, new_message: llm.ChatMessage
     ) -> None:
+        glued = glue(
+            entries(self.chat_ctx),
+            started_at=new_message.metrics.get("started_speaking_at"),
+            window_s=self.glue_window_s,
+        )
+        if self.sorter is not None:
+            text = new_message.text_content or ""
+            passed, self.passed = self.passed, []
+            if (
+                glued is None
+                and text not in passed
+                and text != " ".join(passed)
+                and await self._sort(text, "hook", speaking=False)
+            ):
+                raise StopResponse()
         changed = False
+        if glued is not None:
+            ctx = self.chat_ctx.copy()
+            ctx.items = [item for item in ctx.items if item.id not in glued.drop]
+            await self.update_chat_ctx(ctx)
+            new_message.content = [
+                f"{glued.fragment} {new_message.text_content or ''}".strip()
+            ]
+            self.log.write(
+                "glue",
+                removed=len(glued.drop),
+                fragment=glued.fragment,
+                gap_s=round(glued.gap_s, 3),
+            )
+            changed = True
         active = self.active or self.barged
         if active is not None and self.delegation is not None:
-            changed = await self._on_request(active, new_message)
+            changed = await self._on_request(active, new_message) or changed
         loaded = self.loader.load()
         if (loaded.sha256, loaded.source, loaded.error) != (
             self.current.sha256,
@@ -1095,6 +1335,11 @@ class VocaAgent(Agent):
         if self.delegation is None:
             raise ToolError(DELEGATE_UNAVAILABLE)
         key = context.function_call.call_id
+        if not await self._hold(context.speech_handle):
+            output = {"id": short_id(key), "event": "not_sent"}
+            return llm.ToolResult(
+                json.dumps(output, ensure_ascii=False), reply_required=False
+            )
         self.in_tool.add(key)
         try:
             found = await self.delegation.delegate(key, task)

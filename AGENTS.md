@@ -13,11 +13,11 @@ Hermes. This file is the working contract for agents and contributors.
   `PreparedTTS`, `build_session`, `SpeechLanguageClient`), `conversation/`
   (`VocaAgent`: the tool-call markup filter in `llm_node`, the `delegate`,
   `list_tasks`, `list_notifications`, `cancel_task`, `steer_task` and `repeat_approval`
-  tools, the delegation facts in the context and the delivery of results, approval announcements and the reply to an active request judged first in `on_user_turn_completed` (echo, decision model, fallback word), instructions, accepting a finished
+  tools, the delegation facts in the context and the delivery of results, approval announcements and the reply to an active request judged first in `on_user_turn_completed` (echo, decision model, fallback word), the reply sorter in `stt_node` (while the agent's reply sounds or is paused) and in `on_user_turn_completed` (in silence and before the reply's first sound; a reply that glues is never noise), the glue of unanswered fragments, `delegate` held until `[agent].action_silence_s` of user silence, instructions, accepting a finished
   summary and the emergency context trim in `on_user_turn_completed`, the threshold trigger `maybe_compact`,
   the idle and daily check `check_due`, failures spoken aloud;
   `instructions.py`: `InstructionLoader` with the last valid set; `context.py`: `trim_chat_ctx` — the emergency path at
-  `hard_limit`; `approval.py`: the fallback phrase parse (the exact first word, the tail), the echo check and the hint texts; `verdict.py`: the decision model's request body and answer reading (pure); `decision.py`: `DecisionClient`, the HTTP adapter of `POST /v1/systemone`; `descriptions.py`: the Russian descriptions of Hermes approval requests; `compaction.py`: the compaction plan and the summariser
+  `hard_limit`; `approval.py`: the fallback phrase parse (the exact first word, the tail), the echo check and the hint texts; `verdict.py`: the decision model's request body and answer reading, the body of the sorter question `kind` and the noise rule `drop` (pure); `decision.py`: `DecisionClient`, the HTTP adapter of `POST /v1/systemone`, with `DecisionClient.sort` for the sorter; `glue.py`: the glue of an unanswered fragment with the next reply (pure); `descriptions.py`: the Russian descriptions of Hermes approval requests; `compaction.py`: the compaction plan and the summariser
   prompt; `summarizer.py`: the call to `[compression.model]`), `clientio/`
   (the `voca.cards` and `voca.history` channels, the `tasks` list on join, `actions.py`: the page's RPC), `telemetry/` (`.local/events.jsonl`), `session/`
   (`SessionStore`: the session snapshot and the archive in one SQLite file,
@@ -32,7 +32,7 @@ Hermes. This file is the working contract for agents and contributors.
   filter, LaTeX and tables, the quotes audio.cpp rejects (`„‟‚‹` → `«`,
   `“”›` → `»`), numbers as words, stress and the first fragment.
   `markup`, `numbers`, `prepare`, `conversation/context`,
-  `conversation/compaction`, `conversation/approval`, `conversation/descriptions`, `conversation/verdict`, `conversation/instructions`, `session/model`,
+  `conversation/compaction`, `conversation/approval`, `conversation/descriptions`, `conversation/verdict`, `conversation/glue`, `conversation/instructions`, `session/model`,
   `delegation/model`, `delegation/ports`, `delegation/service`,
   `delegation/events` and `delegation/danger` are pure
   modules, which
@@ -129,7 +129,10 @@ The former flat names of these settings (`VOCA_` plus the field name, without
 a section) are no longer read.
 
 - `[model]` — the context window, the reasoning budget, sampling.
-- `[agent]` — the seven pipeline settings; G5/G6 tune them.
+- `[agent]` — the pipeline settings (G5/G6 tune them), `glue_window_s` (3.0: an
+  unanswered fragment and the next reply within this gap are one turn) and
+  `action_silence_s` (0.5: `delegate` waits this much user silence, after the
+  final transcript of any speech that came after the last one, at most 3 s).
 - `[session]` — the session history file and how much of it a client gets.
 - `[compression]` — the compression triggers and the trim.
 - `[compression.model]` — the summariser.
@@ -138,15 +141,22 @@ a section) are no longer read.
   spoken in the announcement and shown on the card; an exact first word is
   the fallback answer when the decision model is unavailable) and
   `echo_words` (words in a row of the announcement that make an echo). No
-  word of the voice protocol is in the code. A `confirm` word equal to a
+  word of the voice protocol is in the code; the other place of its words is
+  `[decision].sorter_keep_words`. A `confirm` word equal to a
   `deny` word after normalisation is refused.
 - `[decision]` — the decision model of voice approval: `enabled` (true),
   `url` (`http://127.0.0.1:8086`, env `VOCA_DECISION__URL`, set by
   `scripts/env.sh`), `model` (`d1-2B`), `timeout_s` (1.5), `threshold` (0.6,
   a lower confidence is `unclear`), `instructions` (the question) and
   `verdicts` (exactly `approve`, `approve_more`, `deny`, `deny_more`,
-  `repeat`, `unrelated`, `unclear`, each with its Russian description). Empty
-  texts, a missing or an unknown verdict are refused. The model file is not
+  `repeat`, `unrelated`, `unclear`, each with its Russian description);
+  `sorter_instructions` and `sorter_criteria` (exactly `noise`, `reply`) — the
+  sorter question; `sorter_timeout_s` (0.3); `sorter_keep_words` (single
+  words; a reply with one of them is never noise), `sorter_max_words` (4: only
+  a reply of at most this many words is dropped as noise), `sorter_min_words`
+  (2: when the sorter fails while the agent speaks, a reply with fewer words
+  and no keep word is dropped). Empty texts, a missing or an unknown verdict
+  or criterion are refused. The model file is not
   here: `VOCA_DECISION_MODEL` for `scripts/decision.sh`.
 
 `[session].history_on_join` is how many archive rows a joining client gets

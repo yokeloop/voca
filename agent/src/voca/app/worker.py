@@ -116,6 +116,10 @@ async def entrypoint(ctx: JobContext) -> None:
         delegation=delegation,
         vocabulary=vocabulary,
         decider=decider,
+        sorter=decider if settings.decision.enabled else None,
+        sorter_prompt=settings.decision.sorter_prompt(),
+        glue_window_s=settings.agent.glue_window_s,
+        action_silence_s=settings.agent.action_silence_s,
     )
     if delegation is not None:
         delegation.on_change = agent.on_task_change
@@ -180,6 +184,9 @@ async def entrypoint(ctx: JobContext) -> None:
             agent.maybe_compact()
 
     session.on("agent_state_changed", on_state)
+    session.on("agent_state_changed", agent.on_agent_state)
+    session.on("user_state_changed", agent.on_user_state)
+    session.on("user_input_transcribed", agent.on_user_transcribed)
     tracker.attach(session)
     session.on("metrics_collected", cards.on_metrics)
 

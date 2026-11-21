@@ -28,8 +28,8 @@ def test_defaults_without_file(monkeypatch: pytest.MonkeyPatch) -> None:
     assert agent.interruption_min_duration == 0.5
     assert agent.interruption_min_words == 0
     assert agent.aec_warmup == 3.0
-    assert agent.endpointing_min_delay == 0.5
-    assert agent.preemptive_generation is False
+    assert agent.endpointing_min_delay == 0.2
+    assert agent.preemptive_generation is True
     model = settings.model
     assert model.thinking_budget == 128
     assert model.context_tokens == 16384
@@ -253,6 +253,62 @@ def test_decision_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
     ],
 )
 def test_decision_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, text: str
+) -> None:
+    write_config(tmp_path, monkeypatch, text)
+    with pytest.raises(pydantic.ValidationError):
+        Settings()
+
+
+def test_agent_turn_defaults() -> None:
+    agent = Settings().agent
+    assert agent.glue_window_s == 3.0
+    assert agent.action_silence_s == 0.5
+
+
+def test_sorter_defaults() -> None:
+    decision = Settings().decision
+    assert decision.sorter_instructions == (
+        "Ассистент разговаривает с пользователем голосом. В состоянии — последняя "
+        "фраза ассистента, ожидающие запросы подтверждения команд и фраза "
+        "пользователя в виде распознанной речи. Что это за фраза пользователя?"
+    )
+    assert decision.sorter_criteria == {
+        "noise": "шум, обрывок, поддакивание или междометие без смысла: "
+        "«угу», «ага», «yeah», «okay», «ну»",
+        "reply": "осмысленная реплика: ответ, вопрос, просьба или мысль",
+    }
+    assert decision.sorter_timeout_s == 0.3
+    assert decision.sorter_keep_words == ["нет", "не", "ни", "стоп", "да", "давай"]
+    assert decision.sorter_max_words == 4
+    assert decision.sorter_min_words == 2
+    prompt = decision.sorter_prompt()
+    assert prompt.keep_words == frozenset({"нет", "не", "ни", "стоп", "да", "давай"})
+    assert prompt.instructions == decision.sorter_instructions
+    assert prompt.criteria == decision.sorter_criteria
+    assert (prompt.max_words, prompt.min_words) == (4, 2)
+
+
+def test_sorter_keep_words_normalized(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("VOCA_DECISION__SORTER_KEEP_WORDS", '["Ещё", "НЕТ"]')
+    assert Settings().decision.sorter_prompt().keep_words == frozenset({"еще", "нет"})
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        '[decision.sorter_criteria]\nnoise = "n"\n',
+        '[decision.sorter_criteria]\nnoise = "n"\nreply = "r"\nother = "o"\n',
+        '[decision.sorter_criteria]\nnoise = " "\nreply = "r"\n',
+        '[decision]\nsorter_instructions = ""\n',
+        '[decision]\nsorter_keep_words = ["не надо"]\n',
+        "[decision]\nsorter_keep_words = []\n",
+        "[decision]\nsorter_timeout_s = 0\n",
+        "[decision]\nsorter_max_words = 0\n",
+        "[decision]\nsorter_min_words = 0\n",
+    ],
+)
+def test_sorter_rejected(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, text: str
 ) -> None:
     write_config(tmp_path, monkeypatch, text)

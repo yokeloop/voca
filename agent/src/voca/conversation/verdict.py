@@ -1,3 +1,4 @@
+import re
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
@@ -13,6 +14,10 @@ VERDICTS: tuple[Verdict, ...] = (
     "unrelated",
     "unclear",
 )
+
+
+Kind = Literal["noise", "reply"]
+KINDS: tuple[Kind, ...] = ("noise", "reply")
 
 
 @dataclass(frozen=True)
@@ -47,6 +52,26 @@ class DecisionFailure:
 
 class Decider(Protocol):
     async def decide(self, situation: Situation) -> Decision | DecisionFailure: ...
+
+
+@dataclass(frozen=True)
+class SorterPrompt:
+    instructions: str
+    criteria: dict[str, str]
+    keep_words: frozenset[str]
+    max_words: int
+    min_words: int
+
+
+@dataclass(frozen=True)
+class Sorted:
+    kind: Kind
+    confidence: float
+    ms: int
+
+
+class Sorter(Protocol):
+    async def sort(self, state: dict[str, str]) -> Sorted | DecisionFailure: ...
 
 
 def request_body(prompt: Prompt, situation: Situation, model: str) -> dict[str, Any]:
@@ -96,3 +121,74 @@ def read_answer(data: object, prompt: Prompt, ms: int) -> Decision | DecisionFai
             chosen: Verdict = name if confidence >= prompt.threshold else "unclear"
             return Decision(chosen, name, confidence, ms)
     return failure
+
+
+def sorter_state(
+    agent_last: str, requests: list[tuple[str, str | None]], phrase: str
+) -> dict[str, str]:
+    state = {"последняя фраза агента": agent_last}
+    if len(requests) == 1:
+        description, command = requests[0]
+        state["запрос"] = description
+        if command is not None:
+            state["команда"] = command
+    else:
+        for number, (description, command) in enumerate(requests, 1):
+            state[f"запрос {number}"] = description
+            if command is not None:
+                state[f"команда {number}"] = command
+    state["фраза пользователя"] = phrase
+    return state
+
+
+def sorter_body(
+    prompt: SorterPrompt, state: dict[str, str], model: str
+) -> dict[str, Any]:
+    return {
+        "model": model,
+        "state": state,
+        "questions": {
+            "kind": {
+                "type": "choice",
+                "instructions": prompt.instructions,
+                "criteria": {name: prompt.criteria[name] for name in KINDS},
+            },
+        },
+    }
+
+
+def read_sort(data: object, ms: int) -> Sorted | DecisionFailure:
+    failure = DecisionFailure("bad_answer", ms)
+    answers = data.get("answers") if isinstance(data, dict) else None
+    if not isinstance(answers, dict):
+        return failure
+    kind = answers.get("kind")
+    if not isinstance(kind, dict):
+        return failure
+    picked = kind.get("choice")
+    confidence = _share(kind.get("confidence"))
+    if confidence is None:
+        return failure
+    for name in KINDS:
+        if picked == name:
+            return Sorted(name, confidence, ms)
+    return failure
+
+
+def words(text: str) -> list[str]:
+    return re.findall(r"\w+(?:-\w+)*", text.lower().replace("ё", "е"))
+
+
+def drop(
+    text: str,
+    result: Sorted | DecisionFailure,
+    prompt: SorterPrompt,
+    *,
+    speaking: bool,
+) -> bool:
+    found = words(text)
+    if prompt.keep_words.intersection(found):
+        return False
+    if isinstance(result, Sorted):
+        return result.kind == "noise" and len(found) <= prompt.max_words
+    return speaking and len(found) < prompt.min_words
