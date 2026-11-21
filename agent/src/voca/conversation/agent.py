@@ -69,6 +69,7 @@ BLOCK_STRIKES = 2
 BLOCK_RETRY_S = 300
 DELEGATE_UNAVAILABLE = "Делегирование сейчас недоступно"
 SPEECH_LIMIT = 300
+UNHEARD_RETRY_S = 2.0
 RECENT_LIMIT = 5
 TOOL_RESULT_LIMIT = SPEECH_LIMIT
 FAILURE_REASONS = {
@@ -569,6 +570,8 @@ class VocaAgent(Agent):
             await session.wait_for_idle()
         except ActivityClosedError:
             return False
+        if not handle.interrupted:
+            await self.delegation.sleep(UNHEARD_RETRY_S)
         self.retry.add(key)
         return True
 

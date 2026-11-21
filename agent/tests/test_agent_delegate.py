@@ -15,6 +15,7 @@ from voca.clientio.cards import CardState
 from voca.config import ApprovalConfig
 from voca.conversation.agent import (
     SPEECH_LIMIT,
+    UNHEARD_RETRY_S,
     VocaAgent,
     clip,
     delivery_text,
@@ -506,6 +507,53 @@ def test_unheard_delivery_repeated(tmp_path: Path) -> None:
         assert stand.repo.tasks["a"].delivered_at is None
         gate.set()
         await until(lambda: stand.repo.tasks["a"].delivered_at is not None)
+        assert len(session.calls) == 2
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_unheard_delivery_waits_before_repeat(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path)
+        pauses: list[float] = []
+        release = asyncio.Event()
+
+        async def sleep(seconds: float) -> None:
+            pauses.append(seconds)
+            await release.wait()
+
+        stand.service.sleep = sleep
+        session = FakeSession(played=["", None])
+        stand.start(session)
+        stand.agent.enqueue(stand.put(finished("a")))
+        stand.open()
+        await until(lambda: pauses == [UNHEARD_RETRY_S])
+        await settle()
+        assert len(session.calls) == 1
+        release.set()
+        await until(lambda: stand.repo.tasks["a"].delivered_at is not None)
+        assert len(session.calls) == 2
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_interrupted_delivery_repeats_without_pause(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path)
+        pauses: list[float] = []
+
+        async def sleep(seconds: float) -> None:
+            pauses.append(seconds)
+
+        stand.service.sleep = sleep
+        session = FakeSession(interrupts=[True, False])
+        stand.start(session)
+        stand.agent.enqueue(stand.put(finished("a")))
+        stand.open()
+        await until(lambda: stand.repo.tasks["a"].delivered_at is not None)
+        assert pauses == []
         assert len(session.calls) == 2
         await stand.agent.stop_delegation()
 
