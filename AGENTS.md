@@ -131,7 +131,8 @@ a section) are no longer read.
 - `[model]` — the context window, the reasoning budget, sampling.
 - `[agent]` — the pipeline settings (G5/G6 tune them), `glue_window_s` (3.0: an
   unanswered fragment and the next reply within this gap are one turn) and
-  `action_silence_s` (0.5: `delegate` waits this much user silence).
+  `action_silence_s` (0.5: `delegate` waits this much user silence, after the
+  final transcript of any speech that came after the last one, at most 3 s).
 - `[session]` — the session history file and how much of it a client gets.
 - `[compression]` — the compression triggers and the trim.
 - `[compression.model]` — the summariser.

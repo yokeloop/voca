@@ -10,10 +10,11 @@ from typing import Any, Literal, cast
 import pytest
 from livekit.agents import RunContext, ToolError, llm
 from livekit.agents.voice import AgentSession
-from livekit.agents.voice.events import UserStateChangedEvent
+from livekit.agents.voice.events import UserInputTranscribedEvent, UserStateChangedEvent
 
 from voca.clientio.cards import CardState
 from voca.config import ApprovalConfig
+from voca.conversation import agent as agent_module
 from voca.conversation.agent import (
     SPEECH_LIMIT,
     UNHEARD_RETRY_S,
@@ -404,6 +405,14 @@ def user_state(agent: VocaAgent, old: str, new: str) -> None:
     )
 
 
+def transcribed(agent: VocaAgent, text: str, *, final: bool = True) -> None:
+    agent.on_user_transcribed(
+        UserInputTranscribedEvent(
+            transcript=text, is_final=final, created_at=agent.clock()
+        )
+    )
+
+
 def test_delegate_holds_while_user_speaks(tmp_path: Path) -> None:
     async def main() -> None:
         stand = Stand(tmp_path, action_silence_s=0.05)
@@ -418,13 +427,87 @@ def test_delegate_holds_while_user_speaks(tmp_path: Path) -> None:
         assert not call.done()
         assert stand.backend.posts == []
         user_state(stand.agent, "speaking", "listening")
-        quiet = asyncio.get_running_loop().time()
+        await asyncio.sleep(0.15)
+        assert not call.done()
+        assert stand.backend.posts == []
+        transcribed(stand.agent, "и ещё отчёт")
+        final = asyncio.get_running_loop().time()
         await asyncio.sleep(0.02)
         assert not call.done()
         reply = await asyncio.wait_for(call, 1)
-        assert asyncio.get_running_loop().time() - quiet >= 0.05
+        assert asyncio.get_running_loop().time() - final >= 0.05
         assert json.loads(reply.output) == {"id": "call-1", "event": "submitted"}
         assert stand.backend.posts == [("call-1", "сделай")]
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_delegate_not_sent_after_final_when_turn_interrupted(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path, action_silence_s=0.05)
+        session = FakeSession()
+        stand.start(session)
+        stand.open()
+        turn = FakeTurn()
+        call = asyncio.ensure_future(stand.agent.delegate(ctx("call-1", turn), "x"))
+        user_state(stand.agent, "listening", "speaking")
+        user_state(stand.agent, "speaking", "listening")
+        await asyncio.sleep(0.1)
+        assert not call.done()
+        transcribed(stand.agent, "отчёты", final=False)
+        await asyncio.sleep(0.1)
+        assert not call.done()
+        transcribed(stand.agent, "отчёты")
+        turn.interrupt()
+        reply = await asyncio.wait_for(call, 1)
+        assert json.loads(reply.output) == {"id": "call-1", "event": "not_sent"}
+        assert stand.backend.posts == []
+        assert stand.repo.tasks == {}
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_delegate_without_continuation_keeps_delay(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path, action_silence_s=0.05)
+        stand.backend.created = ["run_1"]
+        stand.backend.runs["run_1"] = [RunState("run_1", TaskStatus.RUNNING)]
+        session = FakeSession()
+        stand.start(session)
+        stand.open()
+        user_state(stand.agent, "listening", "speaking")
+        user_state(stand.agent, "speaking", "listening")
+        transcribed(stand.agent, "сделай")
+        quiet = asyncio.get_running_loop().time()
+        reply = await asyncio.wait_for(stand.agent.delegate(ctx("call-1"), "сделай"), 1)
+        waited = asyncio.get_running_loop().time() - quiet
+        assert 0.05 <= waited < 0.5
+        assert json.loads(reply.output) == {"id": "call-1", "event": "submitted"}
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_delegate_final_wait_bounded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(agent_module, "FINAL_WAIT_S", 0.1)
+
+    async def main() -> None:
+        stand = Stand(tmp_path, action_silence_s=0.05)
+        stand.backend.created = ["run_1"]
+        stand.backend.runs["run_1"] = [RunState("run_1", TaskStatus.RUNNING)]
+        session = FakeSession()
+        stand.start(session)
+        stand.open()
+        user_state(stand.agent, "listening", "speaking")
+        user_state(stand.agent, "speaking", "listening")
+        quiet = asyncio.get_running_loop().time()
+        reply = await asyncio.wait_for(stand.agent.delegate(ctx("call-1"), "сделай"), 1)
+        assert asyncio.get_running_loop().time() - quiet >= 0.1
+        assert json.loads(reply.output) == {"id": "call-1", "event": "submitted"}
         await stand.agent.stop_delegation()
 
     asyncio.run(main())

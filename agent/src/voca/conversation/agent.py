@@ -28,7 +28,11 @@ from livekit.agents import (
 )
 from livekit.agents.voice import Agent, AgentSession, ModelSettings, SpeechHandle
 from livekit.agents.voice.agent_activity import ActivityClosedError
-from livekit.agents.voice.events import AgentStateChangedEvent, UserStateChangedEvent
+from livekit.agents.voice.events import (
+    AgentStateChangedEvent,
+    UserInputTranscribedEvent,
+    UserStateChangedEvent,
+)
 
 from voca.clientio.cards import CardState
 from voca.conversation.approval import (
@@ -109,6 +113,7 @@ APPROVAL_REPLIES = {"once": "Подтверждено", "deny": "Отклоне�
 APPROVAL_GONE = "Запрос подтверждения уже не активен"
 APPROVAL_FAILED = "Не удалось передать подтверждение"
 ANNOUNCE_ATTEMPTS = 2
+FINAL_WAIT_S = 3.0
 
 
 @dataclass
@@ -393,6 +398,8 @@ class VocaAgent(Agent):
         self.action_silence_s = action_silence_s
         self.user_speaking = False
         self.quiet_at = float("-inf")
+        self.spoke_at = float("-inf")
+        self.final_at = float("-inf")
         self.user_changed = asyncio.Event()
 
     def set_present(self, present: bool) -> None:
@@ -1127,22 +1134,35 @@ class VocaAgent(Agent):
     def on_user_state(self, ev: UserStateChangedEvent) -> None:
         if ev.new_state == "speaking":
             self.user_speaking = True
+            self.spoke_at = ev.created_at
         elif ev.old_state == "speaking":
             self.user_speaking = False
             self.quiet_at = ev.created_at
         self.user_changed.set()
         self.user_changed = asyncio.Event()
 
+    def on_user_transcribed(self, ev: UserInputTranscribedEvent) -> None:
+        if not ev.is_final:
+            return
+        self.final_at = ev.created_at
+        self.user_changed.set()
+        self.user_changed = asyncio.Event()
+
     async def _hold(self, handle: SpeechHandle) -> bool:
         while not handle.interrupted:
-            left = self.action_silence_s - (self.clock() - self.quiet_at)
-            if not self.user_speaking and left <= 0:
-                return True
+            now = self.clock()
+            timeout: float | None = None
+            if self.user_speaking:
+                pass
+            elif self.final_at < self.spoke_at and now < self.quiet_at + FINAL_WAIT_S:
+                timeout = self.quiet_at + FINAL_WAIT_S - now
+            else:
+                since = max(self.quiet_at, self.final_at)
+                timeout = self.action_silence_s - (now - since)
+                if timeout <= 0:
+                    return True
             fut = asyncio.ensure_future(
-                asyncio.wait_for(
-                    self.user_changed.wait(),
-                    timeout=None if self.user_speaking else left,
-                )
+                asyncio.wait_for(self.user_changed.wait(), timeout=timeout)
             )
             try:
                 await handle.wait_if_not_interrupted([fut])
@@ -1217,6 +1237,9 @@ class VocaAgent(Agent):
                 yield event
                 continue
             if await self._sort(text, "stt", speaking=True):
+                self.final_at = self.clock()
+                self.user_changed.set()
+                self.user_changed = asyncio.Event()
                 continue
             self.passed.append(text)
             yield event

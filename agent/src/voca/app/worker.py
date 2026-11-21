@@ -186,6 +186,7 @@ async def entrypoint(ctx: JobContext) -> None:
     session.on("agent_state_changed", on_state)
     session.on("agent_state_changed", agent.on_agent_state)
     session.on("user_state_changed", agent.on_user_state)
+    session.on("user_input_transcribed", agent.on_user_transcribed)
     tracker.attach(session)
     session.on("metrics_collected", cards.on_metrics)
 
