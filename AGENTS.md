@@ -12,7 +12,7 @@ Hermes. This file is the working contract for agents and contributors.
   (prewarm, entrypoint, `WorkerOptions`), `app/wiring.py` (the plugins,
   `PreparedTTS`, `build_session`, `SpeechLanguageClient`), `conversation/`
   (`VocaAgent`: the tool-call markup filter in `llm_node`, the `delegate`,
-  `list_tasks`, `cancel_task`, `steer_task` and `repeat_approval`
+  `list_tasks`, `list_notifications`, `cancel_task`, `steer_task` and `repeat_approval`
   tools, the delegation facts in the context and the delivery of results, approval announcements and the reply to an active request judged first in `on_user_turn_completed` (echo, decision model, fallback word), instructions, accepting a finished
   summary and the emergency context trim in `on_user_turn_completed`, the threshold trigger `maybe_compact`,
   the idle and daily check `check_due`, failures spoken aloud;
@@ -25,14 +25,16 @@ Hermes. This file is the working contract for agents and contributors.
   tasks given to Hermes through the Runs API, the state machine, polling, the
   deadline with `/stop`, `recover()` and `approve()`; `hermes.py` — the Runs
   API adapter and the only status mapping; `sqlite.py` — the task file
-  `[delegation].path`; `voca bench delegate`), `config.py` (`Settings`: the
+  `[delegation].path`; `events.py` — the event kinds and states, the event on
+  arrival; `danger.py` — the table of danger levels by Hermes descriptions; `voca bench delegate`), `config.py` (`Settings`: the
   environment and the agent config file, «Agent config»).
   `agent/src/voca/speech/` prepares text before TTS: the tool-call markup
   filter, LaTeX and tables, the quotes audio.cpp rejects (`„‟‚‹` → `«`,
   `“”›` → `»`), numbers as words, stress and the first fragment.
   `markup`, `numbers`, `prepare`, `conversation/context`,
   `conversation/compaction`, `conversation/approval`, `conversation/descriptions`, `conversation/verdict`, `conversation/instructions`, `session/model`,
-  `delegation/model`, `delegation/ports` and `delegation/service` are pure
+  `delegation/model`, `delegation/ports`, `delegation/service`,
+  `delegation/events` and `delegation/danger` are pure
   modules, which
   `tests/test_import_boundaries.py` checks.
 - `instructions.example/` — a sample `SOUL.md`, `user.md` and `agent.md`; the
@@ -152,7 +154,7 @@ in `voca.history` («Client channel»); `[session].path` is the session store
 («Session store»).
 
 `[delegation].path` (default `~/.voca/tasks.sqlite3`, env
-`VOCA_DELEGATION__PATH`) is the task file: the directory 0700 and the file 0600
+`VOCA_DELEGATION__PATH`) is the task file, tables `tasks` and `events`; the schema is 3: the directory 0700 and the file 0600
 when VOCA creates them, WAL, migrations by `user_version`; a newer schema is
 refused. It is separate from the session store and is backed up with `~/.voca/`
 (E5). `[delegation].run_timeout` (900 s, `VOCA_DELEGATION__RUN_TIMEOUT`) counts

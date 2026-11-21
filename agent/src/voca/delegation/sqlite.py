@@ -5,17 +5,27 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+from voca.delegation.danger import Danger
+from voca.delegation.events import (
+    Event,
+    EventKind,
+    EventState,
+    closed_reason,
+    open_request,
+)
 from voca.delegation.model import Task, TaskStatus
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 MIGRATIONS = (
     Path(__file__).parent / "migrations" / "001-tasks.sql",
     Path(__file__).parent / "migrations" / "002-stop-reason.sql",
+    Path(__file__).parent / "migrations" / "003-events.sql",
 )
 COLUMNS = (
     "tool_call_id, text, status, run_id, result, error, "
     "created_at, delivered_at, stop_requested_at, approval, stop_reason"
 )
+EVENT_COLUMNS = "id, tool_call_id, kind, request_id, danger, state, created_at, updated_at, closed_reason"
 
 
 class TaskStoreError(Exception):
@@ -47,6 +57,21 @@ def task_of(row: tuple[Any, ...]) -> Task:
         stop_requested_at=row[8],
         approval=None if approval is None else json.loads(approval),
         stop_reason=row[10],
+    )
+
+
+def event_of(row: tuple[Any, ...]) -> Event:
+    danger = row[4]
+    return Event(
+        id=row[0],
+        tool_call_id=row[1],
+        kind=EventKind(row[2]),
+        request_id=row[3],
+        danger=None if danger is None else Danger(danger),
+        state=EventState(row[5]),
+        created_at=row[6],
+        updated_at=row[7],
+        closed_reason=row[8],
     )
 
 
@@ -117,23 +142,60 @@ class SqliteTaskRepository:
             return existing, False
         return task, True
 
-    def _save(self, task: Task) -> None:
-        self.db.execute(
-            "UPDATE tasks SET status = ?, run_id = ?, result = ?, error = ?, "
-            "delivered_at = ?, stop_requested_at = ?, approval = ?, stop_reason = ? "
-            "WHERE tool_call_id = ?",
-            (
-                task.status.value,
-                task.run_id,
-                task.result,
-                task.error,
-                task.delivered_at,
-                task.stop_requested_at,
-                dump_approval(task),
-                task.stop_reason,
-                task.tool_call_id,
-            ),
-        )
+    def _save(self, task: Task, at: float, event: Event | None) -> None:
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            self.db.execute(
+                "UPDATE tasks SET status = ?, run_id = ?, result = ?, error = ?, "
+                "delivered_at = ?, stop_requested_at = ?, approval = ?, stop_reason = ? "
+                "WHERE tool_call_id = ?",
+                (
+                    task.status.value,
+                    task.run_id,
+                    task.result,
+                    task.error,
+                    task.delivered_at,
+                    task.stop_requested_at,
+                    dump_approval(task),
+                    task.stop_reason,
+                    task.tool_call_id,
+                ),
+            )
+            if event is not None:
+                self.db.execute(
+                    "INSERT INTO events (tool_call_id, kind, request_id, danger, state, "
+                    "created_at, updated_at, closed_reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+                    "ON CONFLICT(tool_call_id, kind, request_id) DO NOTHING",
+                    (
+                        event.tool_call_id,
+                        event.kind.value,
+                        event.request_id,
+                        None if event.danger is None else event.danger.value,
+                        event.state.value,
+                        event.created_at,
+                        event.updated_at,
+                        event.closed_reason,
+                    ),
+                )
+            if not task.is_open and task.delivered_at is not None:
+                self.db.execute(
+                    "UPDATE events SET state = 'closed', closed_reason = ?, updated_at = ? "
+                    "WHERE tool_call_id = ? AND kind IN ('result', 'failure') "
+                    "AND state != 'closed'",
+                    (closed_reason(task), at, task.tool_call_id),
+                )
+            current = open_request(task)
+            self.db.execute(
+                "UPDATE events SET state = 'closed', closed_reason = 'resolved', updated_at = ? "
+                "WHERE tool_call_id = ? AND kind = 'approval' AND state != 'closed' "
+                "AND (? IS NULL OR request_id != ?)",
+                (at, task.tool_call_id, current, current),
+            )
+            self.db.execute("COMMIT")
+        except BaseException:
+            if self.db.in_transaction:
+                self.db.execute("ROLLBACK")
+            raise
 
     def _get(self, key: str) -> Task | None:
         row = self.db.execute(
@@ -149,9 +211,9 @@ class SqliteTaskRepository:
         async with self.lock:
             return await asyncio.to_thread(self._insert, task)
 
-    async def save(self, task: Task) -> None:
+    async def save(self, task: Task, at: float, event: Event | None = None) -> None:
         async with self.lock:
-            await asyncio.to_thread(self._save, task)
+            await asyncio.to_thread(self._save, task, at, event)
 
     async def get(self, key: str) -> Task | None:
         async with self.lock:
@@ -176,3 +238,14 @@ class SqliteTaskRepository:
     async def list_all(self) -> list[Task]:
         async with self.lock:
             return await asyncio.to_thread(self._select, "ORDER BY created_at DESC")
+
+    def _events(self, open_only: bool) -> list[Event]:
+        where = "WHERE state != 'closed' " if open_only else ""
+        rows = self.db.execute(
+            f"SELECT {EVENT_COLUMNS} FROM events {where}ORDER BY created_at, id"
+        )
+        return [event_of(row) for row in rows]
+
+    async def list_events(self, open_only: bool) -> list[Event]:
+        async with self.lock:
+            return await asyncio.to_thread(self._events, open_only)

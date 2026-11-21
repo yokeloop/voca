@@ -19,6 +19,7 @@ from livekit.agents import (
     llm,
 )
 from livekit.agents.voice import Agent, AgentSession, ModelSettings, SpeechHandle
+from livekit.agents.voice.agent_activity import ActivityClosedError
 
 from voca.clientio.cards import CardState
 from voca.conversation.approval import (
@@ -47,6 +48,7 @@ from voca.conversation.descriptions import describe
 from voca.conversation.instructions import InstructionLoader, InstructionSet
 from voca.conversation.summarizer import Failure, Summarizer, Summary
 from voca.conversation.verdict import Decider, Decision, DecisionFailure, Situation
+from voca.delegation.events import Event, EventKind
 from voca.delegation.model import CANCELLED, GATEWAY_RESTART, TIMEOUT, Task, TaskStatus
 from voca.delegation.ports import (
     ApprovalNotActive,
@@ -67,6 +69,7 @@ BLOCK_STRIKES = 2
 BLOCK_RETRY_S = 300
 DELEGATE_UNAVAILABLE = "Делегирование сейчас недоступно"
 SPEECH_LIMIT = 300
+UNHEARD_RETRY_S = 2.0
 RECENT_LIMIT = 5
 TOOL_RESULT_LIMIT = SPEECH_LIMIT
 FAILURE_REASONS = {
@@ -174,6 +177,34 @@ def task_view(task: Task, active: Announcement | None) -> dict[str, Any]:
     return view
 
 
+def heard(handle: SpeechHandle) -> bool:
+    return not handle.interrupted and any(
+        item.type == "message" and item.role == "assistant" and item.text_content
+        for item in handle.chat_items
+    )
+
+
+def notification_view(event: Event, task: Task, now: float) -> dict[str, Any]:
+    view: dict[str, Any] = {
+        "id": str(event.id),
+        "task": short_id(event.tool_call_id),
+        "kind": event.kind.value,
+        "state": event.state.value,
+        "age_s": int(now - event.created_at),
+        "text": clip(task.text, APPROVAL_LIMIT),
+    }
+    if event.kind == EventKind.APPROVAL:
+        view["danger"] = None if event.danger is None else event.danger.value
+        if task.approval is not None:
+            view["request"] = describe(task.approval.get("description"))
+            view["command"] = task.approval.get("command")
+    elif event.kind == EventKind.RESULT:
+        view["result"] = clip(task.result or "", TOOL_RESULT_LIMIT)
+    else:
+        view["error"] = FAILURE_REASONS.get(task.error or "", FAILURE_DEFAULT)
+    return view
+
+
 def records(ctx: llm.ChatContext) -> list[Item]:
     items: list[Item] = []
     for item in ctx.items:
@@ -272,6 +303,7 @@ class VocaAgent(Agent):
         self.in_tool: set[str] = set()
         self.queue: asyncio.Queue[str] = asyncio.Queue()
         self.queued: set[str] = set()
+        self.retry: set[str] = set()
         self.present = asyncio.Event()
         self.playout: dict[str, bool] = {}
         self.stopped = False
@@ -452,7 +484,11 @@ class VocaAgent(Agent):
                 logging.getLogger("voca.tasks").exception("delivery failed: %s", key)
             finally:
                 if isinstance(item, str):
-                    self.queued.discard(item)
+                    if item in self.retry:
+                        self.retry.discard(item)
+                        self.queue.put_nowait(item)
+                    else:
+                        self.queued.discard(item)
             if not ok:
                 return
 
@@ -524,9 +560,19 @@ class VocaAgent(Agent):
         except RuntimeError:
             return False
         await handle.wait_for_playout()
-        self.playout[key] = handle.interrupted
         await self._remember(task, handle.chat_items)
-        await self.delegation.mark_delivered(key)
+        if heard(handle):
+            self.playout[key] = False
+            await self.delegation.mark_delivered(key)
+            return True
+        self._task_row(task, interrupted=handle.interrupted)
+        try:
+            await session.wait_for_idle()
+        except ActivityClosedError:
+            return False
+        if not handle.interrupted:
+            await self.delegation.sleep(UNHEARD_RETRY_S)
+        self.retry.add(key)
         return True
 
     async def _remember(self, task: Task, spoken: list[llm.ChatItem]) -> None:
@@ -1093,6 +1139,20 @@ class VocaAgent(Agent):
         found.extend(closed[:RECENT_LIMIT])
         tasks = [task_view(task, self.active) for task in found]
         return json.dumps({"tasks": tasks}, ensure_ascii=False)
+
+    @function_tool
+    async def list_notifications(self) -> str:
+        """Показать незакрытые события Hermes по порядку поступления: запросы подтверждения с уровнем опасности, результаты и сбои, которые ещё не прозвучали до конца. Вызывай, когда спрашивают, что пришло от Hermes."""
+        if self.delegation is None:
+            raise ToolError(DELEGATE_UNAVAILABLE)
+        now = self.delegation.clock()
+        notifications = []
+        for event in await self.delegation.repo.list_events(open_only=True):
+            task = await self.delegation.repo.get(event.tool_call_id)
+            if task is None:
+                continue
+            notifications.append(notification_view(event, task, now))
+        return json.dumps({"notifications": notifications}, ensure_ascii=False)
 
     @function_tool
     async def cancel_task(self, id: str | None = None) -> str:

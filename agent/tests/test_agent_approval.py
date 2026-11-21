@@ -18,6 +18,7 @@ from voca.conversation.compaction import Limits
 from voca.conversation.instructions import InstructionLoader
 from voca.conversation.summarizer import Failure, Summarizer, Summary
 from voca.conversation.verdict import Decision, DecisionFailure, Situation, Verdict
+from voca.delegation.events import Event, EventState
 from voca.delegation.model import Task, TaskStatus
 from voca.delegation.ports import ApprovalNotActive, OutcomeUnknown, RunState
 from voca.delegation.service import DelegationService
@@ -32,6 +33,7 @@ VOCABULARY = ApprovalConfig().vocabulary()
 class FakeRepo:
     def __init__(self) -> None:
         self.tasks: dict[str, Task] = {}
+        self.events: dict[tuple[str, str, str], Event] = {}
 
     async def insert(self, task: Task) -> tuple[Task, bool]:
         if task.tool_call_id in self.tasks:
@@ -39,8 +41,12 @@ class FakeRepo:
         self.tasks[task.tool_call_id] = task
         return task, True
 
-    async def save(self, task: Task) -> None:
+    async def save(self, task: Task, at: float, event: Event | None = None) -> None:
         self.tasks[task.tool_call_id] = task
+        if event is not None:
+            key = (event.tool_call_id, event.kind.value, event.request_id)
+            if key not in self.events:
+                self.events[key] = replace(event, id=len(self.events) + 1)
 
     async def get(self, key: str) -> Task | None:
         return self.tasks.get(key)
@@ -59,6 +65,14 @@ class FakeRepo:
 
     async def list_all(self) -> list[Task]:
         return sorted(self.tasks.values(), key=lambda task: -task.created_at)
+
+    async def list_events(self, open_only: bool) -> list[Event]:
+        found = [
+            event
+            for event in self.events.values()
+            if not open_only or event.state != EventState.CLOSED
+        ]
+        return sorted(found, key=lambda event: (event.created_at, event.id or 0))
 
 
 def take(queue: list[Any]) -> Any:
@@ -183,10 +197,17 @@ class FakeHandle:
 
     async def wait_for_playout(self) -> None:
         await self.gate.wait()
-        if self.add_to_chat_ctx and self.agent is not None:
-            ctx = self.agent.chat_ctx.copy()
-            self.chat_items.append(ctx.add_message(role="assistant", content=self.text))
-            await self.agent.update_chat_ctx(ctx)
+        if self.add_to_chat_ctx and self.text:
+            if self.agent is not None:
+                ctx = self.agent.chat_ctx.copy()
+                self.chat_items.append(
+                    ctx.add_message(role="assistant", content=self.text)
+                )
+                await self.agent.update_chat_ctx(ctx)
+            else:
+                self.chat_items.append(
+                    llm.ChatMessage(role="assistant", content=[self.text])
+                )
         self.events.append(("playout", self.text))
 
 
@@ -206,6 +227,7 @@ class FakeSession:
         self.calls: list[tuple[str, bool, bool]] = []
         self.events: list[tuple[str, str]] = []
         self.handles: list[FakeHandle] = []
+        self.idles = 0
 
     def say(
         self, text: str, *, allow_interruptions: bool, add_to_chat_ctx: bool
@@ -221,6 +243,9 @@ class FakeSession:
         )
         self.handles.append(handle)
         return handle
+
+    async def wait_for_idle(self) -> None:
+        self.idles += 1
 
 
 async def tick(_: float) -> None:

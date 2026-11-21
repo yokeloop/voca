@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
+from voca.delegation.events import Event
 from voca.delegation.model import Task, TaskStatus
 
 
@@ -55,7 +56,7 @@ class RunState:
 class TaskRepository(Protocol):
     async def insert(self, task: Task) -> tuple[Task, bool]: ...
 
-    async def save(self, task: Task) -> None: ...
+    async def save(self, task: Task, at: float, event: Event | None = None) -> None: ...
 
     async def get(self, key: str) -> Task | None: ...
 
@@ -64,6 +65,8 @@ class TaskRepository(Protocol):
     async def list_undelivered(self) -> list[Task]: ...
 
     async def list_all(self) -> list[Task]: ...
+
+    async def list_events(self, open_only: bool) -> list[Event]: ...
 
 
 class DelegationBackend(Protocol):

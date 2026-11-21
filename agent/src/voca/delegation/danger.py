@@ -1,0 +1,125 @@
+import re
+from enum import StrEnum
+
+
+class Danger(StrEnum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+
+
+RULES: dict[str, Danger] = {
+    "recursive delete of root filesystem": Danger.HIGH,
+    "recursive delete of system directory": Danger.HIGH,
+    "recursive delete of home directory": Danger.HIGH,
+    "format filesystem": Danger.HIGH,
+    "dd to raw block device": Danger.HIGH,
+    "redirect to raw block device": Danger.HIGH,
+    "fork bomb": Danger.HIGH,
+    "kill all processes": Danger.HIGH,
+    "system shutdown/reboot": Danger.HIGH,
+    "init 0/6": Danger.HIGH,
+    "systemctl poweroff/reboot": Danger.HIGH,
+    "telinit 0/6": Danger.HIGH,
+    "delete in root path": Danger.HIGH,
+    "recursive delete": Danger.HIGH,
+    "Windows cmd destructive delete": Danger.HIGH,
+    "Windows PowerShell destructive delete": Danger.HIGH,
+    "PowerShell encoded command execution": Danger.HIGH,
+    "PowerShell destructive delete": Danger.HIGH,
+    "Windows destructive delete": Danger.HIGH,
+    "pipe remote content to PowerShell": Danger.HIGH,
+    "execute remote content via Invoke-Expression": Danger.HIGH,
+    "force kill processes": Danger.MEDIUM,
+    "wipe disk": Danger.HIGH,
+    "disk partitioning": Danger.HIGH,
+    "format drive": Danger.HIGH,
+    "wipe free space": Danger.HIGH,
+    "grant Everyone access": Danger.HIGH,
+    "reset ACLs recursively": Danger.HIGH,
+    "delete volume shadow copies": Danger.HIGH,
+    "delete backups": Danger.HIGH,
+    "modify boot configuration": Danger.HIGH,
+    "registry delete": Danger.HIGH,
+    "registry value delete": Danger.HIGH,
+    "force stop service": Danger.MEDIUM,
+    "stop/delete service": Danger.HIGH,
+    "access to SSH keys": Danger.HIGH,
+    "access to Hermes secrets": Danger.HIGH,
+    "world/other-writable permissions": Danger.HIGH,
+    "recursive world/other-writable": Danger.HIGH,
+    "recursive chown to root": Danger.HIGH,
+    "disk copy": Danger.HIGH,
+    "write to block device": Danger.HIGH,
+    "SQL DROP": Danger.HIGH,
+    "SQL DELETE without WHERE": Danger.HIGH,
+    "SQL TRUNCATE": Danger.HIGH,
+    "overwrite system config": Danger.HIGH,
+    "stop/restart system service": Danger.MEDIUM,
+    "kill processes by regex": Danger.MEDIUM,
+    "pipe remote content to shell": Danger.HIGH,
+    "execute remote script via process substitution": Danger.HIGH,
+    "execute remote content via command substitution": Danger.HIGH,
+    "cloud metadata endpoint access": Danger.HIGH,
+    "pipe decoded content to shell": Danger.HIGH,
+    "pipe xxd-decoded content to shell": Danger.HIGH,
+    "pipe tr-transformed output to shell": Danger.HIGH,
+    "pipe openssl-decoded content to shell": Danger.HIGH,
+    "upload a secret or credential file via curl/wget": Danger.HIGH,
+    "pipe a credential file into a curl/wget upload": Danger.HIGH,
+    "invisible or bidirectional Unicode control character": Danger.HIGH,
+    "overwrite system file via tee": Danger.HIGH,
+    "overwrite system file via redirection": Danger.HIGH,
+    "overwrite project env/config via tee": Danger.MEDIUM,
+    "overwrite project env/config via redirection": Danger.MEDIUM,
+    "xargs with rm": Danger.HIGH,
+    "find -exec/-execdir rm": Danger.HIGH,
+    "find dynamic shell word may expand to destructive flag": Danger.HIGH,
+    "find -delete": Danger.HIGH,
+    "dynamic shell word may expand to arbitrary program execution flag": Danger.HIGH,
+    "stop/restart hermes gateway": Danger.HIGH,
+    "hermes update": Danger.HIGH,
+    "docker with remote daemon redirect": Danger.HIGH,
+    "docker with daemon redirect": Danger.HIGH,
+    "docker context use": Danger.HIGH,
+    "podman with remote daemon redirect": Danger.HIGH,
+    "podman remote mode": Danger.HIGH,
+    "docker/podman daemon redirect via environment": Danger.HIGH,
+    "docker compose restart/stop/kill/down": Danger.MEDIUM,
+    "docker restart/stop/kill": Danger.MEDIUM,
+    "start gateway outside systemd": Danger.HIGH,
+    "kill hermes/gateway process": Danger.HIGH,
+    "kill process via pgrep/pidof expansion": Danger.MEDIUM,
+    "kill process via backtick pgrep/pidof expansion": Danger.MEDIUM,
+    "stop/restart hermes launchd service": Danger.HIGH,
+    "copy/move file into system config path": Danger.HIGH,
+    "overwrite project env/config file": Danger.MEDIUM,
+    "copy/move file into sensitive credential/SSH/shell-rc path": Danger.HIGH,
+    "in-place edit of sensitive credential/SSH/shell-rc path": Danger.HIGH,
+    "in-place edit of system config": Danger.HIGH,
+    "in-place edit of Hermes config/env": Danger.HIGH,
+    "shell execution via heredoc": Danger.MEDIUM,
+    "git reset --hard": Danger.HIGH,
+    "git force push": Danger.HIGH,
+    "git force push short flag": Danger.HIGH,
+    "git clean with force": Danger.HIGH,
+    "git branch force delete": Danger.HIGH,
+    "chmod +x followed by immediate execution": Danger.HIGH,
+    "sudo with privilege flag": Danger.HIGH,
+    "sudo with combined-flag privilege escalation": Danger.HIGH,
+    "package manager uninstall": Danger.MEDIUM,
+    "script execution via -e/-c flag": Danger.MEDIUM,
+    "script execution via heredoc": Danger.MEDIUM,
+}
+
+
+def level(description: str | None) -> Danger:
+    if not description:
+        return Danger.HIGH
+    found = RULES.get(description)
+    if found is not None:
+        return found
+    found = RULES.get(re.sub(r"\s*\(.*\)\s*$", "", description))
+    if found is not None:
+        return found
+    return Danger.HIGH

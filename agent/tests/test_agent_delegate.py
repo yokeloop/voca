@@ -2,6 +2,7 @@ import asyncio
 import json
 import shutil
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Literal, cast
@@ -14,16 +15,16 @@ from voca.clientio.cards import CardState
 from voca.config import ApprovalConfig
 from voca.conversation.agent import (
     SPEECH_LIMIT,
+    UNHEARD_RETRY_S,
     VocaAgent,
     clip,
     delivery_text,
-    records,
     result_outcome,
 )
 from voca.conversation.compaction import Limits
-from voca.conversation.context import split_turns
 from voca.conversation.instructions import InstructionLoader
 from voca.conversation.summarizer import Failure, Summarizer, Summary
+from voca.delegation.events import Event, EventState
 from voca.delegation.model import Task, TaskStatus
 from voca.delegation.ports import OutcomeUnknown, Rejected, RunState
 from voca.delegation.service import DelegationService
@@ -39,6 +40,7 @@ VOCABULARY = ApprovalConfig().vocabulary()
 class FakeRepo:
     def __init__(self) -> None:
         self.tasks: dict[str, Task] = {}
+        self.events: dict[tuple[str, str, str], Event] = {}
 
     async def insert(self, task: Task) -> tuple[Task, bool]:
         if task.tool_call_id in self.tasks:
@@ -46,8 +48,12 @@ class FakeRepo:
         self.tasks[task.tool_call_id] = task
         return task, True
 
-    async def save(self, task: Task) -> None:
+    async def save(self, task: Task, at: float, event: Event | None = None) -> None:
         self.tasks[task.tool_call_id] = task
+        if event is not None:
+            key = (event.tool_call_id, event.kind.value, event.request_id)
+            if key not in self.events:
+                self.events[key] = replace(event, id=len(self.events) + 1)
 
     async def get(self, key: str) -> Task | None:
         return self.tasks.get(key)
@@ -66,6 +72,14 @@ class FakeRepo:
 
     async def list_all(self) -> list[Task]:
         return sorted(self.tasks.values(), key=lambda task: -task.created_at)
+
+    async def list_events(self, open_only: bool) -> list[Event]:
+        found = [
+            event
+            for event in self.events.values()
+            if not open_only or event.state != EventState.CLOSED
+        ]
+        return sorted(found, key=lambda event: (event.created_at, event.id or 0))
 
 
 def take(queue: list[Any]) -> Any:
@@ -189,12 +203,17 @@ class FakeHandle:
 
     async def wait_for_playout(self) -> None:
         await self.gate.wait()
-        if self.add_to_chat_ctx and self.agent is not None:
-            ctx = self.agent.chat_ctx.copy()
-            self.chat_items.append(
-                ctx.add_message(role="assistant", content=self.played)
-            )
-            await self.agent.update_chat_ctx(ctx)
+        if self.add_to_chat_ctx and self.played:
+            if self.agent is not None:
+                ctx = self.agent.chat_ctx.copy()
+                self.chat_items.append(
+                    ctx.add_message(role="assistant", content=self.played)
+                )
+                await self.agent.update_chat_ctx(ctx)
+            else:
+                self.chat_items.append(
+                    llm.ChatMessage(role="assistant", content=[self.played])
+                )
         self.events.append(("playout", self.text))
 
 
@@ -204,17 +223,18 @@ class FakeSession:
         *,
         closing: bool = False,
         agent: VocaAgent | None = None,
-        interrupted: bool = False,
+        interrupts: list[bool] | None = None,
         gates: list[asyncio.Event] | None = None,
-        played: str | None = None,
+        played: list[str | None] | None = None,
     ) -> None:
         self.closing = closing
-        self.played = played
+        self.played = played or []
         self.agent = agent
-        self.interrupted = interrupted
+        self.interrupts = interrupts or []
         self.gates = gates or []
         self.calls: list[tuple[str, bool, bool]] = []
         self.events: list[tuple[str, str]] = []
+        self.idles = 0
 
     def say(
         self, text: str, *, allow_interruptions: bool, add_to_chat_ctx: bool
@@ -224,15 +244,20 @@ class FakeSession:
         self.calls.append((text, allow_interruptions, add_to_chat_ctx))
         self.events.append(("say", text))
         gate = self.gates.pop(0) if self.gates else opened()
+        interrupted = self.interrupts.pop(0) if self.interrupts else False
+        played = self.played.pop(0) if self.played else None
         return FakeHandle(
             text,
             add_to_chat_ctx,
             self.events,
             self.agent,
-            self.interrupted,
+            interrupted,
             gate,
-            self.played,
+            played,
         )
+
+    async def wait_for_idle(self) -> None:
+        self.idles += 1
 
 
 def ctx(call_id: str) -> RunContext[Any]:
@@ -440,22 +465,96 @@ def test_delivered_at_after_playout(tmp_path: Path) -> None:
     asyncio.run(main())
 
 
-def test_interrupted_delivery_not_repeated(tmp_path: Path) -> None:
+def test_interrupted_delivery_repeated(tmp_path: Path) -> None:
     async def main() -> None:
         stand = Stand(tmp_path)
         task = stand.put(finished("a"))
-        session = FakeSession(interrupted=True)
+        session = FakeSession(interrupts=[True, False])
         stand.start(session)
         stand.agent.enqueue(task)
         stand.open()
         await until(lambda: stand.repo.tasks["a"].delivered_at is not None)
-        last = stand.rows("a")[-1]
-        assert last["delivered"] is True
-        assert last["interrupted"] is True
+        assert [call[0] for call in session.calls] == [
+            "Готово по поручению: Ответ.",
+            "Готово по поручению: Ответ.",
+        ]
+        assert session.idles == 1
+        rows = stand.rows("a")
+        assert any(
+            row["interrupted"] is True and row["delivered"] is False for row in rows
+        )
+        assert rows[-1]["interrupted"] is False
+        assert rows[-1]["delivered"] is True
         stand.agent.enqueue(task)
         await stand.agent.enqueue_undelivered()
         await settle()
+        assert len(session.calls) == 2
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_unheard_delivery_repeated(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path)
+        gate = asyncio.Event()
+        session = FakeSession(played=["", None], gates=[opened(), gate])
+        stand.start(session)
+        stand.agent.enqueue(stand.put(finished("a")))
+        stand.open()
+        await until(lambda: len(session.calls) == 2)
+        await settle()
+        assert stand.repo.tasks["a"].delivered_at is None
+        gate.set()
+        await until(lambda: stand.repo.tasks["a"].delivered_at is not None)
+        assert len(session.calls) == 2
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_unheard_delivery_waits_before_repeat(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path)
+        pauses: list[float] = []
+        release = asyncio.Event()
+
+        async def sleep(seconds: float) -> None:
+            pauses.append(seconds)
+            await release.wait()
+
+        stand.service.sleep = sleep
+        session = FakeSession(played=["", None])
+        stand.start(session)
+        stand.agent.enqueue(stand.put(finished("a")))
+        stand.open()
+        await until(lambda: pauses == [UNHEARD_RETRY_S])
+        await settle()
         assert len(session.calls) == 1
+        release.set()
+        await until(lambda: stand.repo.tasks["a"].delivered_at is not None)
+        assert len(session.calls) == 2
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_interrupted_delivery_repeats_without_pause(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path)
+        pauses: list[float] = []
+
+        async def sleep(seconds: float) -> None:
+            pauses.append(seconds)
+
+        stand.service.sleep = sleep
+        session = FakeSession(interrupts=[True, False])
+        stand.start(session)
+        stand.agent.enqueue(stand.put(finished("a")))
+        stand.open()
+        await until(lambda: stand.repo.tasks["a"].delivered_at is not None)
+        assert pauses == []
+        assert len(session.calls) == 2
         await stand.agent.stop_delegation()
 
     asyncio.run(main())
@@ -508,15 +607,21 @@ def test_interrupted_delivery_puts_full_result_in_context(tmp_path: Path) -> Non
     async def main() -> VocaAgent:
         stand = Stand(tmp_path)
         task = stand.put(finished("a", LONG))
-        session = FakeSession(agent=stand.agent, interrupted=True, played=PLAYED)
+        gate = asyncio.Event()
+        session = FakeSession(
+            agent=stand.agent,
+            interrupts=[True, False],
+            played=[PLAYED, None],
+            gates=[opened(), gate],
+        )
         stand.start(session)
         stand.agent.enqueue(task)
         stand.open()
-        await until(lambda: stand.repo.tasks["a"].delivered_at is not None)
-        stand.agent.enqueue(task)
-        await stand.agent.enqueue_undelivered()
+        await until(lambda: len(session.calls) == 2)
         await settle()
-        assert len(session.calls) == 1
+        assert stand.repo.tasks["a"].delivered_at is None
+        gate.set()
+        await until(lambda: stand.repo.tasks["a"].delivered_at is not None)
         await stand.agent.stop_delegation()
         return stand.agent
 
@@ -527,9 +632,10 @@ def test_interrupted_delivery_puts_full_result_in_context(tmp_path: Path) -> Non
         "function_call",
         "function_call_output",
         "message",
+        "message",
     ]
     assert items[2].text_content == PLAYED
-    assert [len(turn) for turn in split_turns(records(agent.chat_ctx))] == [3]
+    assert items[3].text_content == delivery_text(finished("a", LONG))
 
 
 def test_long_delivery_puts_whole_result_in_context(tmp_path: Path) -> None:
