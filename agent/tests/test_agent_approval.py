@@ -197,10 +197,17 @@ class FakeHandle:
 
     async def wait_for_playout(self) -> None:
         await self.gate.wait()
-        if self.add_to_chat_ctx and self.agent is not None:
-            ctx = self.agent.chat_ctx.copy()
-            self.chat_items.append(ctx.add_message(role="assistant", content=self.text))
-            await self.agent.update_chat_ctx(ctx)
+        if self.add_to_chat_ctx and self.text:
+            if self.agent is not None:
+                ctx = self.agent.chat_ctx.copy()
+                self.chat_items.append(
+                    ctx.add_message(role="assistant", content=self.text)
+                )
+                await self.agent.update_chat_ctx(ctx)
+            else:
+                self.chat_items.append(
+                    llm.ChatMessage(role="assistant", content=[self.text])
+                )
         self.events.append(("playout", self.text))
 
 
@@ -220,6 +227,7 @@ class FakeSession:
         self.calls: list[tuple[str, bool, bool]] = []
         self.events: list[tuple[str, str]] = []
         self.handles: list[FakeHandle] = []
+        self.idles = 0
 
     def say(
         self, text: str, *, allow_interruptions: bool, add_to_chat_ctx: bool
@@ -235,6 +243,9 @@ class FakeSession:
         )
         self.handles.append(handle)
         return handle
+
+    async def wait_for_idle(self) -> None:
+        self.idles += 1
 
 
 async def tick(_: float) -> None:

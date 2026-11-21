@@ -19,6 +19,7 @@ from livekit.agents import (
     llm,
 )
 from livekit.agents.voice import Agent, AgentSession, ModelSettings, SpeechHandle
+from livekit.agents.voice.agent_activity import ActivityClosedError
 
 from voca.clientio.cards import CardState
 from voca.conversation.approval import (
@@ -174,6 +175,13 @@ def task_view(task: Task, active: Announcement | None) -> dict[str, Any]:
     return view
 
 
+def heard(handle: SpeechHandle) -> bool:
+    return not handle.interrupted and any(
+        item.type == "message" and item.role == "assistant" and item.text_content
+        for item in handle.chat_items
+    )
+
+
 def records(ctx: llm.ChatContext) -> list[Item]:
     items: list[Item] = []
     for item in ctx.items:
@@ -272,6 +280,7 @@ class VocaAgent(Agent):
         self.in_tool: set[str] = set()
         self.queue: asyncio.Queue[str] = asyncio.Queue()
         self.queued: set[str] = set()
+        self.retry: set[str] = set()
         self.present = asyncio.Event()
         self.playout: dict[str, bool] = {}
         self.stopped = False
@@ -452,7 +461,11 @@ class VocaAgent(Agent):
                 logging.getLogger("voca.tasks").exception("delivery failed: %s", key)
             finally:
                 if isinstance(item, str):
-                    self.queued.discard(item)
+                    if item in self.retry:
+                        self.retry.discard(item)
+                        self.queue.put_nowait(item)
+                    else:
+                        self.queued.discard(item)
             if not ok:
                 return
 
@@ -524,9 +537,17 @@ class VocaAgent(Agent):
         except RuntimeError:
             return False
         await handle.wait_for_playout()
-        self.playout[key] = handle.interrupted
         await self._remember(task, handle.chat_items)
-        await self.delegation.mark_delivered(key)
+        if heard(handle):
+            self.playout[key] = False
+            await self.delegation.mark_delivered(key)
+            return True
+        self._task_row(task, interrupted=handle.interrupted)
+        try:
+            await session.wait_for_idle()
+        except ActivityClosedError:
+            return False
+        self.retry.add(key)
         return True
 
     async def _remember(self, task: Task, spoken: list[llm.ChatItem]) -> None:
