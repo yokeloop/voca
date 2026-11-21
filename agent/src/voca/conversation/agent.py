@@ -5,11 +5,18 @@ import re
 import time
 import uuid
 from collections import deque
-from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine
+from collections.abc import (
+    AsyncGenerator,
+    AsyncIterable,
+    Awaitable,
+    Callable,
+    Coroutine,
+)
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any
 
+from livekit import rtc
 from livekit.agents import (
     FlushSentinel,
     RunContext,
@@ -17,6 +24,7 @@ from livekit.agents import (
     ToolError,
     function_tool,
     llm,
+    stt,
 )
 from livekit.agents.voice import Agent, AgentSession, ModelSettings, SpeechHandle
 from livekit.agents.voice.agent_activity import ActivityClosedError
@@ -47,7 +55,17 @@ from voca.conversation.context import Item, approx_tokens, split_turns, trim_cha
 from voca.conversation.descriptions import describe
 from voca.conversation.instructions import InstructionLoader, InstructionSet
 from voca.conversation.summarizer import Failure, Summarizer, Summary
-from voca.conversation.verdict import Decider, Decision, DecisionFailure, Situation
+from voca.conversation.verdict import (
+    Decider,
+    Decision,
+    DecisionFailure,
+    Situation,
+    Sorted,
+    Sorter,
+    SorterPrompt,
+    drop,
+    sorter_state,
+)
 from voca.delegation.events import Event, EventKind
 from voca.delegation.model import CANCELLED, GATEWAY_RESTART, TIMEOUT, Task, TaskStatus
 from voca.delegation.ports import (
@@ -247,6 +265,11 @@ def records(ctx: llm.ChatContext) -> list[Item]:
     return items
 
 
+def talking(session: AgentSession[Any]) -> bool:
+    speech = session.current_speech
+    return speech is not None and not speech.done() and not speech.interrupted
+
+
 def last_message_at(ctx: llm.ChatContext) -> float | None:
     times = [
         item.created_at
@@ -279,7 +302,12 @@ class VocaAgent(Agent):
         delegation: DelegationService | None = None,
         vocabulary: Vocabulary,
         decider: Decider | None = None,
+        sorter: Sorter | None = None,
+        sorter_prompt: SorterPrompt | None = None,
+        glue_window_s: float = 3.0,
+        action_silence_s: float = 0.5,
     ) -> None:
+        assert sorter is None or sorter_prompt is not None
         super().__init__(instructions=instructions.text, chat_ctx=chat_ctx)
         self.loader = loader
         self.current = instructions
@@ -316,6 +344,9 @@ class VocaAgent(Agent):
         self.barged: Announcement | None = None
         self.announced: dict[str, str] = {}
         self.answered: dict[str, dict[str, Any]] = {}
+        self.sorter = sorter
+        self.sorter_prompt = sorter_prompt
+        self.passed: list[str] = []
 
     def set_present(self, present: bool) -> None:
         if present:
@@ -1042,9 +1073,95 @@ class VocaAgent(Agent):
         self.announcements.appendleft(item)
         self.wake.set()
 
+    async def _sort(self, text: str, branch: str, *, speaking: bool) -> bool:
+        assert self.sorter is not None and self.sorter_prompt is not None
+        agent_last = ""
+        for item in reversed(self.chat_ctx.items):
+            if item.type == "message" and item.role == "assistant":
+                agent_last = item.text_content or ""
+                break
+        requests: list[tuple[str, str | None]] = []
+        if self.delegation is not None:
+            for task in await self.delegation.repo.list_open():
+                if (
+                    task.status == TaskStatus.WAITING_APPROVAL
+                    and task.approval is not None
+                ):
+                    requests.append(
+                        (
+                            describe(task.approval.get("description")),
+                            task.approval.get("command"),
+                        )
+                    )
+        result = await self.sorter.sort(sorter_state(agent_last, requests, text))
+        dropped = drop(text, result, self.sorter_prompt, speaking=speaking)
+        if isinstance(result, Sorted):
+            self.log.write(
+                "sorter",
+                branch=branch,
+                text=text,
+                speaking=speaking,
+                dropped=dropped,
+                ms=result.ms,
+                choice=result.kind,
+                confidence=result.confidence,
+            )
+        else:
+            self.log.write(
+                "sorter",
+                branch=branch,
+                text=text,
+                speaking=speaking,
+                dropped=dropped,
+                ms=result.ms,
+                fallback=result.reason,
+            )
+        return dropped
+
+    async def _screen(
+        self,
+        events: AsyncIterable[stt.SpeechEvent | str],
+        speaking: Callable[[], bool],
+    ) -> AsyncGenerator[stt.SpeechEvent | str]:
+        async for event in events:
+            if (
+                self.sorter is None
+                or not isinstance(event, stt.SpeechEvent)
+                or event.type != stt.SpeechEventType.FINAL_TRANSCRIPT
+                or not event.alternatives
+            ):
+                yield event
+                continue
+            text = event.alternatives[0].text.strip()
+            if not text or not speaking():
+                yield event
+                continue
+            if await self._sort(text, "stt", speaking=True):
+                continue
+            self.passed.append(text)
+            yield event
+
+    async def stt_node(
+        self, audio: AsyncIterable[rtc.AudioFrame], model_settings: ModelSettings
+    ) -> AsyncGenerator[stt.SpeechEvent | str]:
+        async for event in self._screen(
+            Agent.default.stt_node(self, audio, model_settings),
+            lambda: talking(self.session),
+        ):
+            yield event
+
     async def on_user_turn_completed(
         self, turn_ctx: llm.ChatContext, new_message: llm.ChatMessage
     ) -> None:
+        if self.sorter is not None:
+            text = new_message.text_content or ""
+            passed, self.passed = self.passed, []
+            if (
+                text not in passed
+                and text != " ".join(passed)
+                and await self._sort(text, "hook", speaking=False)
+            ):
+                raise StopResponse()
         changed = False
         active = self.active or self.barged
         if active is not None and self.delegation is not None:
