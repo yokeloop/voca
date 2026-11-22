@@ -21,6 +21,7 @@ from voca.conversation.agent import (
     BUTTON_PROMPT,
     CLARIFY_WHICH_NOTE,
     CONFIRM_NOTE,
+    DENIED_NOTE,
     EVENT_PROMPT,
     LEFT_NOTE,
     NO_REQUEST,
@@ -960,6 +961,10 @@ def test_conversation_b(tmp_path: Path) -> None:
         await turn(stand, "Не надо, отклони")
         assert stand.backend.approved == [("run_a", "deny", APPROVAL)]
         assert stand.all_rows("approval_judge")[1]["binding"] == "place"
+        assert facts(stand.agent.chat_ctx)[-1][1]["note"] == DENIED_NOTE
+        assert [event.closed_reason for event in stand.repo.events.values()] == [
+            "denied"
+        ]
         await stand.agent.stop_delegation()
 
     asyncio.run(main())
@@ -1292,7 +1297,7 @@ def test_button_reply(tmp_path: Path) -> None:
         assert result == {"ok": True}
         assert facts(stand.agent.chat_ctx)[-1] == (
             "list_tasks",
-            {"id": "a", "event": "denied", "by": "button"},
+            {"id": "a", "event": "denied", "by": "button", "note": DENIED_NOTE},
         )
         await until(lambda: len(session.replies) == 2)
         record = session.replies[1][0]

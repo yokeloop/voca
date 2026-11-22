@@ -37,7 +37,7 @@ from voca.conversation.compaction import Limits
 from voca.conversation.instructions import InstructionLoader
 from voca.conversation.summarizer import Failure, Summarizer, Summary
 from voca.conversation.verdict import DecisionFailure, Sorted
-from voca.delegation.events import Event, EventState, advance, arrival
+from voca.delegation.events import Event, EventKind, EventState, advance, arrival
 from voca.delegation.model import Task, TaskStatus
 from voca.delegation.ports import OutcomeUnknown, Rejected, RunState
 from voca.delegation.service import DelegationService
@@ -964,6 +964,39 @@ def test_failed_delivery_puts_reason_in_context(tmp_path: Path) -> None:
     assert json.loads(result_outcome(failed(""))) == {
         "status": "failed",
         "error": "Hermes вернул ошибку",
+    }
+
+
+def test_denied_delivery_marks_context(tmp_path: Path) -> None:
+    async def main() -> VocaAgent:
+        stand = Stand(tmp_path)
+        task = stand.put(finished("b"))
+        stand.repo.events[("b", "approval", "p1")] = Event(
+            "b",
+            EventKind.APPROVAL,
+            "p1",
+            EventState.CLOSED,
+            0.5,
+            0.5,
+            closed_reason="denied",
+            id=1,
+        )
+        stand.start(FakeSession(agent=stand.agent))
+        stand.agent.enqueue(task)
+        stand.open()
+        await until(lambda: stand.repo.tasks["b"].delivered_at is not None)
+        await stand.agent.stop_delegation()
+        return stand.agent
+
+    agent = asyncio.run(main())
+    check_result(
+        agent,
+        finished("b"),
+        {"status": "succeeded", "result": "Ответ.", "approval": "denied"},
+    )
+    assert json.loads(result_outcome(finished("b"))) == {
+        "status": "succeeded",
+        "result": "Ответ.",
     }
 
 
