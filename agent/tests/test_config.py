@@ -159,7 +159,8 @@ def test_example_config_is_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_approval_section_rejected(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    write_config(tmp_path, monkeypatch, '[approval]\nconfirm = ["Да"]\n')
+    section = "approval"
+    write_config(tmp_path, monkeypatch, f'[{section}]\nconfirm = ["Да"]\n')
     with pytest.raises(pydantic.ValidationError):
         Settings()
 
