@@ -110,6 +110,16 @@ class FakeRepo:
                 return True
         return False
 
+    async def close_request(
+        self, tool_call_id: str, request_id: str, reason: str, at: float
+    ) -> None:
+        key = (tool_call_id, "approval", request_id)
+        event = self.events.get(key)
+        if event is not None and event.state != EventState.CLOSED:
+            self.events[key] = replace(
+                event, state=EventState.CLOSED, closed_reason=reason, updated_at=at
+            )
+
     def event(self, event_id: int) -> Event:
         return next(event for event in self.events.values() if event.id == event_id)
 

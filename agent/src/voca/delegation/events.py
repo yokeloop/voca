@@ -28,6 +28,7 @@ NEXT: dict[EventState, frozenset[EventState]] = {
 DELIVERED = "delivered"
 CANCELLED_BY_USER = "cancelled"
 RESOLVED = "resolved"
+DENIED = "denied"
 
 
 @dataclass(frozen=True)

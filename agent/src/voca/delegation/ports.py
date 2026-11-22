@@ -72,6 +72,10 @@ class TaskRepository(Protocol):
         self, event_id: int, state: EventState, at: float
     ) -> bool: ...
 
+    async def close_request(
+        self, tool_call_id: str, request_id: str, reason: str, at: float
+    ) -> None: ...
+
 
 class DelegationBackend(Protocol):
     async def create_run(self, key: str, text: str) -> str: ...
