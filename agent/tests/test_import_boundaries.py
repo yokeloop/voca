@@ -10,7 +10,7 @@ PURE_MODULES = (
     "delegation/danger",
     "conversation/context",
     "conversation/compaction",
-    "conversation/approval",
+    "conversation/approval_judge",
     "conversation/descriptions",
     "conversation/verdict",
     "conversation/glue",
