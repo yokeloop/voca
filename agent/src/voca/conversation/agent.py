@@ -666,6 +666,17 @@ class VocaAgent(Agent):
             if self.activity == mark:
                 return True
 
+    async def _arrived(self, ids: set[str]) -> set[str]:
+        assert self.delegation is not None
+        if self.reading is not None and self.reading.handle.done():
+            await self._settle_reading(self.reading)
+        busy = set(self.reading.ids) if self.reading is not None else set()
+        return {
+            str(event.id)
+            for event in await self.delegation.repo.list_events(open_only=True)
+            if str(event.id) in ids - busy and event.state == EventState.ARRIVED
+        }
+
     async def _open_task(self, event: Event | None) -> Task | None:
         assert self.delegation is not None
         if event is None or event.kind != EventKind.APPROVAL:
@@ -737,6 +748,15 @@ class VocaAgent(Agent):
                     continue
                 found.append(notification_view(event, task, now))
                 spoken.append(key)
+            if asked:
+                fresh = await self._arrived({view["id"] for view in asked})
+                asked = [view for view in asked if view["id"] in fresh]
+                spoken = [
+                    key
+                    for key in spoken
+                    if not key.startswith(APPROVAL_KEY)
+                    or key.removeprefix(APPROVAL_KEY) in fresh
+                ]
             if not (tasks or asked or expiring or pressed):
                 return True
             keys = [task.tool_call_id for task in tasks]
@@ -793,9 +813,10 @@ class VocaAgent(Agent):
                     self.playout[key] = False
                     await self.delegation.mark_delivered(key)
                 for view in asked:
-                    await self.delegation.repo.advance_event(
+                    if not await self.delegation.repo.advance_event(
                         int(view["id"]), EventState.MENTIONED, now
-                    )
+                    ):
+                        continue
                     self.log.write(
                         "approval_event",
                         event_id=view["id"],
@@ -1409,14 +1430,19 @@ class VocaAgent(Agent):
         )
         if not spoken:
             return
+        now = self.delegation.clock()
+        changed: list[str] = []
+        for id in reading.ids:
+            await self.delegation.repo.advance_event(int(id), EventState.MENTIONED, now)
+            if await self.delegation.repo.advance_event(
+                int(id), EventState.ESSENCE, now
+            ):
+                changed.append(id)
         keys = {
             str(event.id): event.tool_call_id
             for event in await self.delegation.repo.list_events(open_only=True)
         }
-        now = self.delegation.clock()
-        for id in reading.ids:
-            await self.delegation.repo.advance_event(int(id), EventState.MENTIONED, now)
-            await self.delegation.repo.advance_event(int(id), EventState.ESSENCE, now)
+        for id in changed:
             self.log.write(
                 "approval_event",
                 event_id=id,

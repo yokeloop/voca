@@ -690,6 +690,32 @@ def test_interrupted_mention_repeated(tmp_path: Path) -> None:
     asyncio.run(main())
 
 
+def test_read_request_not_mentioned(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path, sorter=FakeSorter({"Да": sorted_(confidence=0.96)}))
+        session = FakeSession(agent=stand.agent)
+        await request(stand, waiting("a"))
+        gate = asyncio.Event()
+        await stand.agent.open_approval(ctx("read", reading(stand, gate=gate)))
+        stand.start(session)
+        stand.open()
+        await settle()
+        gate.set()
+        await until(lambda: stand.repo.event(1).state == EventState.ESSENCE)
+        stand.agent.on_task_change(stand.repo.tasks["a"])
+        await settle()
+        assert session.replies == []
+        assert [row["state"] for row in stand.all_rows("approval_event")] == ["essence"]
+        assert events_of(stand.agent.chat_ctx) == []
+        first = await turn(stand, "Да")
+        assert notes(first)[0].startswith(CONFIRM_NOTE)
+        assert outcomes(stand) == ["confirm"]
+        assert stand.all_rows("approval_judge")[0]["binding"] == "place"
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
 def test_request_and_result_one_reply(tmp_path: Path) -> None:
     async def main() -> None:
         stand = Stand(tmp_path)
