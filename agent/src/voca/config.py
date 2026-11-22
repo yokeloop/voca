@@ -79,7 +79,24 @@ class DecisionConfig(BaseModel):
     }
     sorter_timeout_s: float = Field(default=0.3, gt=0)
     sorter_keep_words: list[str] = Field(
-        default=["нет", "не", "ни", "стоп", "да", "давай"], min_length=1
+        default=[
+            "нет",
+            "не",
+            "ни",
+            "стоп",
+            "да",
+            "давай",
+            "хватит",
+            "стой",
+            "подожди",
+            "подождите",
+            "погоди",
+            "замолчи",
+            "замолчите",
+            "достаточно",
+            "тихо",
+        ],
+        min_length=1,
     )
     sorter_max_words: int = Field(default=4, ge=1)
     sorter_min_words: int = Field(default=2, ge=1)

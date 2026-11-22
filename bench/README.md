@@ -26,8 +26,11 @@ Scripts:
   the main model generates in the background (`scripts/up.sh llm`,
   `--llm-url`); prints `PASS|FAIL id verdict picked confidence ms`, the
   summary `decision <form> N/M p50 … ms p95 … ms (… false approve …,
-  boundary …)` and `thresholds`; writes
-  `.local/bench/decision/decision.json` and `decision-load.json`.
+  boundary …)` and `thresholds`; form b also prints `after=` — the outcome
+  after the agent's own code (`drop` with the default keep words, the deny
+  guard of `approval_judge.py`) — and `after b N/M, false deny after guard K`;
+  the summary has `false deny` next to `false approve` for forms a and b;
+  writes `.local/bench/decision/decision.json` and `decision-load.json`.
 - `llm_ru_tools.py` (VOCA-4) — G3: `dialogs`, `delegate`, `all` (the default),
   `dialogs-thinking` (the twenty dialogs with thinking on, VOCA-7),
   `delegate-thinking` (the ten scenarios with thinking on);

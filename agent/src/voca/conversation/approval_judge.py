@@ -34,6 +34,8 @@ STOP_WORDS = frozenset(
         "команду",
     }
 )
+DENY_WORDS = frozenset({"не", "нет", "ни", "нельзя"})
+DENY_STEMS = ("отклон", "отмен", "запрещ")
 PACKAGE_VERBS = frozenset({"install", "remove", "purge", "uninstall", "erase"})
 SENTENCE_END = re.compile(r"[.!?…](\s|$)")
 
@@ -84,6 +86,16 @@ def stems(text: str) -> set[str]:
         for word in words(text)
         if len(word) >= STEM and word not in STOP_WORDS
     }
+
+
+def deny_marked(text: str) -> bool:
+    return any(
+        word in DENY_WORDS or word.startswith(DENY_STEMS) for word in words(text)
+    )
+
+
+def interrogative(text: str) -> bool:
+    return "?" in text or "ли" in words(text)
 
 
 def objects(command: str | None) -> set[str]:
@@ -189,6 +201,12 @@ def judge(
     )
     one = (candidate.id,)
     if sorted.answer == "deny":
+        if not deny_marked(text):
+            if interrogative(text):
+                ids = tuple(request.id for request in content) or placed or every
+                return Judgement("asks", ids)
+            unsure = Judgement("clarify_sure", one, binding, confidence, rules.deny)
+            return _limited(unsure, rules, clarified)
         if binding == "none" and len(requests) > 1:
             return Judgement("pass", (), binding, confidence)
         outcome: Outcome = "deny" if confidence >= rules.deny else "clarify_sure"

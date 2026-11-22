@@ -157,7 +157,7 @@ a section) are no longer read.
   after the VOCA-48 stand: short «Да.» 0.51–0.54), `threshold_deny` (0.45)
   and `clarify_limit` (2: clarifications in a row);
   `sorter_timeout_s` (0.3); `sorter_keep_words` (single words; a reply with
-  one of them is never noise), `sorter_max_words` (4: only a reply of at most
+  one of them is never noise; the default includes the stop commands), `sorter_max_words` (4: only a reply of at most
   this many words is dropped as noise), `sorter_min_words` (2: when the sorter
   fails while the agent speaks, a reply with fewer words and no keep word is
   dropped). Empty texts, a missing or an unknown criterion and a

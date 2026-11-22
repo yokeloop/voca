@@ -297,6 +297,63 @@ def test_new_request_closes_previous(tmp_path: Path) -> None:
     ]
 
 
+def test_close_request_denied(tmp_path: Path) -> None:
+    path = tmp_path / "tasks.sqlite3"
+    repo = SqliteTaskRepository.open(path)
+    task = Task("k", "a", TaskStatus.QUEUED, 1.0)
+    waiting = task.transition(TaskStatus.RUNNING, run_id="r").transition(
+        TaskStatus.WAITING_APPROVAL, approval={"description": "d", "request_id": "r1"}
+    )
+
+    async def main() -> tuple[list[Event], list[Event]]:
+        await repo.insert(task)
+        await repo.save(waiting, 2.0, arrival(waiting, 2.0))
+        await repo.close_request("k", "r1", "denied", 3.0)
+        closed = await repo.list_events(open_only=False)
+        await repo.save(
+            waiting.transition(TaskStatus.SUCCEEDED, approval=None, result="ok"), 4.0
+        )
+        return closed, await repo.list_events(open_only=False)
+
+    closed, after = asyncio.run(main())
+    repo.close()
+    expected = [("r1", EventState.CLOSED, "denied", 3.0)]
+    for events in (closed, after):
+        assert [
+            (event.request_id, event.state, event.closed_reason, event.updated_at)
+            for event in events
+            if event.kind == EventKind.APPROVAL
+        ] == expected
+    reopened = SqliteTaskRepository.open(path)
+    events = asyncio.run(reopened.list_events(open_only=False))
+    reopened.close()
+    assert [
+        event.closed_reason for event in events if event.kind == EventKind.APPROVAL
+    ] == ["denied"]
+
+
+def test_close_request_denied_after_resolved(tmp_path: Path) -> None:
+    repo = SqliteTaskRepository.open(tmp_path / "tasks.sqlite3")
+    task = Task("k", "a", TaskStatus.QUEUED, 1.0)
+    waiting = task.transition(TaskStatus.RUNNING, run_id="r").transition(
+        TaskStatus.WAITING_APPROVAL, approval={"description": "d", "request_id": "r1"}
+    )
+
+    async def main() -> list[Event]:
+        await repo.insert(task)
+        await repo.save(waiting, 2.0, arrival(waiting, 2.0))
+        await repo.save(waiting.transition(TaskStatus.RUNNING, approval=None), 3.0)
+        await repo.close_request("k", "r1", "denied", 4.0)
+        return await repo.list_events(open_only=False)
+
+    events = asyncio.run(main())
+    repo.close()
+    assert [
+        (event.request_id, event.state, event.closed_reason, event.updated_at)
+        for event in events
+    ] == [("r1", EventState.CLOSED, "denied", 4.0)]
+
+
 def test_list_events_open_only_in_order(tmp_path: Path) -> None:
     repo = SqliteTaskRepository.open(tmp_path / "tasks.sqlite3")
     tasks = [Task(key, key, TaskStatus.QUEUED, 1.0) for key in ("a", "b", "c")]

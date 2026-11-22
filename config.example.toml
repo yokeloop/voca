@@ -97,8 +97,8 @@ timeout_s = 1.5
 sorter_instructions = "Ассистент разговаривает с пользователем голосом. В состоянии — последняя фраза ассистента, ожидающие запросы подтверждения команд и фраза пользователя в виде распознанной речи. Что это за фраза пользователя?"
 # Seconds to wait for the sorter; on failure while the agent speaks the length threshold decides.
 sorter_timeout_s = 0.3
-# Single words; a reply with one of these words is never dropped as noise.
-sorter_keep_words = ["нет", "не", "ни", "стоп", "да", "давай"]
+# Single words; a reply with one of these words is never dropped as noise; stop commands are keep words so they interrupt the agent's speech.
+sorter_keep_words = ["нет", "не", "ни", "стоп", "да", "давай", "хватит", "стой", "подожди", "подождите", "погоди", "замолчи", "замолчите", "достаточно", "тихо"]
 # Only a reply of at most this many words is dropped as noise.
 sorter_max_words = 4
 # When the sorter fails while the agent speaks, a reply with fewer words and no keep word is dropped.

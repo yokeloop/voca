@@ -2,6 +2,7 @@ from typing import Any
 
 import pytest
 
+from voca.config import DecisionConfig
 from voca.conversation.verdict import (
     KINDS,
     RELATIONS,
@@ -201,6 +202,27 @@ def test_drop_noise(text: str) -> None:
 )
 def test_drop_keeps_anchored(text: str) -> None:
     assert not drop(text, NOISE, SORTER, speaking=True)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Все, хватит, хватит.",
+        "Хватит поговорить.",
+        "Хватит.",
+        "Стой.",
+        "Подожди.",
+        "Погоди.",
+        "Замолчи.",
+        "Достаточно.",
+        "Тихо.",
+    ],
+)
+def test_drop_keeps_stop_commands(text: str) -> None:
+    prompt = DecisionConfig().sorter_prompt()
+    assert not drop(text, NOISE, prompt, speaking=True)
+    if text == "Хватит.":
+        assert not drop("Хватит.", FAILED, prompt, speaking=True)
 
 
 def test_drop_keeps_long_noise() -> None:

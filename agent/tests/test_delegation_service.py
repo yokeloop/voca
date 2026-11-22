@@ -5,7 +5,7 @@ from typing import Any, Literal
 import pytest
 
 from voca.delegation.danger import Danger
-from voca.delegation.events import Event, EventState
+from voca.delegation.events import Event, EventState, arrival
 from voca.delegation.model import Task, TaskStatus
 from voca.delegation.ports import (
     ApprovalNotActive,
@@ -72,6 +72,18 @@ class FakeRepo:
             if not open_only or event.state != EventState.CLOSED
         ]
         return sorted(found, key=lambda event: (event.created_at, event.id or 0))
+
+    async def close_request(
+        self, tool_call_id: str, request_id: str, reason: str, at: float
+    ) -> None:
+        key = (tool_call_id, "approval", request_id)
+        event = self.events.get(key)
+        if event is not None and (
+            event.state != EventState.CLOSED or event.closed_reason == "resolved"
+        ):
+            self.events[key] = replace(
+                event, state=EventState.CLOSED, closed_reason=reason, updated_at=at
+            )
 
 
 def take(queue: list[Any]) -> Any:
@@ -408,6 +420,24 @@ def test_approve_once_and_deny() -> None:
         ("run_1", "deny", APPROVAL),
     ]
     assert repo.tasks["k"].status == TaskStatus.WAITING_APPROVAL
+
+
+def test_deny_closes_request_denied() -> None:
+    key = ("k", "approval", "r1")
+    for choice, state, reason in (
+        ("deny", EventState.CLOSED, "denied"),
+        ("once", EventState.ARRIVED, None),
+    ):
+        service, repo, _, _, _ = make()
+        waiting_task(repo)
+        event = arrival(repo.tasks["k"], 0.0)
+        assert event is not None
+        repo.events[key] = replace(event, id=1)
+        asyncio.run(service.approve("k", choice))
+        assert (repo.events[key].state, repo.events[key].closed_reason) == (
+            state,
+            reason,
+        )
 
 
 def test_approve_authority_passes_generation() -> None:

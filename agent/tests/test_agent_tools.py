@@ -1,6 +1,7 @@
 import asyncio
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from livekit.agents import ToolError
@@ -10,6 +11,7 @@ from tests.test_agent_approval import (
     FakeSession,
     FakeSorter,
     Stand,
+    ctx,
     facts,
     finished,
     request,
@@ -23,6 +25,7 @@ from voca.conversation.agent import (
     APPROVAL_GONE,
     BUTTON_PROMPT,
     DELEGATE_UNAVAILABLE,
+    DENIED_NOTE,
     NOT_STEERABLE,
     TASK_AMBIGUOUS,
     TASK_CLOSED,
@@ -90,6 +93,70 @@ def test_list_tasks_clips_result(tmp_path: Path) -> None:
         stand.put(finished("a", "слово " * 3800))
         [task] = json.loads(await stand.agent.list_tasks())["tasks"]
         assert 0 < len(task["result"]) <= 300
+
+    asyncio.run(main())
+
+
+def test_list_tasks_marks_denied(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path)
+        stand.put(finished("a"))
+        stand.put(finished("b", created_at=2.0))
+        stand.repo.events = {
+            ("a", "approval", "p1"): Event(
+                "a",
+                EventKind.APPROVAL,
+                "p1",
+                EventState.CLOSED,
+                1.0,
+                2.0,
+                Danger.HIGH,
+                closed_reason="denied",
+                id=1,
+            ),
+        }
+        listed = json.loads(await stand.make_agent().list_tasks())["tasks"]
+        views = {task["id"]: task for task in listed}
+        assert views["a"]["status"] == "succeeded"
+        assert views["a"]["approval"] == "denied"
+        assert "approval" not in views["b"]
+
+    asyncio.run(main())
+
+
+def test_list_tasks_waiting_after_deny_keeps_request(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path)
+        stand.put(waiting("a", {**APPROVAL, "request_id": "p2"}))
+        stand.repo.events = {
+            ("a", "approval", "p1"): Event(
+                "a",
+                EventKind.APPROVAL,
+                "p1",
+                EventState.CLOSED,
+                1.0,
+                2.0,
+                Danger.HIGH,
+                closed_reason="denied",
+                id=1,
+            ),
+            ("a", "approval", "p2"): Event(
+                "a",
+                EventKind.APPROVAL,
+                "p2",
+                EventState.ARRIVED,
+                3.0,
+                3.0,
+                Danger.HIGH,
+                id=2,
+            ),
+        }
+        [view] = json.loads(await stand.agent.list_tasks())["tasks"]
+        assert view["status"] == "waiting_approval"
+        assert view["approval"] == {
+            "request": "удаление в корневом каталоге",
+            "command": "rm -r /tmp/x",
+        }
 
     asyncio.run(main())
 
@@ -255,6 +322,31 @@ def test_approve_from_page(tmp_path: Path) -> None:
         await settle()
         assert len(session.replies) == 2
         assert session.replies[1][0].startswith(BUTTON_PROMPT)
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_delegate_again_after_deny(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path)
+        session = FakeSession(agent=stand.agent)
+        stand.start(session)
+        stand.open()
+        await request(stand, waiting("a"))
+        await until(lambda: len(session.replies) == 1)
+        assert await stand.agent.approve_from_page("a", "p1", "deny") == {"ok": True}
+        assert facts(stand.agent.chat_ctx)[-1] == (
+            "list_tasks",
+            {"id": "a", "event": "denied", "by": "button", "note": DENIED_NOTE},
+        )
+        assert stand.repo.events[("a", "approval", "p1")].closed_reason == "denied"
+        stand.backend.created = ["run_b"]
+        stand.backend.runs["run_b"] = [RunState("run_b", TaskStatus.RUNNING)]
+        handle = SimpleNamespace(interrupted=False)
+        await stand.agent.delegate(ctx("b", handle), "Удали каталог /tmp/x")
+        assert "b" in stand.repo.tasks
+        assert ("b", "Удали каталог /tmp/x") in stand.backend.posts
         await stand.agent.stop_delegation()
 
     asyncio.run(main())

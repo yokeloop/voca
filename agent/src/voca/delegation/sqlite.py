@@ -217,6 +217,23 @@ class SqliteTaskRepository:
                 self.db.execute("ROLLBACK")
             raise
 
+    def _close_request(
+        self, tool_call_id: str, request_id: str, reason: str, at: float
+    ) -> None:
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            self.db.execute(
+                "UPDATE events SET state = 'closed', closed_reason = ?, updated_at = ? "
+                "WHERE tool_call_id = ? AND kind = 'approval' AND request_id = ? "
+                "AND (state != 'closed' OR closed_reason = 'resolved')",
+                (reason, at, tool_call_id, request_id),
+            )
+            self.db.execute("COMMIT")
+        except BaseException:
+            if self.db.in_transaction:
+                self.db.execute("ROLLBACK")
+            raise
+
     def _get(self, key: str) -> Task | None:
         row = self.db.execute(
             f"SELECT {COLUMNS} FROM tasks WHERE tool_call_id = ?", (key,)
@@ -273,3 +290,11 @@ class SqliteTaskRepository:
     async def advance_event(self, event_id: int, state: EventState, at: float) -> bool:
         async with self.lock:
             return await asyncio.to_thread(self._advance, event_id, state, at)
+
+    async def close_request(
+        self, tool_call_id: str, request_id: str, reason: str, at: float
+    ) -> None:
+        async with self.lock:
+            await asyncio.to_thread(
+                self._close_request, tool_call_id, request_id, reason, at
+            )

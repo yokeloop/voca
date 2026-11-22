@@ -69,7 +69,7 @@ from voca.conversation.verdict import (
     sorter_state,
 )
 from voca.delegation.danger import Danger
-from voca.delegation.events import Event, EventKind, EventState, open_request
+from voca.delegation.events import DENIED, Event, EventKind, EventState, open_request
 from voca.delegation.model import (
     CANCELLED,
     GATEWAY_RESTART,
@@ -164,7 +164,7 @@ def clip(text: str, limit: int = SPEECH_LIMIT) -> str:
     return (head[:space] if space > 0 else text[:limit]).rstrip()
 
 
-def result_outcome(task: Task) -> str:
+def result_outcome(task: Task, denied: bool = False) -> str:
     if task.status == TaskStatus.SUCCEEDED:
         outcome = {"status": task.status.value, "result": task.result or ""}
     else:
@@ -172,6 +172,8 @@ def result_outcome(task: Task) -> str:
         outcome = {"status": task.status.value, "error": reason}
         if task.error:
             outcome["detail"] = task.error
+    if denied:
+        outcome["approval"] = "denied"
     return json.dumps(outcome, ensure_ascii=False)
 
 
@@ -183,7 +185,7 @@ def short_id(key: str) -> str:
     return key
 
 
-def task_view(task: Task) -> dict[str, Any]:
+def task_view(task: Task, denied: bool = False) -> dict[str, Any]:
     view: dict[str, Any] = {
         "id": short_id(task.tool_call_id),
         "text": clip(task.text, APPROVAL_LIMIT),
@@ -198,6 +200,8 @@ def task_view(task: Task) -> dict[str, Any]:
             "request": describe(task.approval.get("description")),
             "command": task.approval.get("command"),
         }
+    if denied and task.status != TaskStatus.WAITING_APPROVAL:
+        view["approval"] = "denied"
     return view
 
 
@@ -259,6 +263,7 @@ CONFIRM_NOTE = "Запрос Hermes ниже опасный, короткого 
 LEFT_NOTE = "Ответ пользователя на запрос Hermes так и не понятен. Скажи одной фразой, что запрос остаётся в очереди и его можно разрешить или отклонить позже голосом или кнопкой на экране. Больше не переспрашивай."
 PENDING_NOTE = "Запрос Hermes ниже всё ещё ждёт ответа пользователя. Ответь на реплику как обычно и в конце одной фразой скажи, что запрос ждёт ответа."
 UNAVAILABLE_NOTE = "Модель решений сейчас недоступна: голосом запрос Hermes не разрешить и не отклонить. Если пользователь отвечал на запрос ниже, скажи, что ответ не разобран, и предложи кнопки на экране; иначе ответь как обычно."
+DENIED_NOTE = "Запрос отклонён, поручение не продолжится. Чтобы выполнить его снова, нужен новый вызов delegate."
 NOTES: dict[str, str] = {
     "confirm": CONFIRM_NOTE,
     "clarify_which": CLARIFY_WHICH_NOTE,
@@ -850,6 +855,15 @@ class VocaAgent(Agent):
             else:
                 self.queued.discard(key)
 
+    async def _denied(self) -> set[str]:
+        if self.delegation is None:
+            return set()
+        return {
+            event.tool_call_id
+            for event in await self.delegation.repo.list_events(open_only=False)
+            if event.kind == EventKind.APPROVAL and event.closed_reason == DENIED
+        }
+
     async def _remember(self, task: Task, spoken: list[llm.ChatItem]) -> None:
         call_id = f"delivery_{task.tool_call_id}"
         ctx = self.chat_ctx.copy()
@@ -869,7 +883,9 @@ class VocaAgent(Agent):
                     id=f"{call_id}_output",
                     call_id=call_id,
                     name="delegate",
-                    output=result_outcome(task),
+                    output=result_outcome(
+                        task, task.tool_call_id in await self._denied()
+                    ),
                     is_error=task.status != TaskStatus.SUCCEEDED,
                     created_at=at - 1e-6,
                 ),
@@ -930,9 +946,10 @@ class VocaAgent(Agent):
             return {"ok": False, "error": APPROVAL_FAILED}
         self.answered[key] = request_id
         event = "approved" if choice == "once" else "denied"
-        await self._fact(
-            "list_tasks", {}, {"id": short_id(key), "event": event, "by": "button"}
-        )
+        output: dict[str, Any] = {"id": short_id(key), "event": event, "by": "button"}
+        if choice == "deny":
+            output["note"] = DENIED_NOTE
+        await self._fact("list_tasks", {}, output)
         self._task_row(task, approval=choice, by="button")
         self.pressed[f"{BUTTON_KEY}{key}"] = {
             "task": short_id(key),
@@ -1562,16 +1579,15 @@ class VocaAgent(Agent):
             await self._approval_failed(key, APPROVAL_FAILED)
             return
         self.answered[key] = event.request_id
-        await self._fact(
-            "list_tasks",
-            {},
-            {
-                "id": short_id(key),
-                "event": "approved" if choice == "once" else "denied",
-                "by": "voice",
-                "request": describe(approval.get("description")),
-            },
-        )
+        output: dict[str, Any] = {
+            "id": short_id(key),
+            "event": "approved" if choice == "once" else "denied",
+            "by": "voice",
+            "request": describe(approval.get("description")),
+        }
+        if choice == "deny":
+            output["note"] = DENIED_NOTE
+        await self._fact("list_tasks", {}, output)
         self._task_row(task, approval=choice, by="voice")
 
     async def _approval_failed(self, key: str, error: str) -> None:
@@ -1645,7 +1661,8 @@ class VocaAgent(Agent):
             task for task in await self.delegation.repo.list_all() if not task.is_open
         ]
         found.extend(closed[:RECENT_LIMIT])
-        tasks = [task_view(task) for task in found]
+        denied = await self._denied()
+        tasks = [task_view(task, task.tool_call_id in denied) for task in found]
         return json.dumps({"tasks": tasks}, ensure_ascii=False)
 
     @function_tool

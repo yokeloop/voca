@@ -4,6 +4,7 @@ import os
 import sqlite3
 import sys
 import time
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 
 from livekit import rtc
@@ -38,6 +39,32 @@ from voca.session.model import ArchiveRow
 from voca.session.store import SessionRecorder, SessionStore, StoreError
 from voca.speech.stress import load_accent
 from voca.telemetry.jsonl import JsonlLog, TurnTracker
+
+
+def relink(
+    io: room_io.RoomIO,
+    participants: Mapping[str, rtc.RemoteParticipant],
+    *,
+    joined: str | None = None,
+    leaving: str | None = None,
+) -> str | None:
+    linked = io.linked_participant
+    if (
+        linked is not None
+        and linked.identity != leaving
+        and linked.identity in participants
+    ):
+        return None
+    users = [
+        identity
+        for identity in participants
+        if identity.startswith("user-") and identity != leaving
+    ]
+    if not users:
+        return None
+    chosen = joined if joined in users else users[-1]
+    io.set_participant(chosen)
+    return chosen
 
 
 def prewarm(proc: JobProcess) -> None:
@@ -229,13 +256,23 @@ async def entrypoint(ctx: JobContext) -> None:
     def on_participant(participant: rtc.RemoteParticipant) -> None:
         if participant.identity.startswith("user-"):
             log.device = participant.identity.removeprefix("user-")
+            relink(
+                session.room_io,
+                ctx.room.remote_participants,
+                joined=participant.identity,
+            )
             agent.set_present(True)
             agent.check_due()
 
     def on_left(participant: rtc.RemoteParticipant) -> None:
-        if participant.identity.startswith("user-") and not users_present(
-            participant.identity
-        ):
+        if not participant.identity.startswith("user-"):
+            return
+        relink(
+            session.room_io,
+            ctx.room.remote_participants,
+            leaving=participant.identity,
+        )
+        if not users_present(participant.identity):
             agent.set_present(False)
 
     ctx.room.on("participant_connected", on_participant)

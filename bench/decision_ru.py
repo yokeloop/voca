@@ -12,6 +12,10 @@ from typing import Any
 
 import httpx
 
+from voca.config import DecisionConfig
+from voca.conversation.approval_judge import deny_marked, interrogative
+from voca.conversation.verdict import Sorted, drop
+
 ROOT = Path(__file__).resolve().parents[1]
 CORPUS = Path(__file__).resolve().parent / "corpus" / "decision.json"
 OUT = ROOT / ".local" / "bench" / "decision" / "decision.json"
@@ -34,6 +38,7 @@ PROMPT = (
     "Расскажи подробно, как устроен голосовой ассистент: распознавание речи, "
     "языковая модель и синтез речи. Ответь по-русски."
 )
+SORTER = DecisionConfig().sorter_prompt()
 
 
 def state_of(case: dict[str, Any], requests: dict[str, Any]) -> dict[str, str]:
@@ -197,6 +202,15 @@ def wanted(name: str, item: dict[str, Any]) -> int:
     return int("approve" in item["expect"])
 
 
+def after_rule(phrase: str, kind: tuple[str, float], label: str) -> str:
+    if kind[0] == "noise":
+        dropped = drop(phrase, Sorted("noise", kind[1], 0), SORTER, speaking=True)
+        return "noise" if dropped else "other"
+    if label == "deny" and not deny_marked(phrase):
+        return "ask" if interrogative(phrase) else "other"
+    return label
+
+
 def score(name: str, item: dict[str, Any], answers: Answers) -> dict[str, Any]:
     false: list[float] = []
     yes: list[float] = []
@@ -269,13 +283,22 @@ def score(name: str, item: dict[str, Any], answers: Answers) -> dict[str, Any]:
                 confidence *= answer_confidence
     if label == "approve":
         (yes if "approve" in item["expect"] else false).append(confidence)
-    return {
+    result = {
         "picked": label,
         "confidence": confidence,
         "passed": label in item["expect"],
+        "false_deny": label == "deny" and "deny" not in item["expect"],
         "false": false,
         "yes": yes,
     }
+    if name == "b":
+        after = after_rule(item["phrase"], answers["kind"], label)
+        result.update(
+            after=after,
+            after_passed=after in item["expect"],
+            after_false_deny=after == "deny" and "deny" not in item["expect"],
+        )
+    return result
 
 
 def entry(
@@ -303,6 +326,8 @@ def entry(
         ms=ms,
         answers=raw,
     )
+    if "after" in result:
+        row["after"] = result["after"]
     return row
 
 
@@ -323,6 +348,9 @@ async def measure(
     false: list[float] = []
     yes: list[float] = []
     below = 0
+    false_deny = 0
+    after_false_deny = 0
+    after_passed = 0
     for number in range(rounds):
         for item, state, questions in items:
             answers, ms, raw = await ask(client, model, state, questions)
@@ -332,21 +360,26 @@ async def measure(
             if not isinstance(result, str):
                 false.extend(result["false"])
                 yes.extend(result["yes"])
+                false_deny += result.get("false_deny", False)
+                after_false_deny += result.get("after_false_deny", False)
             if number != 0:
                 continue
             if not isinstance(result, str):
                 below += result.get("below", False)
+                after_passed += result.get("after_passed", False)
             row = entry(name, item, result, ms, raw)
             first.append(row)
-            print(
+            fields = [
                 row["status"],
                 row["id"],
                 row.get("verdict", row.get("failure")),
                 row.get("picked", "-"),
                 round(row.get("confidence", 0.0), 3),
                 row["ms"],
-                flush=True,
-            )
+            ]
+            if name == "b":
+                fields.append(f"after={row.get('after', '-')}")
+            print(*fields, flush=True)
     good = sum(row["status"] == "PASS" for row in first)
     p50 = round(statistics.median(times)) if times else 0
     p95 = percentile(times, 0.95)
@@ -369,11 +402,18 @@ async def measure(
             for threshold in THRESHOLDS
             if threshold >= boundary
         }
+        denies = f", false deny {false_deny}" if name in ("a", "b") else ""
         print(
             f"decision {name} {head}, false approve {len(false)}, "
-            f"boundary {round(boundary, 3)})",
+            f"boundary {round(boundary, 3)}{denies})",
             flush=True,
         )
+        if name == "b":
+            print(
+                f"after b {after_passed}/{len(items)}, "
+                f"false deny after guard {after_false_deny}",
+                flush=True,
+            )
         print(
             " ".join(
                 [f"thresholds {name}"]
@@ -384,6 +424,10 @@ async def measure(
         summary.update(
             false_approve=len(false), boundary=boundary, thresholds=thresholds
         )
+        if name in ("a", "b"):
+            summary["false_deny"] = false_deny
+        if name == "b":
+            summary.update(after_passed=after_passed, after_false_deny=after_false_deny)
     summary.update(cases=first, times_ms=times)
     return summary
 
