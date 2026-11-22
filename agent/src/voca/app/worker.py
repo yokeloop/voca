@@ -120,6 +120,7 @@ async def entrypoint(ctx: JobContext) -> None:
         sorter_prompt=settings.decision.sorter_prompt(),
         glue_window_s=settings.agent.glue_window_s,
         action_silence_s=settings.agent.action_silence_s,
+        event_silence_s=settings.agent.event_silence_s,
     )
     if delegation is not None:
         delegation.on_change = agent.on_task_change

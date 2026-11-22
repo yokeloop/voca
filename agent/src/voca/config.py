@@ -57,6 +57,7 @@ class AgentConfig(BaseModel):
     preemptive_generation: bool = True
     glue_window_s: float = Field(default=3.0, gt=0)
     action_silence_s: float = Field(default=0.5, ge=0)
+    event_silence_s: float = Field(default=1.5, ge=0)
 
 
 class ApprovalConfig(BaseModel):

@@ -177,6 +177,9 @@ def opened() -> asyncio.Event:
     return event
 
 
+REPLY = "Кстати, Hermes закончил поручение."
+
+
 class FakeHandle:
     def __init__(
         self,
@@ -186,6 +189,7 @@ class FakeHandle:
         agent: VocaAgent | None,
         interrupted: bool,
         gate: asyncio.Event,
+        error: BaseException | None = None,
     ) -> None:
         self.text = text
         self.add_to_chat_ctx = add_to_chat_ctx
@@ -193,11 +197,15 @@ class FakeHandle:
         self.agent = agent
         self.interrupted = interrupted
         self.gate = gate
+        self.error = error
         self.chat_items: list[llm.ChatItem] = []
+
+    def exception(self) -> BaseException | None:
+        return self.error
 
     async def wait_for_playout(self) -> None:
         await self.gate.wait()
-        if self.add_to_chat_ctx and self.text:
+        if self.add_to_chat_ctx and self.text and self.error is None:
             if self.agent is not None:
                 ctx = self.agent.chat_ctx.copy()
                 self.chat_items.append(
@@ -219,14 +227,17 @@ class FakeSession:
         agent: VocaAgent | None = None,
         interrupts: list[bool] | None = None,
         gates: list[asyncio.Event] | None = None,
+        errors: list[BaseException | None] | None = None,
     ) -> None:
         self.closing = closing
+        self.errors = errors or []
         self.agent = agent
         self.interrupts = interrupts or []
         self.gates = gates or []
         self.calls: list[tuple[str, bool, bool]] = []
         self.events: list[tuple[str, str]] = []
         self.handles: list[FakeHandle] = []
+        self.replies: list[tuple[str, Any, bool]] = []
         self.idles = 0
 
     def say(
@@ -240,6 +251,22 @@ class FakeSession:
         interrupted = self.interrupts.pop(0) if self.interrupts else False
         handle = FakeHandle(
             text, add_to_chat_ctx, self.events, self.agent, interrupted, gate
+        )
+        self.handles.append(handle)
+        return handle
+
+    def generate_reply(
+        self, *, instructions: str, tool_choice: Any, allow_interruptions: bool
+    ) -> FakeHandle:
+        if self.closing:
+            raise RuntimeError("closing")
+        self.replies.append((instructions, tool_choice, allow_interruptions))
+        self.events.append(("reply", instructions))
+        gate = self.gates.pop(0) if self.gates else opened()
+        interrupted = self.interrupts.pop(0) if self.interrupts else False
+        error = self.errors.pop(0) if self.errors else None
+        handle = FakeHandle(
+            REPLY, True, self.events, self.agent, interrupted, gate, error
         )
         self.handles.append(handle)
         return handle
@@ -639,10 +666,12 @@ def test_announcement_before_result_and_results_play(tmp_path: Path) -> None:
         stand.open()
         await until(lambda: stand.repo.tasks["c"].delivered_at is not None)
         await settle()
-        assert spoken(session) == [
-            announcement_text(waiting("a"), VOCABULARY),
-            "Готово по поручению: Третья.",
-        ]
+        announced = announcement_text(waiting("a"), VOCABULARY)
+        assert spoken(session) == [announced]
+        assert len(session.replies) == 1
+        assert "Третья." in session.replies[0][0]
+        kinds = [kind for kind, _ in session.events]
+        assert session.events.index(("say", announced)) < kinds.index("reply")
         assert stand.agent.active is not None
         assert stand.agent.active.key == "a"
         await stand.agent.stop_delegation()

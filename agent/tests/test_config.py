@@ -264,6 +264,7 @@ def test_agent_turn_defaults() -> None:
     agent = Settings().agent
     assert agent.glue_window_s == 3.0
     assert agent.action_silence_s == 0.5
+    assert agent.event_silence_s == 1.5
 
 
 def test_sorter_defaults() -> None:
