@@ -666,16 +666,17 @@ class VocaAgent(Agent):
             if self.activity == mark:
                 return True
 
-    async def _arrived(self, ids: set[str]) -> set[str]:
+    async def _arrived(self, ids: set[str]) -> tuple[set[str], set[str]]:
         assert self.delegation is not None
         if self.reading is not None and self.reading.handle.done():
             await self._settle_reading(self.reading)
-        busy = set(self.reading.ids) if self.reading is not None else set()
-        return {
+        busy = ids & set(self.reading.ids) if self.reading is not None else set()
+        fresh = {
             str(event.id)
             for event in await self.delegation.repo.list_events(open_only=True)
             if str(event.id) in ids - busy and event.state == EventState.ARRIVED
         }
+        return fresh, busy
 
     async def _open_task(self, event: Event | None) -> Task | None:
         assert self.delegation is not None
@@ -749,7 +750,8 @@ class VocaAgent(Agent):
                 found.append(notification_view(event, task, now))
                 spoken.append(key)
             if asked:
-                fresh = await self._arrived({view["id"] for view in asked})
+                fresh, busy = await self._arrived({view["id"] for view in asked})
+                self.retry.update(f"{APPROVAL_KEY}{id}" for id in busy)
                 asked = [view for view in asked if view["id"] in fresh]
                 spoken = [
                     key

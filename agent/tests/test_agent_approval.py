@@ -716,6 +716,30 @@ def test_read_request_not_mentioned(tmp_path: Path) -> None:
     asyncio.run(main())
 
 
+def test_mention_after_cut_reading(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path)
+        session = FakeSession(agent=stand.agent)
+        await request(stand, waiting("a"))
+        gate = asyncio.Event()
+        handle = reading(stand, "Он хочет удал", interrupted=True, gate=gate)
+        await stand.agent.open_approval(ctx("read", handle))
+        stand.start(session)
+        stand.open()
+        await settle()
+        assert session.replies == []
+        gate.set()
+        await until(lambda: stand.repo.event(1).state == EventState.MENTIONED)
+        assert len(session.replies) == 1
+        assert session.replies[0][0].startswith(REQUEST_PROMPT)
+        assert [row["state"] for row in stand.all_rows("approval_event")] == [
+            "mentioned"
+        ]
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
 def test_request_and_result_one_reply(tmp_path: Path) -> None:
     async def main() -> None:
         stand = Stand(tmp_path)
