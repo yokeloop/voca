@@ -124,6 +124,43 @@ def test_list_tasks_marks_denied(tmp_path: Path) -> None:
     asyncio.run(main())
 
 
+def test_list_tasks_waiting_after_deny_keeps_request(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path)
+        stand.put(waiting("a", {**APPROVAL, "request_id": "p2"}))
+        stand.repo.events = {
+            ("a", "approval", "p1"): Event(
+                "a",
+                EventKind.APPROVAL,
+                "p1",
+                EventState.CLOSED,
+                1.0,
+                2.0,
+                Danger.HIGH,
+                closed_reason="denied",
+                id=1,
+            ),
+            ("a", "approval", "p2"): Event(
+                "a",
+                EventKind.APPROVAL,
+                "p2",
+                EventState.ARRIVED,
+                3.0,
+                3.0,
+                Danger.HIGH,
+                id=2,
+            ),
+        }
+        [view] = json.loads(await stand.agent.list_tasks())["tasks"]
+        assert view["status"] == "waiting_approval"
+        assert view["approval"] == {
+            "request": "удаление в корневом каталоге",
+            "command": "rm -r /tmp/x",
+        }
+
+    asyncio.run(main())
+
+
 def test_list_notifications_open_events(tmp_path: Path) -> None:
     async def main() -> None:
         stand = Stand(tmp_path)

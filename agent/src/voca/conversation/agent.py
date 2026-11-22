@@ -200,7 +200,7 @@ def task_view(task: Task, denied: bool = False) -> dict[str, Any]:
             "request": describe(task.approval.get("description")),
             "command": task.approval.get("command"),
         }
-    if denied:
+    if denied and task.status != TaskStatus.WAITING_APPROVAL:
         view["approval"] = "denied"
     return view
 
