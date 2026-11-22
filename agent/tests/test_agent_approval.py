@@ -1015,6 +1015,41 @@ def test_short_yes_after_unrelated_phrase(tmp_path: Path) -> None:
     asyncio.run(main())
 
 
+def test_event_speech_after_confirm_is_no_place(tmp_path: Path) -> None:
+    async def main() -> None:
+        unsure = "Ну, может быть"
+        sorter = FakeSorter(
+            {"Да": sorted_(confidence=0.96), unsure: sorted_(confidence=0.3)}
+        )
+        stand = Stand(tmp_path, sorter=sorter)
+        session = FakeSession(agent=stand.agent)
+        await mentioned(stand, waiting("a"))
+        await read(stand)
+        await turn(stand, "Да", None)
+        stand.start(session)
+        stand.open()
+        await say(stand, "Точно удалить каталог целиком?")
+        done = finished("r")
+        await stand.repo.save(done, NOW, arrival(done, NOW))
+        stand.agent.enqueue(done)
+        await until(lambda: stand.repo.tasks["r"].delivered_at is not None)
+        yes = await turn(stand, "Да")
+        assert notes(yes) == []
+        assert stand.backend.approved == []
+        await read(stand)
+        await turn(stand, unsure, None)
+        await say(stand, "Разрешить удаление каталога?")
+        await stand.agent.approve_from_page("a", "p1", "deny")
+        await until(lambda: len(session.replies) == 2)
+        await settle()
+        assert stand.backend.approved == [("run_a", "deny", APPROVAL)]
+        assert outcomes(stand) == ["confirm", "pass", "clarify_sure"]
+        assert stand.agent._place() is None
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
 def test_two_clarifications_then_left(tmp_path: Path) -> None:
     async def main() -> None:
         unsure = "Ну, может быть"

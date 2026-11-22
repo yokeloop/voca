@@ -481,6 +481,7 @@ class VocaAgent(Agent):
         self.reading: Reading | None = None
         self.about: dict[str, Place] = {}
         self.asked: dict[str, Place] = {}
+        self.announced: set[str] = set()
         self.clarified = 0
         self.rules = rules or Rules()
         self.approval_timeout_s = approval_timeout_s
@@ -774,6 +775,11 @@ class VocaAgent(Agent):
             except RuntimeError:
                 return False
             await handle.wait_for_playout()
+            self.announced.update(
+                item.id
+                for item in handle.chat_items
+                if item.type == "message" and item.role == "assistant"
+            )
             if handle.exception() is not None:
                 logging.getLogger("voca.tasks").warning(
                     "event reply failed: %s", spoken, exc_info=handle.exception()
@@ -1440,7 +1446,11 @@ class VocaAgent(Agent):
             for item in self.chat_ctx.items
             if item.type == "message" and item.role in ("user", "assistant")
         ]
-        if not messages or messages[-1].role != "assistant":
+        if (
+            not messages
+            or messages[-1].role != "assistant"
+            or messages[-1].id in self.announced
+        ):
             return None
         if messages[-1].id in self.about:
             return self.about[messages[-1].id]
