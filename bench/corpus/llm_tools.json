@@ -65,20 +65,19 @@
         }
       },
       {
-        "call": "list_tasks",
+        "call": "list_notifications",
         "arguments": {},
         "output": {
-          "id": "call_c04",
-          "event": "approval_requested",
-          "text": "Удали каталог /tmp/voca-c04 командой rm -r",
+          "id": "1",
+          "event": "approval_mentioned",
           "request": "удаление в корневом каталоге",
           "command": "rm -r /tmp/voca-c04",
-          "interrupted": false
+          "danger": "high"
         }
       }
     ],
     "user": "Повтори запрос",
-    "expect": "repeat_approval"
+    "expect": "open_approval"
   },
   {
     "id": "c05",
@@ -98,15 +97,14 @@
         }
       },
       {
-        "call": "list_tasks",
+        "call": "list_notifications",
         "arguments": {},
         "output": {
-          "id": "call_c04",
-          "event": "approval_requested",
-          "text": "Удали каталог /tmp/voca-c04 командой rm -r",
+          "id": "1",
+          "event": "approval_mentioned",
           "request": "удаление в корневом каталоге",
           "command": "rm -r /tmp/voca-c04",
-          "interrupted": false
+          "danger": "high"
         }
       }
     ],
@@ -137,20 +135,19 @@
         }
       },
       {
-        "call": "list_tasks",
+        "call": "list_notifications",
         "arguments": {},
         "output": {
-          "id": "call_c04",
-          "event": "approval_requested",
-          "text": "Удали каталог /tmp/voca-c04 командой rm -r",
+          "id": "1",
+          "event": "approval_mentioned",
           "request": "удаление в корневом каталоге",
           "command": "rm -r /tmp/voca-c04",
-          "interrupted": false
+          "danger": "high"
         }
       }
     ],
     "user": "Подтверди запрос",
-    "expect": "repeat_approval"
+    "expect": "open_approval"
   },
   {
     "id": "c08",
@@ -170,15 +167,14 @@
         }
       },
       {
-        "call": "list_tasks",
+        "call": "list_notifications",
         "arguments": {},
         "output": {
-          "id": "call_c04",
-          "event": "approval_requested",
-          "text": "Удали каталог /tmp/voca-c04 командой rm -r",
+          "id": "1",
+          "event": "approval_mentioned",
           "request": "удаление в корневом каталоге",
           "command": "rm -r /tmp/voca-c04",
-          "interrupted": false
+          "danger": "high"
         }
       }
     ],

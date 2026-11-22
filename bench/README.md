@@ -34,7 +34,7 @@ Scripts:
   `tools` (VOCA-36) — the ten cases of `corpus/llm_tools.json` (`c10` — the
   stand's correction of a running task, expected `steer_task`): a context of
   messages and delegation facts, then one user turn; the first tool call must be
-  the expected one (`delegate`, `steer_task`, `cancel_task`, `repeat_approval`,
+  the expected one (`delegate`, `steer_task`, `cancel_task`, `open_approval`,
   `list_tasks`), and a `none` case passes with no call (only
   `list_tasks` in `c05`, `c08`, `c09`) and a Russian answer without a claimed action
   or the announcement text. The tools and instructions come from `VocaAgent`
