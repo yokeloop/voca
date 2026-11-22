@@ -152,9 +152,10 @@ a section) are no longer read.
   `sorter_answer_instructions` and `sorter_answer_criteria` (exactly
   `approve`, `deny`), `sorter_target_instructions`, `sorter_target_request`
   (with `{n}`) and `sorter_target_unclear`; `threshold_low`,
-  `threshold_medium`, `threshold_high` (0.45, 0.50, 0.55: the judge's
-  confidence needed to approve a request of that danger level),
-  `threshold_deny` (0.45) and `clarify_limit` (2: clarifications in a row);
+  `threshold_medium`, `threshold_high` (0.45, 0.50, 0.50: the judge's
+  confidence needed to approve a request of that danger level; high 0.50
+  after the VOCA-48 stand: short «Да.» 0.51–0.54), `threshold_deny` (0.45)
+  and `clarify_limit` (2: clarifications in a row);
   `sorter_timeout_s` (0.3); `sorter_keep_words` (single words; a reply with
   one of them is never noise), `sorter_max_words` (4: only a reply of at most
   this many words is dropped as noise), `sorter_min_words` (2: when the sorter

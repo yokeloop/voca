@@ -57,7 +57,7 @@ class Place:
 class Rules:
     low: float = 0.45
     medium: float = 0.50
-    high: float = 0.55
+    high: float = 0.50
     deny: float = 0.45
     clarify_limit: int = 2
 

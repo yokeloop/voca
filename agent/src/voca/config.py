@@ -110,7 +110,7 @@ class DecisionConfig(BaseModel):
     sorter_target_unclear: str = "к нескольким запросам, ни к одному или непонятно"
     threshold_low: float = Field(default=0.45, gt=0, le=1)
     threshold_medium: float = Field(default=0.50, gt=0, le=1)
-    threshold_high: float = Field(default=0.55, gt=0, le=1)
+    threshold_high: float = Field(default=0.50, gt=0, le=1)
     threshold_deny: float = Field(default=0.45, gt=0, le=1)
     clarify_limit: int = Field(default=2, ge=0)
 

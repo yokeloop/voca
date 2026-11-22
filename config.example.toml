@@ -118,7 +118,7 @@ sorter_target_unclear = "к нескольким запросам, ни к од�
 # a request of this danger level.
 threshold_low = 0.45
 threshold_medium = 0.5
-threshold_high = 0.55
+threshold_high = 0.5
 # The judge's confidence needed to deny a request.
 threshold_deny = 0.45
 # Clarifications in a row; then the agent says the request stays in the queue.
