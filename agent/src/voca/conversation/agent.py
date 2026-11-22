@@ -4,7 +4,6 @@ import logging
 import re
 import time
 import uuid
-from collections import deque
 from collections.abc import (
     AsyncGenerator,
     AsyncIterable,
@@ -35,14 +34,14 @@ from livekit.agents.voice.events import (
 )
 
 from voca.clientio.cards import CardState
-from voca.conversation.approval import (
-    Choice,
-    Phrase,
-    Vocabulary,
-    approval_prompt,
-    echoes,
-    parse,
-    unclear_text,
+from voca.conversation.approval_judge import (
+    Judgement,
+    Place,
+    PlaceKind,
+    Request,
+    Rules,
+    essence_spoken,
+    judge,
 )
 from voca.conversation.compaction import (
     SUMMARY_KEY,
@@ -62,18 +61,23 @@ from voca.conversation.glue import Entry, glue
 from voca.conversation.instructions import InstructionLoader, InstructionSet
 from voca.conversation.summarizer import Failure, Summarizer, Summary
 from voca.conversation.verdict import (
-    Decider,
-    Decision,
     DecisionFailure,
-    Situation,
     Sorted,
     Sorter,
     SorterPrompt,
     drop,
     sorter_state,
 )
-from voca.delegation.events import Event, EventKind
-from voca.delegation.model import CANCELLED, GATEWAY_RESTART, TIMEOUT, Task, TaskStatus
+from voca.delegation.danger import Danger
+from voca.delegation.events import Event, EventKind, EventState, open_request
+from voca.delegation.model import (
+    CANCELLED,
+    GATEWAY_RESTART,
+    TIMEOUT,
+    Choice,
+    Task,
+    TaskStatus,
+)
 from voca.delegation.ports import (
     ApprovalNotActive,
     DelegationError,
@@ -109,10 +113,15 @@ NOT_STEERABLE = "Поручение сейчас не принимает уто�
 NO_REQUEST = "Сейчас нет запроса подтверждения"
 ACTION_FAILED = "Не удалось связаться с Hermes"
 APPROVAL_LIMIT = 60
-APPROVAL_REPLIES = {"once": "Подтверждено", "deny": "Отклонено"}
 APPROVAL_GONE = "Запрос подтверждения уже не активен"
 APPROVAL_FAILED = "Не удалось передать подтверждение"
-ANNOUNCE_ATTEMPTS = 2
+REQUEST_UNKNOWN = "Нет такого запроса"
+REQUEST_AMBIGUOUS = "Неясно, какой запрос: назовите id из list_notifications"
+APPROVAL_KEY = "approval:"
+REMIND_KEY = "remind:"
+BUTTON_KEY = "button:"
+APPROVAL_TIMEOUT_S = 300.0
+APPROVAL_REMINDER_S = 60.0
 FINAL_WAIT_S = 3.0
 EVENT_SILENCE_S = 1.5
 BUSY = ("thinking", "speaking")
@@ -126,10 +135,15 @@ class Pending:
 
 
 @dataclass
-class Announcement:
-    key: str
-    approval: dict[str, Any]
-    attempts: int = 0
+class Reading:
+    ids: list[str]
+    handle: SpeechHandle
+
+
+@dataclass
+class Notes:
+    text: str | None
+    changed: bool
 
 
 def refusal(component: str, *, tts_down: bool) -> str | None:
@@ -161,12 +175,6 @@ def result_outcome(task: Task) -> str:
     return json.dumps(outcome, ensure_ascii=False)
 
 
-def announcement_text(task: Task, vocabulary: Vocabulary) -> str:
-    head = clip(task.text, APPROVAL_LIMIT)
-    description = describe((task.approval or {}).get("description"))
-    return f"Hermes просит подтверждения по поручению «{head}»: {description}. {approval_prompt(vocabulary)}"
-
-
 def submitted_text(task: str) -> str:
     return f"Поручил Hermes: «{clip(task)}». Сообщу результат."
 
@@ -175,7 +183,7 @@ def short_id(key: str) -> str:
     return key
 
 
-def task_view(task: Task, active: Announcement | None) -> dict[str, Any]:
+def task_view(task: Task) -> dict[str, Any]:
     view: dict[str, Any] = {
         "id": short_id(task.tool_call_id),
         "text": clip(task.text, APPROVAL_LIMIT),
@@ -189,9 +197,6 @@ def task_view(task: Task, active: Announcement | None) -> dict[str, Any]:
         view["approval"] = {
             "request": describe(task.approval.get("description")),
             "command": task.approval.get("command"),
-            "active": active is not None
-            and active.key == task.tool_call_id
-            and active.approval == task.approval,
         }
     return view
 
@@ -233,8 +238,86 @@ EVENT_PROMPT = (
 )
 
 
-def events_prompt(views: list[dict[str, Any]]) -> str:
-    return f"{EVENT_PROMPT}\n{json.dumps({'events': views}, ensure_ascii=False)}"
+REQUEST_PROMPT = (
+    "От Hermes пришли запросы на разрешение действий по поручениям пользователя, они ниже в JSON. "
+    "Упомяни их одной короткой фразой: сколько запросов ждут ответа, не называя действие, команду и id, "
+    "и спроси, зачитать ли. Запрос зачитывается только инструментом open_approval, когда пользователь попросит."
+)
+REMIND_PROMPT = (
+    "Запросы Hermes ниже ждут ответа пользователя и меньше чем через минуту истекут: Hermes сам их отклонит. "
+    "Напомни о них одной короткой фразой и назови действие."
+)
+BUTTON_PROMPT = (
+    "Пользователь только что ответил на запрос Hermes кнопкой на экране, ниже в JSON — что он выбрал. "
+    "Скажи об этом одной короткой фразой, своими словами."
+)
+TOOLS_OFF = "Инструменты не вызывай."
+ASK_NOTE = "Пользователь спрашивает о запросе Hermes. Ответь по полному тексту запроса ниже в JSON. Разрешить или отклонить запрос ты не можешь: это делает агент по ответу пользователя."
+CLARIFY_WHICH_NOTE = "Непонятно, к какому запросу Hermes относится ответ пользователя. Задай один короткий вопрос, назвав действия запросов ниже в JSON. Не говори, что запрос разрешён или отклонён."
+CLARIFY_SURE_NOTE = "Неясно, разрешает пользователь запрос Hermes ниже в JSON или отклоняет. Задай один короткий вопрос, назвав действие. Не говори, что запрос разрешён или отклонён."
+CONFIRM_NOTE = "Запрос Hermes ниже опасный, короткого «да» мало. Переспроси одной фразой, назвав действие и предмет, например «Точно удалить каталог целиком?». Не говори, что запрос разрешён."
+LEFT_NOTE = "Ответ пользователя на запрос Hermes так и не понятен. Скажи одной фразой, что запрос остаётся в очереди и его можно разрешить или отклонить позже голосом или кнопкой на экране. Больше не переспрашивай."
+PENDING_NOTE = "Запрос Hermes ниже всё ещё ждёт ответа пользователя. Ответь на реплику как обычно и в конце одной фразой скажи, что запрос ждёт ответа."
+UNAVAILABLE_NOTE = "Модель решений сейчас недоступна: голосом запрос Hermes не разрешить и не отклонить. Если пользователь отвечал на запрос ниже, скажи, что ответ не разобран, и предложи кнопки на экране; иначе ответь как обычно."
+NOTES: dict[str, str] = {
+    "confirm": CONFIRM_NOTE,
+    "clarify_which": CLARIFY_WHICH_NOTE,
+    "clarify_sure": CLARIFY_SURE_NOTE,
+    "asks": ASK_NOTE,
+    "left": LEFT_NOTE,
+    "unavailable": UNAVAILABLE_NOTE,
+    "pass": PENDING_NOTE,
+}
+PLACES: dict[str, PlaceKind] = {
+    "confirm": "confirm",
+    "clarify_which": "clarify",
+    "clarify_sure": "clarify",
+    "asks": "asks",
+}
+CLARIFYING = ("clarify_which", "clarify_sure", "confirm")
+
+
+def events_prompt(
+    views: list[dict[str, Any]],
+    requests: list[dict[str, Any]] | None = None,
+    reminders: list[dict[str, Any]] | None = None,
+    buttons: list[dict[str, Any]] | None = None,
+) -> str:
+    parts = []
+    if buttons:
+        parts.append(
+            f"{BUTTON_PROMPT}\n{json.dumps({'pressed': buttons}, ensure_ascii=False)}"
+        )
+    if requests:
+        parts.append(
+            f"{REQUEST_PROMPT}\n{json.dumps({'requests': requests}, ensure_ascii=False)}"
+        )
+    if reminders:
+        parts.append(
+            f"{REMIND_PROMPT}\n{json.dumps({'expiring': reminders}, ensure_ascii=False)}"
+        )
+    if views:
+        parts.append(
+            f"{EVENT_PROMPT}\n{json.dumps({'events': views}, ensure_ascii=False)}"
+        )
+    else:
+        parts.append(TOOLS_OFF)
+    return "\n".join(parts)
+
+
+def note(text: str, views: list[dict[str, Any]]) -> str:
+    return f"{text}\n{json.dumps({'requests': views}, ensure_ascii=False)}"
+
+
+def request_view(event: Event, task: Task) -> Request:
+    approval = task.approval or {}
+    return Request(
+        str(event.id),
+        event.danger or Danger.HIGH,
+        event.state == EventState.ESSENCE,
+        describe(approval.get("description")),
+        approval.get("command"),
+    )
 
 
 def records(ctx: llm.ChatContext) -> list[Item]:
@@ -353,13 +436,14 @@ class VocaAgent(Agent):
         clock: Callable[[], float] = time.time,
         compacted_at: float | None = None,
         delegation: DelegationService | None = None,
-        vocabulary: Vocabulary,
-        decider: Decider | None = None,
         sorter: Sorter | None = None,
         sorter_prompt: SorterPrompt | None = None,
         glue_window_s: float = 3.0,
         action_silence_s: float = 0.5,
         event_silence_s: float = EVENT_SILENCE_S,
+        rules: Rules | None = None,
+        approval_timeout_s: float = APPROVAL_TIMEOUT_S,
+        approval_reminder_s: float = APPROVAL_REMINDER_S,
     ) -> None:
         assert sorter is None or sorter_prompt is not None
         super().__init__(instructions=instructions.text, chat_ctx=chat_ctx)
@@ -378,8 +462,6 @@ class VocaAgent(Agent):
         self.strikes = 0
         self.blocked_at: float | None = None
         self.delegation = delegation
-        self.vocabulary = vocabulary
-        self.decider = decider
         self.background: set[asyncio.Task[Any]] = set()
         self.deliverer: asyncio.Task[None] | None = None
         self.in_tool: set[str] = set()
@@ -389,18 +471,24 @@ class VocaAgent(Agent):
         self.present = asyncio.Event()
         self.playout: dict[str, bool] = {}
         self.stopped = False
-        self.announcements: deque[Announcement] = deque()
-        self.speaking: Announcement | None = None
-        self.active: Announcement | None = None
         self.wake = asyncio.Event()
         self.speaker: AgentSession[Any] | None = None
-        self.heard_at = 0.0
-        self.barged: Announcement | None = None
-        self.announced: dict[str, str] = {}
-        self.answered: dict[str, dict[str, Any]] = {}
+        self.answered: dict[str, str] = {}
+        self.waiting: dict[str, str] = {}
+        self.noted: set[str] = set()
+        self.timers: set[int] = set()
+        self.pressed: dict[str, dict[str, Any]] = {}
+        self.reading: Reading | None = None
+        self.about: dict[str, Place] = {}
+        self.asked: dict[str, Place] = {}
+        self.announced: set[str] = set()
+        self.clarified = 0
+        self.rules = rules or Rules()
+        self.approval_timeout_s = approval_timeout_s
+        self.approval_reminder_s = approval_reminder_s
         self.sorter = sorter
         self.sorter_prompt = sorter_prompt
-        self.passed: list[str] = []
+        self.passed: list[tuple[str, Sorted | DecisionFailure, tuple[str, ...]]] = []
         self.voiced: SpeechHandle | None = None
         self.glue_window_s = glue_window_s
         self.action_silence_s = action_silence_s
@@ -436,14 +524,8 @@ class VocaAgent(Agent):
                 "delegation task failed", exc_info=task.exception()
             )
 
-    def enqueue(self, task: Task) -> None:
-        key = task.tool_call_id
-        if (
-            task.is_open
-            or task.delivered_at is not None
-            or key in self.queued
-            or key in self.in_tool
-        ):
+    def _put(self, key: str) -> None:
+        if key in self.queued or key in self.in_tool:
             return
         if self.queue.empty():
             self.replied = self.agent_state in BUSY
@@ -451,33 +533,20 @@ class VocaAgent(Agent):
         self.queue.put_nowait(key)
         self.wake.set()
 
-    def announce(self, task: Task) -> None:
-        if task.status != TaskStatus.WAITING_APPROVAL or task.approval is None:
+    def enqueue(self, task: Task) -> None:
+        if task.is_open or task.delivered_at is not None:
             return
-        key = task.tool_call_id
-        if self.answered.get(key) == task.approval:
-            return
-        for item in (self.active, self.speaking, *self.announcements):
-            if item is not None and item.key == key and item.approval == task.approval:
-                return
-        self.announcements = deque(
-            item for item in self.announcements if item.key != key
-        )
-        self.announcements.append(Announcement(key, task.approval))
-        self.wake.set()
+        self._put(task.tool_call_id)
 
-    def _release(self, task: Task) -> None:
+    def _expiry(self, task: Task) -> None:
         key = task.tool_call_id
-        waiting = task.status == TaskStatus.WAITING_APPROVAL
-        answered = key in self.answered
-        if not waiting or task.approval != self.answered.get(key):
-            self.answered.pop(key, None)
-        if (
-            self.active is not None
-            and self.active.key == key
-            and (not waiting or task.approval != self.active.approval)
-        ):
-            if task.status == TaskStatus.RUNNING and not answered:
+        previous, current = self.waiting.get(key), open_request(task)
+        if previous is not None and previous != current:
+            del self.waiting[key]
+            if (
+                self.answered.pop(key, None) != previous
+                and task.status == TaskStatus.RUNNING
+            ):
                 self._spawn(
                     self._fact(
                         "list_tasks",
@@ -489,19 +558,8 @@ class VocaAgent(Agent):
                         },
                     )
                 )
-            self.active = None
-            self.wake.set()
-        if (
-            self.barged is not None
-            and self.barged.key == key
-            and (not waiting or task.approval != self.barged.approval)
-        ):
-            self.barged = None
-        if not waiting:
-            self.announced.pop(key, None)
-            self.announcements = deque(
-                item for item in self.announcements if item.key != key
-            )
+        if current is not None:
+            self.waiting[key] = current
 
     def _task_row(self, task: Task, **extra: object) -> None:
         self.log.write(
@@ -520,16 +578,36 @@ class VocaAgent(Agent):
         extra = {"interrupted": self.playout.pop(key)} if key in self.playout else {}
         self._task_row(task, **extra)
         self.enqueue(task)
-        self._release(task)
-        self.announce(task)
+        self._expiry(task)
+        if task.status == TaskStatus.WAITING_APPROVAL:
+            self._spawn(self._track_requests())
+
+    async def _track_requests(self) -> None:
+        assert self.delegation is not None
+        for event in await self.delegation.repo.list_events(open_only=True):
+            if event.kind != EventKind.APPROVAL or event.id is None:
+                continue
+            if event.state == EventState.ARRIVED:
+                self._put(f"{APPROVAL_KEY}{event.id}")
+            if self.approval_reminder_s > 0 and event.id not in self.timers:
+                self.timers.add(event.id)
+                self._spawn(self._remind_at(event))
+
+    async def _remind_at(self, event: Event) -> None:
+        assert self.delegation is not None
+        due = event.created_at + self.approval_timeout_s - self.approval_reminder_s
+        await self.delegation.sleep(max(0.0, due - self.delegation.clock()))
+        self._put(f"{REMIND_KEY}{event.id}")
 
     async def enqueue_undelivered(self) -> None:
         if self.delegation is None:
             return
         undelivered = await self.delegation.repo.list_undelivered()
-        waiting = await self.delegation.repo.list_open()
-        for task in waiting:
-            self.announce(task)
+        for task in await self.delegation.repo.list_open():
+            current = open_request(task)
+            if current is not None:
+                self.waiting[task.tool_call_id] = current
+        await self._track_requests()
         for task in undelivered:
             self.enqueue(task)
 
@@ -556,90 +634,23 @@ class VocaAgent(Agent):
             if self.present.is_set():
                 return
 
-    def _pick(self) -> Announcement | str | None:
-        if self.active is None and self.announcements:
-            return self.announcements.popleft()
-        if not self.queue.empty():
-            return self.queue.get_nowait()
-        return None
-
     async def _deliver_loop(
         self, session: AgentSession[Any], sent: Callable[[], Awaitable[None]]
     ) -> None:
         while True:
             await self._ready(sent)
-            item = self._pick()
-            if item is None:
+            if self.queue.empty():
                 self.wake.clear()
                 await self.wake.wait()
                 continue
+            key = self.queue.get_nowait()
             ok = True
             try:
-                if isinstance(item, Announcement):
-                    ok = await self._announce(session, item)
-                else:
-                    ok = await self._speak_events(session, item)
+                ok = await self._speak_events(session, key)
             except Exception:
-                key = item.key if isinstance(item, Announcement) else item
                 logging.getLogger("voca.tasks").exception("delivery failed: %s", key)
             if not ok:
                 return
-
-    async def _announce(self, session: AgentSession[Any], item: Announcement) -> bool:
-        assert self.delegation is not None
-        task = await self.delegation.repo.get(item.key)
-        if (
-            task is None
-            or task.status != TaskStatus.WAITING_APPROVAL
-            or task.approval != item.approval
-        ):
-            return True
-        self.speaking = item
-        try:
-            text = announcement_text(task, self.vocabulary)
-            try:
-                handle = session.say(
-                    text,
-                    allow_interruptions=True,
-                    add_to_chat_ctx=False,
-                )
-            except RuntimeError:
-                return False
-            self.announced[item.key] = text
-            await handle.wait_for_playout()
-        finally:
-            self.speaking = None
-        self.heard_at = time.time()
-        self.barged = item if handle.interrupted else None
-        item.attempts += 1
-        self._task_row(task, announced=True, interrupted=handle.interrupted)
-        approval = task.approval or {}
-        await self._fact(
-            "list_tasks",
-            {},
-            {
-                "id": short_id(item.key),
-                "event": "approval_requested",
-                "text": clip(task.text, APPROVAL_LIMIT),
-                "request": describe(approval.get("description")),
-                "command": approval.get("command"),
-                "interrupted": handle.interrupted,
-            },
-        )
-        if not handle.interrupted or item.attempts >= ANNOUNCE_ATTEMPTS:
-            current = await self.delegation.repo.get(item.key)
-            if (
-                current is not None
-                and current.status == TaskStatus.WAITING_APPROVAL
-                and current.approval == item.approval
-                and self.active is None
-                and self.answered.get(item.key) != item.approval
-            ):
-                self.active = item
-        else:
-            self.announcements.appendleft(item)
-            self.wake.set()
-        return True
 
     async def _moment(self, session: AgentSession[Any]) -> bool:
         assert self.delegation is not None
@@ -655,61 +666,142 @@ class VocaAgent(Agent):
             if self.activity == mark:
                 return True
 
+    async def _open_task(self, event: Event | None) -> Task | None:
+        assert self.delegation is not None
+        if event is None or event.kind != EventKind.APPROVAL:
+            return None
+        task = await self.delegation.repo.get(event.tool_call_id)
+        if (
+            task is None
+            or open_request(task) != event.request_id
+            or self.answered.get(task.tool_call_id) == event.request_id
+        ):
+            return None
+        return task
+
     async def _speak_events(self, session: AgentSession[Any], first: str) -> bool:
         assert self.delegation is not None
         taken = [first]
         try:
             if not await self._moment(session):
                 return False
-            if self.active is None and self.announcements:
-                self.retry.update(taken)
-                return True
             while not self.queue.empty():
                 taken.append(self.queue.get_nowait())
             tasks: list[Task] = []
             for key in taken:
+                if key.startswith((APPROVAL_KEY, REMIND_KEY, BUTTON_KEY)):
+                    continue
                 task = await self.delegation.repo.get(key)
                 if task is None or task.is_open or task.delivered_at is not None:
                     continue
                 tasks.append(task)
-            if not tasks:
-                return True
-            keys = [task.tool_call_id for task in tasks]
+            opened = await self.delegation.repo.list_events(open_only=True)
+            requests = {
+                str(event.id): event
+                for event in opened
+                if event.kind == EventKind.APPROVAL
+            }
             events = {
                 event.tool_call_id: event
-                for event in await self.delegation.repo.list_events(open_only=True)
+                for event in opened
                 if event.kind in (EventKind.RESULT, EventKind.FAILURE)
             }
             now = self.delegation.clock()
+            asked: list[dict[str, Any]] = []
+            expiring: list[dict[str, Any]] = []
+            pressed: list[dict[str, Any]] = []
+            spoken: list[str] = []
+            for key in taken:
+                if key.startswith(BUTTON_KEY):
+                    view = self.pressed.pop(key, None)
+                    if view is not None:
+                        pressed.append(view)
+                    continue
+                if key.startswith(APPROVAL_KEY):
+                    event = requests.get(key.removeprefix(APPROVAL_KEY))
+                    if event is None or event.state != EventState.ARRIVED:
+                        continue
+                    found = asked
+                elif key.startswith(REMIND_KEY):
+                    event = requests.get(key.removeprefix(REMIND_KEY))
+                    if (
+                        event is None
+                        or now >= event.created_at + self.approval_timeout_s
+                    ):
+                        continue
+                    found = expiring
+                else:
+                    continue
+                task = await self._open_task(event)
+                if task is None:
+                    continue
+                found.append(notification_view(event, task, now))
+                spoken.append(key)
+            if not (tasks or asked or expiring or pressed):
+                return True
+            keys = [task.tool_call_id for task in tasks]
+            spoken.extend(keys)
             views = [
                 notification_view(events[task.tool_call_id], task, now)
                 if task.tool_call_id in events
-                else task_view(task, None)
+                else task_view(task)
                 for task in tasks
             ]
+            for view in asked:
+                if view["id"] in self.noted:
+                    continue
+                await self._fact(
+                    "list_notifications",
+                    {},
+                    {
+                        "id": view["id"],
+                        "event": "approval_mentioned",
+                        "request": view.get("request"),
+                        "command": view.get("command"),
+                        "danger": view["danger"],
+                    },
+                )
+                self.noted.add(view["id"])
             for task in tasks:
                 await self._remember(task, [])
             try:
                 handle = session.generate_reply(
-                    instructions=events_prompt(views),
+                    instructions=events_prompt(
+                        views, requests=asked, reminders=expiring, buttons=pressed
+                    ),
                     tool_choice="none",
                     allow_interruptions=True,
                 )
             except RuntimeError:
                 return False
             await handle.wait_for_playout()
+            self.announced.update(
+                item.id
+                for item in handle.chat_items
+                if item.type == "message" and item.role == "assistant"
+            )
             if handle.exception() is not None:
                 logging.getLogger("voca.tasks").warning(
-                    "event reply failed: %s", keys, exc_info=handle.exception()
+                    "event reply failed: %s", spoken, exc_info=handle.exception()
                 )
                 for task in tasks:
                     self._task_row(task, interrupted=handle.interrupted)
-                self.stalled.extend(keys)
+                self.stalled.extend(spoken)
                 return True
             if heard(handle):
                 for key in keys:
                     self.playout[key] = False
                     await self.delegation.mark_delivered(key)
+                for view in asked:
+                    await self.delegation.repo.advance_event(
+                        int(view["id"]), EventState.MENTIONED, now
+                    )
+                    self.log.write(
+                        "approval_event",
+                        event_id=view["id"],
+                        tool_call_id=view["task"],
+                        state=EventState.MENTIONED.value,
+                    )
                 return True
             for task in tasks:
                 self._task_row(task, interrupted=handle.interrupted)
@@ -720,7 +812,7 @@ class VocaAgent(Agent):
             if not handle.interrupted:
                 await self.delegation.sleep(UNHEARD_RETRY_S)
             self.replied = True
-            self.retry.update(keys)
+            self.retry.update(spoken)
             return True
         finally:
             self._settle(taken)
@@ -794,85 +886,6 @@ class VocaAgent(Agent):
         )
         await self.update_chat_ctx(ctx)
 
-    async def _answer(
-        self, active: Announcement, choice: Choice, *, speak: bool
-    ) -> None:
-        assert self.delegation is not None and self.speaker is not None
-        task = await self.delegation.repo.get(active.key)
-        approved = False
-        id = short_id(active.key)
-        try:
-            await self.delegation.approve(active.key, choice, expected=active.approval)
-            text = APPROVAL_REPLIES[choice]
-            release = approved = True
-        except (ApprovalNotActive, TaskNotFound):
-            text = APPROVAL_GONE
-            release = True
-        except DelegationError:
-            text = APPROVAL_FAILED
-            release = False
-        if approved:
-            event = "approved" if choice == "once" else "denied"
-            await self._fact(
-                "list_tasks", {}, {"id": id, "event": event, "by": "voice"}
-            )
-        else:
-            await self._fact(
-                "list_tasks",
-                {},
-                {"id": id, "event": "approval_failed", "by": "voice", "error": text},
-                is_error=True,
-            )
-        if speak:
-            try:
-                self.speaker.say(text, allow_interruptions=True, add_to_chat_ctx=True)
-            except RuntimeError:
-                pass
-        if approved:
-            self._settled(active.key, active.approval)
-        elif release and self.active is active:
-            self.active = None
-            self.wake.set()
-        if approved and task is not None:
-            self._task_row(task, approval=choice, by="voice")
-
-    async def _unclear(self, active: Announcement) -> None:
-        assert self.speaker is not None
-        await self._fact(
-            "list_tasks",
-            {},
-            {
-                "id": short_id(active.key),
-                "event": "approval_not_recognized",
-                "by": "voice",
-            },
-        )
-        try:
-            handle = self.speaker.say(
-                unclear_text(self.vocabulary),
-                allow_interruptions=True,
-                add_to_chat_ctx=True,
-            )
-        except RuntimeError:
-            return
-        self._spawn(self._heard(handle))
-
-    async def _heard(self, handle: SpeechHandle) -> None:
-        await handle.wait_for_playout()
-        self.heard_at = time.time()
-
-    def _settled(self, key: str, approval: dict[str, Any]) -> None:
-        self.answered[key] = approval
-        self.announced.pop(key, None)
-        if self.barged is not None and self.barged.key == key:
-            self.barged = None
-        self.announcements = deque(
-            item for item in self.announcements if item.key != key
-        )
-        if self.active is not None and self.active.key == key:
-            self.active = None
-        self.wake.set()
-
     async def approve_from_page(
         self, key: str, request_id: str, choice: Choice
     ) -> dict[str, Any]:
@@ -892,12 +905,19 @@ class VocaAgent(Agent):
             return {"ok": False, "error": APPROVAL_GONE}
         except DelegationError:
             return {"ok": False, "error": APPROVAL_FAILED}
-        self._settled(key, task.approval)
+        self.answered[key] = request_id
         event = "approved" if choice == "once" else "denied"
         await self._fact(
             "list_tasks", {}, {"id": short_id(key), "event": event, "by": "button"}
         )
         self._task_row(task, approval=choice, by="button")
+        self.pressed[f"{BUTTON_KEY}{key}"] = {
+            "task": short_id(key),
+            "event": event,
+            "request": describe(task.approval.get("description")),
+            "command": task.approval.get("command"),
+        }
+        self._put(f"{BUTTON_KEY}{key}")
         return {"ok": True}
 
     async def cancel_from_page(self, key: str) -> dict[str, Any]:
@@ -921,7 +941,7 @@ class VocaAgent(Agent):
             return
         finally:
             self.in_tool.discard(key)
-        view = task_view(final, self.active)
+        view = task_view(final)
         output = {"id": view["id"], "event": "cancelled", "by": "button"}
         output.update(
             {
@@ -1107,101 +1127,6 @@ class VocaAgent(Agent):
             self.pending.task.cancel()
         self.pending = None
 
-    async def _on_request(self, active: Announcement, message: llm.ChatMessage) -> bool:
-        assert self.delegation is not None
-        text = message.text_content or ""
-        started = message.metrics.get("started_speaking_at")
-        early = started is not None and started < self.heard_at
-        barged = self.barged is active
-        if (early and not barged) or (
-            (early or barged)
-            and echoes(text, self.announced.get(active.key, ""), self.vocabulary)
-        ):
-            await self._unclear(active)
-            raise StopResponse()
-        task = await self.delegation.repo.get(active.key)
-        if (
-            task is None
-            or task.status != TaskStatus.WAITING_APPROVAL
-            or task.approval != active.approval
-        ):
-            return False
-        approval = task.approval or {}
-        situation = Situation(
-            task=clip(task.text, APPROVAL_LIMIT),
-            request=describe(approval.get("description")),
-            command=approval.get("command"),
-            announcement=self.announced.get(active.key)
-            or announcement_text(task, self.vocabulary),
-            phrase=text,
-        )
-        decided: Decision | DecisionFailure = (
-            await self.decider.decide(situation)
-            if self.decider is not None
-            else DecisionFailure("disabled", 0)
-        )
-        if isinstance(decided, Decision):
-            self.log.write(
-                "approval_decision",
-                tool_call_id=active.key,
-                phrase=text,
-                verdict=decided.verdict,
-                picked=decided.picked,
-                confidence=decided.confidence,
-                ms=decided.ms,
-            )
-        else:
-            self.log.write(
-                "approval_decision",
-                tool_call_id=active.key,
-                phrase=text,
-                fallback=decided.reason,
-                ms=decided.ms,
-            )
-        if self.answered.get(active.key) == active.approval:
-            return False
-        if self.active is not active and self.barged is not active:
-            return False
-        if isinstance(decided, DecisionFailure):
-            parsed = parse(text, self.vocabulary)
-            if not isinstance(parsed, Phrase):
-                await self._unclear(active)
-                raise StopResponse()
-            await self._answer(active, parsed.choice, speak=not parsed.tail)
-            if not parsed.tail:
-                raise StopResponse()
-            message.content = [parsed.tail]
-            return True
-        if decided.verdict in ("approve", "deny"):
-            choice: Choice = "once" if decided.verdict == "approve" else "deny"
-            await self._answer(active, choice, speak=True)
-            raise StopResponse()
-        if decided.verdict in ("approve_more", "deny_more"):
-            more: Choice = "once" if decided.verdict == "approve_more" else "deny"
-            await self._answer(active, more, speak=False)
-            return True
-        if decided.verdict == "repeat":
-            self._repeat(active)
-            raise StopResponse()
-        if decided.verdict == "unclear":
-            await self._unclear(active)
-            raise StopResponse()
-        return False
-
-    def _repeat(self, item: Announcement) -> None:
-        item.attempts = 0
-        if self.active is item:
-            self.active = None
-        if self.barged is item:
-            self.barged = None
-        self.announcements = deque(
-            other
-            for other in self.announcements
-            if other.key != item.key or other.approval != item.approval
-        )
-        self.announcements.appendleft(item)
-        self.wake.set()
-
     def on_agent_state(self, ev: AgentStateChangedEvent) -> None:
         self.activity += 1
         self.agent_state = ev.new_state
@@ -1263,29 +1188,39 @@ class VocaAgent(Agent):
                     fut.cancel()
         return False
 
-    async def _sort(self, text: str, branch: str, *, speaking: bool) -> bool:
+    async def _sort(
+        self,
+        text: str,
+        branch: str,
+        *,
+        speaking: bool,
+        requests: list[tuple[Event, Task]],
+    ) -> tuple[bool, Sorted | DecisionFailure]:
         assert self.sorter is not None and self.sorter_prompt is not None
         agent_last = ""
         for item in reversed(self.chat_ctx.items):
             if item.type == "message" and item.role == "assistant":
                 agent_last = item.text_content or ""
                 break
-        requests: list[tuple[str, str | None]] = []
-        if self.delegation is not None:
-            for task in await self.delegation.repo.list_open():
-                if (
-                    task.status == TaskStatus.WAITING_APPROVAL
-                    and task.approval is not None
-                ):
-                    requests.append(
-                        (
-                            describe(task.approval.get("description")),
-                            task.approval.get("command"),
-                        )
-                    )
-        result = await self.sorter.sort(sorter_state(agent_last, requests, text))
+        described = [
+            (
+                describe((task.approval or {}).get("description")),
+                (task.approval or {}).get("command"),
+            )
+            for _, task in requests
+        ]
+        result = await self.sorter.sort(
+            sorter_state(agent_last, described, text), len(requests)
+        )
         dropped = drop(text, result, self.sorter_prompt, speaking=speaking)
         if isinstance(result, Sorted):
+            answers: dict[str, object] = {}
+            if result.relation is not None:
+                answers["relation"] = result.relation
+            if result.answer is not None:
+                answers["answer"] = result.answer
+            if len(requests) >= 2:
+                answers["target"] = result.target
             self.log.write(
                 "sorter",
                 branch=branch,
@@ -1295,6 +1230,7 @@ class VocaAgent(Agent):
                 ms=result.ms,
                 choice=result.kind,
                 confidence=result.confidence,
+                **answers,
             )
         else:
             self.log.write(
@@ -1306,7 +1242,7 @@ class VocaAgent(Agent):
                 ms=result.ms,
                 fallback=result.reason,
             )
-        return dropped
+        return dropped, result
 
     async def _screen(
         self,
@@ -1326,12 +1262,16 @@ class VocaAgent(Agent):
             if not text or not speaking():
                 yield event
                 continue
-            if await self._sort(text, "stt", speaking=True):
+            pairs = await self._requests()
+            dropped, result = await self._sort(
+                text, "stt", speaking=True, requests=pairs
+            )
+            if dropped:
                 self.final_at = self.clock()
                 self.user_changed.set()
                 self.user_changed = asyncio.Event()
                 continue
-            self.passed.append(text)
+            self.passed.append((text, result, tuple(str(e.id) for e, _ in pairs)))
             yield event
 
     async def stt_node(
@@ -1351,17 +1291,26 @@ class VocaAgent(Agent):
             started_at=new_message.metrics.get("started_speaking_at"),
             window_s=self.glue_window_s,
         )
+        pairs = await self._requests() if self.delegation is not None else []
+        ids = tuple(str(e.id) for e, _ in pairs)
+        cached = None
         if self.sorter is not None:
             text = new_message.text_content or ""
             passed, self.passed = self.passed, []
+            cached = next((p for p in passed if p[0] == text), None)
             if (
                 glued is None
-                and text not in passed
-                and text != " ".join(passed)
-                and await self._sort(text, "hook", speaking=False)
+                and cached is None
+                and text != " ".join(p[0] for p in passed)
             ):
-                raise StopResponse()
+                dropped, result = await self._sort(
+                    text, "hook", speaking=False, requests=pairs
+                )
+                if dropped:
+                    raise StopResponse()
+                cached = (text, result, ids)
         changed = False
+        notes = Notes(None, False)
         if glued is not None:
             ctx = self.chat_ctx.copy()
             ctx.items = [item for item in ctx.items if item.id not in glued.drop]
@@ -1376,9 +1325,12 @@ class VocaAgent(Agent):
                 gap_s=round(glued.gap_s, 3),
             )
             changed = True
-        active = self.active or self.barged
-        if active is not None and self.delegation is not None:
-            changed = await self._on_request(active, new_message) or changed
+        if self.reading is not None and self.reading.handle.done():
+            await self._settle_reading(self.reading)
+        pairs = await self._requests()
+        if pairs:
+            notes = await self._judge(new_message, pairs, cached)
+            changed = changed or notes.changed
         loaded = self.loader.load()
         if (loaded.sha256, loaded.source, loaded.error) != (
             self.current.sha256,
@@ -1413,6 +1365,199 @@ class VocaAgent(Agent):
         self.check_due()
         if changed:
             turn_ctx.items = self.chat_ctx.copy().items
+        if notes.text:
+            turn_ctx.add_message(role="system", content=[notes.text])
+
+    async def _requests(self) -> list[tuple[Event, Task]]:
+        if self.delegation is None:
+            return []
+        found: list[tuple[Event, Task]] = []
+        for event in await self.delegation.repo.list_events(open_only=True):
+            task = await self._open_task(event)
+            if task is not None:
+                found.append((event, task))
+        return found
+
+    async def _read(self, reading: Reading) -> None:
+        await reading.handle.wait_for_playout()
+        await self._settle_reading(reading)
+
+    async def _settle_reading(self, reading: Reading) -> None:
+        if self.reading is not reading:
+            return
+        self.reading = None
+        assert self.delegation is not None
+        items = reading.handle.chat_items
+        start = 0
+        for index, item in enumerate(items):
+            if item.type == "function_call_output" and item.name == "open_approval":
+                start = index + 1
+        messages = [
+            item
+            for item in items[start:]
+            if item.type == "message" and item.role == "assistant"
+        ]
+        played = " ".join(item.text_content or "" for item in messages).strip()
+        interrupted = reading.handle.interrupted
+        spoken = essence_spoken(played, interrupted)
+        self.log.write(
+            "approval_read",
+            event_ids=reading.ids,
+            played=played,
+            interrupted=interrupted,
+            essence=spoken,
+        )
+        if not spoken:
+            return
+        keys = {
+            str(event.id): event.tool_call_id
+            for event in await self.delegation.repo.list_events(open_only=True)
+        }
+        now = self.delegation.clock()
+        for id in reading.ids:
+            await self.delegation.repo.advance_event(int(id), EventState.MENTIONED, now)
+            await self.delegation.repo.advance_event(int(id), EventState.ESSENCE, now)
+            self.log.write(
+                "approval_event",
+                event_id=id,
+                tool_call_id=keys.get(id),
+                state=EventState.ESSENCE.value,
+            )
+        if messages:
+            self.about[messages[-1].id] = Place(tuple(reading.ids), "essence")
+
+    async def _quiet(self) -> bool:
+        mark = self.spoke_at
+        while True:
+            if self.user_speaking or self.spoke_at > mark:
+                return False
+            since = max(self.quiet_at, self.final_at)
+            timeout = self.action_silence_s - (self.clock() - since)
+            if timeout <= 0:
+                return True
+            try:
+                await asyncio.wait_for(self.user_changed.wait(), timeout=timeout)
+            except TimeoutError:
+                pass
+
+    def _place(self) -> Place | None:
+        messages = [
+            item
+            for item in self.chat_ctx.items
+            if item.type == "message" and item.role in ("user", "assistant")
+        ]
+        if (
+            not messages
+            or messages[-1].role != "assistant"
+            or messages[-1].id in self.announced
+        ):
+            return None
+        if messages[-1].id in self.about:
+            return self.about[messages[-1].id]
+        for item in reversed(messages):
+            if item.role == "user":
+                return self.asked.get(item.id)
+        return None
+
+    async def _judge(
+        self,
+        message: llm.ChatMessage,
+        pairs: list[tuple[Event, Task]],
+        cached: tuple[str, Sorted | DecisionFailure, tuple[str, ...]] | None,
+    ) -> Notes:
+        assert self.delegation is not None
+        text = message.text_content or ""
+        ids = tuple(str(e.id) for e, _ in pairs)
+        result: Sorted | DecisionFailure | None = None
+        if self.sorter is None:
+            result = None
+        elif cached is not None and cached[0] == text and cached[2] == ids:
+            result = cached[1]
+        else:
+            result = (await self._sort(text, "judge", speaking=False, requests=pairs))[
+                1
+            ]
+        verdict = judge(
+            text,
+            [request_view(e, t) for e, t in pairs],
+            result,
+            self._place(),
+            self.rules,
+            self.clarified,
+        )
+        self._judged(text, ids, verdict, verdict.outcome)
+        self.clarified = self.clarified + 1 if verdict.outcome in CLARIFYING else 0
+        now = self.delegation.clock()
+        views = [
+            notification_view(e, t, now) for e, t in pairs if str(e.id) in verdict.ids
+        ]
+        if verdict.outcome in ("approve", "deny"):
+            event, task = next(p for p in pairs if str(p[0].id) == verdict.ids[0])
+            if not await self._quiet():
+                self._judged(text, ids, verdict, "resumed")
+                return Notes(None, False)
+            await self._decide(
+                event, task, "once" if verdict.outcome == "approve" else "deny"
+            )
+            return Notes(None, True)
+        if verdict.outcome in PLACES:
+            self.asked[message.id] = Place(verdict.ids, PLACES[verdict.outcome])
+        if verdict.outcome == "pass" and not verdict.ids:
+            return Notes(None, False)
+        return Notes(note(NOTES[verdict.outcome], views), False)
+
+    def _judged(
+        self, text: str, ids: tuple[str, ...], verdict: Judgement, outcome: str
+    ) -> None:
+        self.log.write(
+            "approval_judge",
+            text=text,
+            requests=list(ids),
+            outcome=outcome,
+            event_ids=list(verdict.ids),
+            binding=verdict.binding,
+            confidence=verdict.confidence,
+            threshold=verdict.threshold,
+            clarified=self.clarified,
+        )
+
+    async def _decide(self, event: Event, task: Task, choice: Choice) -> None:
+        assert self.delegation is not None
+        key = task.tool_call_id
+        approval = task.approval or {}
+        try:
+            await self.delegation.approve(key, choice, expected=task.approval)
+        except (ApprovalNotActive, TaskNotFound):
+            await self._approval_failed(key, APPROVAL_GONE)
+            return
+        except DelegationError:
+            await self._approval_failed(key, APPROVAL_FAILED)
+            return
+        self.answered[key] = event.request_id
+        await self._fact(
+            "list_tasks",
+            {},
+            {
+                "id": short_id(key),
+                "event": "approved" if choice == "once" else "denied",
+                "by": "voice",
+                "request": describe(approval.get("description")),
+            },
+        )
+        self._task_row(task, approval=choice, by="voice")
+
+    async def _approval_failed(self, key: str, error: str) -> None:
+        await self._fact(
+            "list_tasks",
+            {},
+            {
+                "id": short_id(key),
+                "event": "approval_failed",
+                "by": "voice",
+                "error": error,
+            },
+            is_error=True,
+        )
 
     def on_component_error(self, component: str) -> None:
         text = refusal(component, tts_down=self.cards.components["tts"] == "down")
@@ -1472,7 +1617,7 @@ class VocaAgent(Agent):
             task for task in await self.delegation.repo.list_all() if not task.is_open
         ]
         found.extend(closed[:RECENT_LIMIT])
-        tasks = [task_view(task, self.active) for task in found]
+        tasks = [task_view(task) for task in found]
         return json.dumps({"tasks": tasks}, ensure_ascii=False)
 
     @function_tool
@@ -1505,7 +1650,7 @@ class VocaAgent(Agent):
             raise ToolError(ACTION_FAILED) from None
         finally:
             self.in_tool.discard(key)
-        return json.dumps(task_view(final, self.active), ensure_ascii=False)
+        return json.dumps(task_view(final), ensure_ascii=False)
 
     @function_tool
     async def steer_task(self, text: str, id: str | None = None) -> str:
@@ -1532,11 +1677,33 @@ class VocaAgent(Agent):
         return json.dumps(output, ensure_ascii=False)
 
     @function_tool
-    async def repeat_approval(self) -> None:
-        """Повторить вслух активный запрос подтверждения Hermes."""
-        if self.active is None:
+    async def open_approval(
+        self, context: RunContext[Any], id: str | None = None
+    ) -> str:
+        """Зачитать запрос Hermes на разрешение действия: возвращает полный текст запроса. id — из list_notifications; можно не указывать, если запрос один. Первой фразой назови действие и предмет, потом подробности, и спроси, разрешить ли. Разрешить или отклонить запрос ты не можешь."""
+        if self.delegation is None:
+            raise ToolError(DELEGATE_UNAVAILABLE)
+        pairs = await self._requests()
+        if not pairs:
             raise ToolError(NO_REQUEST)
-        self._repeat(self.active)
+        if id:
+            pairs = [pair for pair in pairs if str(pair[0].id) == id]
+            if not pairs:
+                raise ToolError(REQUEST_UNKNOWN)
+        elif len(pairs) > 1:
+            raise ToolError(REQUEST_AMBIGUOUS)
+        event, task = pairs[0]
+        picked = str(event.id)
+        if self.reading is not None and self.reading.handle is context.speech_handle:
+            self.reading.ids.append(picked)
+        else:
+            if self.reading is not None:
+                await self._settle_reading(self.reading)
+            self.reading = Reading([picked], context.speech_handle)
+            self._spawn(self._read(self.reading))
+        return json.dumps(
+            notification_view(event, task, self.delegation.clock()), ensure_ascii=False
+        )
 
     async def llm_node(
         self,

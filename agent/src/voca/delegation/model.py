@@ -1,7 +1,9 @@
 import dataclasses
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
+
+Choice = Literal["once", "deny"]
 
 
 class TaskStatus(StrEnum):

@@ -17,15 +17,15 @@ from livekit.agents.voice.events import (
 )
 
 from voca.clientio.cards import CardState
-from voca.config import ApprovalConfig, DecisionConfig
+from voca.config import DecisionConfig
 from voca.conversation import agent as agent_module
 from voca.conversation.agent import (
     EVENT_PROMPT,
     EVENT_SILENCE_S,
+    REQUEST_PROMPT,
     SPEECH_LIMIT,
     UNHEARD_RETRY_S,
     VocaAgent,
-    announcement_text,
     clip,
     events_prompt,
     last_message_at,
@@ -37,7 +37,7 @@ from voca.conversation.compaction import Limits
 from voca.conversation.instructions import InstructionLoader
 from voca.conversation.summarizer import Failure, Summarizer, Summary
 from voca.conversation.verdict import DecisionFailure, Sorted
-from voca.delegation.events import Event, EventState, arrival
+from voca.delegation.events import Event, EventState, advance, arrival
 from voca.delegation.model import Task, TaskStatus
 from voca.delegation.ports import OutcomeUnknown, Rejected, RunState
 from voca.delegation.service import DelegationService
@@ -46,8 +46,6 @@ from voca.telemetry.jsonl import JsonlLog
 
 EXAMPLE = Path(__file__).resolve().parents[2] / "instructions.example"
 NOW = 10.0
-
-VOCABULARY = ApprovalConfig().vocabulary()
 
 
 class FakeRepo:
@@ -93,6 +91,16 @@ class FakeRepo:
             if not open_only or event.state != EventState.CLOSED
         ]
         return sorted(found, key=lambda event: (event.created_at, event.id or 0))
+
+    async def advance_event(self, event_id: int, state: EventState, at: float) -> bool:
+        for key, event in self.events.items():
+            if event.id == event_id:
+                try:
+                    self.events[key] = advance(event, state, at)
+                except ValueError:
+                    return False
+                return True
+        return False
 
 
 def take(queue: list[Any]) -> Any:
@@ -374,7 +382,6 @@ class Stand:
             self.repo, self.backend, run_timeout=900, clock=lambda: NOW, sleep=tick
         )
         self.agent = VocaAgent(
-            vocabulary=VOCABULARY,
             loader=loader,
             instructions=instructions,
             log=JsonlLog(self.events, session="t"),
@@ -386,6 +393,7 @@ class Stand:
             delegation=self.service,
             chat_ctx=chat_ctx,
             action_silence_s=action_silence_s,
+            approval_reminder_s=0,
         )
         self.service.on_change = self.agent.on_task_change
         self.history = asyncio.Event()
@@ -560,7 +568,9 @@ def test_delegate_final_wait_bounded(
 
 
 class NoiseSorter:
-    async def sort(self, state: dict[str, str]) -> Sorted | DecisionFailure:
+    async def sort(
+        self, state: dict[str, str], requests: int = 0
+    ) -> Sorted | DecisionFailure:
         return Sorted("noise", 0.9, 10)
 
 
@@ -1393,23 +1403,27 @@ def waiting(
     )
 
 
-def test_announcement_waits_during_silence(tmp_path: Path) -> None:
+def test_request_joins_waiting_reply(tmp_path: Path) -> None:
     async def main() -> None:
         stand, pauses, release = silence_stand(tmp_path)
         session = FakeSession()
         stand.start(session)
-        stand.agent.enqueue(stand.put(finished("a")))
+        done = finished("a")
+        await stand.repo.save(done, NOW, arrival(done, NOW))
+        stand.agent.enqueue(done)
         stand.open()
         await until(lambda: pauses == [EVENT_SILENCE_S])
-        stand.agent.on_task_change(stand.put(waiting("b")))
+        task = waiting("b")
+        await stand.repo.save(task, NOW, arrival(task, NOW))
+        stand.agent.on_task_change(task)
+        await settle()
         release.set()
         await until(lambda: stand.repo.tasks["a"].delivered_at is not None)
-        kinds = [kind for kind, _ in session.events]
-        said = session.events.index(
-            ("say", announcement_text(waiting("b"), VOCABULARY))
-        )
-        assert said < kinds.index("reply")
         assert len(session.replies) == 1
+        record = session.replies[0][0]
+        assert record.index(REQUEST_PROMPT) < record.index(EVENT_PROMPT)
+        assert '"requests": [{"id": "2"' in record
+        assert '"events": [{"id": "1"' in record
         await stand.agent.stop_delegation()
 
     asyncio.run(main())

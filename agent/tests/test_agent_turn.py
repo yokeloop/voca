@@ -12,7 +12,7 @@ from livekit.agents import StopResponse, llm, stt
 from livekit.agents.voice.events import AgentStateChangedEvent
 
 from voca.clientio.cards import CardState
-from voca.config import ApprovalConfig, DecisionConfig
+from voca.config import DecisionConfig
 from voca.conversation.agent import (
     BLOCK_STRIKES,
     VocaAgent,
@@ -28,7 +28,6 @@ from voca.telemetry.jsonl import JsonlLog
 
 EXAMPLE = Path(__file__).resolve().parents[2] / "instructions.example"
 
-VOCABULARY = ApprovalConfig().vocabulary()
 SORTER_PROMPT = DecisionConfig().sorter_prompt()
 
 
@@ -39,9 +38,13 @@ class FakeSorter:
         self.script = script or {}
         self.failure = failure
         self.seen: list[dict[str, str]] = []
+        self.counts: list[int] = []
 
-    async def sort(self, state: dict[str, str]) -> Sorted | DecisionFailure:
+    async def sort(
+        self, state: dict[str, str], requests: int = 0
+    ) -> Sorted | DecisionFailure:
         self.seen.append(state)
+        self.counts.append(requests)
         found = self.script.get(state["фраза пользователя"])
         return found if found is not None else DecisionFailure(self.failure, 300)
 
@@ -66,7 +69,6 @@ def make_agent(
     events = tmp_path / "events.jsonl"
     cards = CardState(instructions)
     agent = VocaAgent(
-        vocabulary=VOCABULARY,
         loader=loader,
         instructions=instructions,
         log=JsonlLog(events, session="t"),
@@ -936,7 +938,7 @@ def test_stt_keeps_anchored_while_speaking(tmp_path: Path) -> None:
     agent, events = sorter_agent(tmp_path, FakeSorter({"Нет.": NOISE}))
     out = asyncio.run(screened(agent, [final("Нет.")], True))
     assert texts(out) == ["Нет."]
-    assert agent.passed == ["Нет."]
+    assert [passed[0] for passed in agent.passed] == ["Нет."]
     assert kinds_of(events, "sorter")[0]["dropped"] is False
 
 
@@ -1046,6 +1048,19 @@ def test_sorter_state_reads_last_agent_phrase(tmp_path: Path) -> None:
     assert sorter.seen == [
         {"последняя фраза агента": "Второе.", "фраза пользователя": "Угу"}
     ]
+
+
+def test_sorter_two_options_without_requests(tmp_path: Path) -> None:
+    sorter = FakeSorter({"Угу": NOISE, "Привет": REPLY})
+    agent, _ = sorter_agent(tmp_path, sorter)
+
+    async def main() -> None:
+        await screened(agent, [final("Угу")], True)
+        message = llm.ChatMessage(role="user", content=["Привет"])
+        await agent.on_user_turn_completed(llm.ChatContext.empty(), message)
+
+    asyncio.run(main())
+    assert sorter.counts == [0, 0]
 
 
 def test_sorter_none_is_passthrough(tmp_path: Path) -> None:

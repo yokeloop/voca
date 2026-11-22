@@ -1,33 +1,59 @@
 import asyncio
 import json
 import shutil
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Literal, cast
 
 import pytest
-from livekit.agents import StopResponse, llm
+from livekit.agents import RunContext, ToolError, llm
 from livekit.agents.voice import AgentSession
+from livekit.agents.voice.events import UserStateChangedEvent
 
 from voca.clientio.cards import CardState
-from voca.config import ApprovalConfig
-from voca.conversation.agent import VocaAgent, announcement_text
-from voca.conversation.approval import Vocabulary, unclear_text
+from voca.config import DecisionConfig
+from voca.conversation.agent import (
+    APPROVAL_GONE,
+    ASK_NOTE,
+    BUTTON_PROMPT,
+    CLARIFY_WHICH_NOTE,
+    CONFIRM_NOTE,
+    EVENT_PROMPT,
+    LEFT_NOTE,
+    NO_REQUEST,
+    PENDING_NOTE,
+    REMIND_PROMPT,
+    REQUEST_AMBIGUOUS,
+    REQUEST_PROMPT,
+    REQUEST_UNKNOWN,
+    UNAVAILABLE_NOTE,
+    VocaAgent,
+    notification_view,
+)
+from voca.conversation.approval_judge import Rules
 from voca.conversation.compaction import Limits
 from voca.conversation.instructions import InstructionLoader
 from voca.conversation.summarizer import Failure, Summarizer, Summary
-from voca.conversation.verdict import Decision, DecisionFailure, Situation, Verdict
-from voca.delegation.events import Event, EventState
+from voca.conversation.verdict import (
+    DecisionFailure,
+    Relation,
+    Reply,
+    Sorted,
+    sorter_body,
+)
+from voca.delegation.danger import Danger
+from voca.delegation.events import Event, EventState, advance, arrival
 from voca.delegation.model import Task, TaskStatus
-from voca.delegation.ports import ApprovalNotActive, OutcomeUnknown, RunState
+from voca.delegation.ports import ApprovalNotActive, RunState
 from voca.delegation.service import DelegationService
 from voca.telemetry.jsonl import JsonlLog
 
 EXAMPLE = Path(__file__).resolve().parents[2] / "instructions.example"
 NOW = 10.0
-
-VOCABULARY = ApprovalConfig().vocabulary()
+SORTER_PROMPT = DecisionConfig().sorter_prompt()
 
 
 class FakeRepo:
@@ -73,6 +99,19 @@ class FakeRepo:
             if not open_only or event.state != EventState.CLOSED
         ]
         return sorted(found, key=lambda event: (event.created_at, event.id or 0))
+
+    async def advance_event(self, event_id: int, state: EventState, at: float) -> bool:
+        for key, event in self.events.items():
+            if event.id == event_id:
+                try:
+                    self.events[key] = advance(event, state, at)
+                except ValueError:
+                    return False
+                return True
+        return False
+
+    def event(self, event_id: int) -> Event:
+        return next(event for event in self.events.values() if event.id == event_id)
 
 
 def take(queue: list[Any]) -> Any:
@@ -177,7 +216,8 @@ def opened() -> asyncio.Event:
     return event
 
 
-REPLY = "Кстати, Hermes закончил поручение."
+REPLY = "Кстати, Hermes прислал запрос."
+READING = "Он хочет удалить каталог /tmp/x. Разрешить?"
 
 
 class FakeHandle:
@@ -189,33 +229,40 @@ class FakeHandle:
         agent: VocaAgent | None,
         interrupted: bool,
         gate: asyncio.Event,
+        played: str | None = None,
         error: BaseException | None = None,
     ) -> None:
         self.text = text
+        self.played = text if played is None else played
         self.add_to_chat_ctx = add_to_chat_ctx
         self.events = events
         self.agent = agent
         self.interrupted = interrupted
         self.gate = gate
         self.error = error
+        self.finished = False
         self.chat_items: list[llm.ChatItem] = []
 
     def exception(self) -> BaseException | None:
         return self.error
 
+    def done(self) -> bool:
+        return self.finished
+
     async def wait_for_playout(self) -> None:
         await self.gate.wait()
-        if self.add_to_chat_ctx and self.text and self.error is None:
+        if self.add_to_chat_ctx and self.played and self.error is None:
             if self.agent is not None:
                 ctx = self.agent.chat_ctx.copy()
                 self.chat_items.append(
-                    ctx.add_message(role="assistant", content=self.text)
+                    ctx.add_message(role="assistant", content=self.played)
                 )
                 await self.agent.update_chat_ctx(ctx)
             else:
                 self.chat_items.append(
-                    llm.ChatMessage(role="assistant", content=[self.text])
+                    llm.ChatMessage(role="assistant", content=[self.played])
                 )
+        self.finished = True
         self.events.append(("playout", self.text))
 
 
@@ -227,9 +274,11 @@ class FakeSession:
         agent: VocaAgent | None = None,
         interrupts: list[bool] | None = None,
         gates: list[asyncio.Event] | None = None,
+        played: list[str | None] | None = None,
         errors: list[BaseException | None] | None = None,
     ) -> None:
         self.closing = closing
+        self.played = played or []
         self.errors = errors or []
         self.agent = agent
         self.interrupts = interrupts or []
@@ -249,8 +298,9 @@ class FakeSession:
         self.events.append(("say", text))
         gate = self.gates.pop(0) if self.gates else opened()
         interrupted = self.interrupts.pop(0) if self.interrupts else False
+        played = self.played.pop(0) if self.played else None
         handle = FakeHandle(
-            text, add_to_chat_ctx, self.events, self.agent, interrupted, gate
+            text, add_to_chat_ctx, self.events, self.agent, interrupted, gate, played
         )
         self.handles.append(handle)
         return handle
@@ -264,9 +314,10 @@ class FakeSession:
         self.events.append(("reply", instructions))
         gate = self.gates.pop(0) if self.gates else opened()
         interrupted = self.interrupts.pop(0) if self.interrupts else False
+        played = self.played.pop(0) if self.played else None
         error = self.errors.pop(0) if self.errors else None
         handle = FakeHandle(
-            REPLY, True, self.events, self.agent, interrupted, gate, error
+            REPLY, True, self.events, self.agent, interrupted, gate, played, error
         )
         self.handles.append(handle)
         return handle
@@ -292,27 +343,41 @@ async def settle() -> None:
         await asyncio.sleep(0)
 
 
-def decided(verdict: Verdict, confidence: float = 0.9, picked: str = "") -> Decision:
-    return Decision(verdict, picked or verdict, confidence, 12)
+def sorted_(
+    relation: Relation = "answers",
+    reply: Reply = "approve",
+    confidence: float = 1.0,
+    target: int | None = None,
+) -> Sorted:
+    return Sorted(
+        "reply",
+        1.0,
+        10,
+        relation=relation,
+        relation_confidence=1.0,
+        answer=reply,
+        answer_confidence=confidence,
+        target=target,
+        target_confidence=1.0,
+    )
 
 
-class FakeDecider:
+class FakeSorter:
     def __init__(
-        self,
-        script: dict[str, Decision] | None = None,
-        failure: str = "disabled",
+        self, script: dict[str, Sorted] | None = None, failure: str = "connection"
     ) -> None:
         self.script = script or {}
         self.failure = failure
-        self.seen: list[Situation] = []
-        self.during: Callable[[], Awaitable[None]] | None = None
+        self.seen: list[dict[str, str]] = []
+        self.counts: list[int] = []
 
-    async def decide(self, situation: Situation) -> Decision | DecisionFailure:
-        self.seen.append(situation)
-        if self.during is not None:
-            await self.during()
-        found = self.script.get(situation.phrase)
-        return found if found is not None else DecisionFailure(self.failure, 0)
+    async def sort(
+        self, state: dict[str, str], requests: int = 0
+    ) -> Sorted | DecisionFailure:
+        self.seen.append(state)
+        self.counts.append(requests)
+        found = self.script.get(state["фраза пользователя"])
+        return found if found is not None else DecisionFailure(self.failure, 300)
 
 
 class Stand:
@@ -320,56 +385,72 @@ class Stand:
         self,
         tmp_path: Path,
         *,
+        sorter: FakeSorter | None = None,
+        rules: Rules | None = None,
+        approval_reminder_s: float = 0.0,
+        sleep: Callable[[float], Awaitable[None]] = tick,
+        clock: Callable[[], float] = lambda: NOW,
         limits: Limits | None = None,
         summarizer: Summarizer | None = None,
-        vocabulary: Vocabulary = VOCABULARY,
-        decider: FakeDecider | None = None,
     ) -> None:
-        self.decider = decider or FakeDecider()
+        self.sorter = sorter
         directory = tmp_path / "instructions"
-        shutil.copytree(EXAMPLE, directory)
-        loader = InstructionLoader(directory)
-        instructions = loader.load()
+        shutil.copytree(EXAMPLE, directory, dirs_exist_ok=True)
+        self.loader = InstructionLoader(directory)
         self.events = tmp_path / "events.jsonl"
         self.repo = FakeRepo()
         self.backend = FakeBackend()
         self.service = DelegationService(
-            self.repo, self.backend, run_timeout=900, clock=lambda: NOW, sleep=tick
+            self.repo, self.backend, run_timeout=900, clock=clock, sleep=sleep
         )
-        self.agent = VocaAgent(
-            vocabulary=vocabulary,
-            decider=self.decider,
-            loader=loader,
+        self.rules = rules
+        self.approval_reminder_s = approval_reminder_s
+        self.limits = limits
+        self.summarizer = summarizer
+        self.agent = self.make_agent()
+        self.history = asyncio.Event()
+
+    def make_agent(self) -> VocaAgent:
+        instructions = self.loader.load()
+        agent = VocaAgent(
+            loader=self.loader,
             instructions=instructions,
             log=JsonlLog(self.events, session="t"),
             cards=CardState(instructions),
             ctx_high=13926,
             ctx_low=6553,
-            limits=limits,
-            summarizer=summarizer,
+            limits=self.limits,
+            summarizer=self.summarizer,
             delegation=self.service,
+            sorter=self.sorter,
+            sorter_prompt=SORTER_PROMPT,
+            rules=self.rules,
+            approval_reminder_s=self.approval_reminder_s,
         )
-        self.service.on_change = self.agent.on_task_change
-        self.history = asyncio.Event()
+        self.service.on_change = agent.on_task_change
+        return agent
 
     async def sent(self) -> None:
         await self.history.wait()
 
-    def start(self, session: FakeSession) -> None:
-        self.agent.start_delivery(cast(AgentSession[Any], session), self.sent)
+    def start(self, session: FakeSession, agent: VocaAgent | None = None) -> None:
+        (agent or self.agent).start_delivery(
+            cast(AgentSession[Any], session), self.sent
+        )
 
-    def open(self) -> None:
-        self.agent.set_present(True)
+    def open(self, agent: VocaAgent | None = None) -> None:
+        (agent or self.agent).set_present(True)
         self.history.set()
 
-    def rows(self, key: str) -> list[dict[str, object]]:
+    def all_rows(self, kind: str) -> list[dict[str, Any]]:
         found = [
             json.loads(line)
             for line in self.events.read_text(encoding="utf-8").splitlines()
         ]
-        return [
-            row for row in found if row["kind"] == "task" and row["tool_call_id"] == key
-        ]
+        return [row for row in found if row["kind"] == kind]
+
+    def rows(self, key: str) -> list[dict[str, object]]:
+        return [row for row in self.all_rows("task") if row["tool_call_id"] == key]
 
     def put(self, task: Task) -> Task:
         self.repo.tasks[task.tool_call_id] = task
@@ -382,6 +463,12 @@ APPROVAL = {
     "choices": ["once", "deny", "session", "always"],
     "request_id": "p1",
     "execution_generation": 3,
+}
+PACKAGE = {
+    "description": "package manager uninstall",
+    "command": "apt remove voca-48-none",
+    "choices": ["once", "deny"],
+    "request_id": "p2",
 }
 
 
@@ -398,6 +485,10 @@ def waiting(
     )
 
 
+def finished(key: str, result: str = "Ответ.", created_at: float = 1.0) -> Task:
+    return Task(key, "t", TaskStatus.SUCCEEDED, created_at=created_at, result=result)
+
+
 def said(text: str, started: float | None = None) -> llm.ChatMessage:
     if started is None:
         return llm.ChatMessage(role="user", content=[text])
@@ -406,29 +497,95 @@ def said(text: str, started: float | None = None) -> llm.ChatMessage:
     )
 
 
-def finished(key: str, result: str = "Ответ.", created_at: float = 1.0) -> Task:
-    return Task(key, "t", TaskStatus.SUCCEEDED, created_at=created_at, result=result)
+async def request(stand: Stand, task: Task) -> Event:
+    await stand.repo.save(task, NOW, arrival(task, NOW))
+    stand.agent.on_task_change(task)
+    return next(
+        event
+        for event in stand.repo.events.values()
+        if event.tool_call_id == task.tool_call_id
+        and event.request_id == (task.approval or {}).get("request_id")
+    )
 
 
-async def activate(stand: Stand, session: FakeSession, *tasks: Task) -> None:
-    for task in tasks:
-        stand.agent.on_task_change(stand.put(task))
-    stand.start(session)
-    stand.open()
-    await until(lambda: stand.agent.active is not None)
+async def mentioned(stand: Stand, task: Task) -> Event:
+    event = await request(stand, task)
+    assert event.id is not None
+    await stand.repo.advance_event(event.id, EventState.MENTIONED, NOW)
+    await say(stand, "Пришёл запрос от Hermes. Зачитать?")
+    return event
 
 
-def spoken(session: FakeSession) -> list[str]:
-    return [call[0] for call in session.calls]
+def ctx(call_id: str, handle: Any) -> RunContext[Any]:
+    return cast(
+        RunContext[Any],
+        SimpleNamespace(
+            function_call=SimpleNamespace(call_id=call_id),
+            speech_handle=handle,
+        ),
+    )
 
 
-async def answer(agent: VocaAgent, text: str) -> None:
-    await agent.on_user_turn_completed(agent.chat_ctx.copy(), said(text))
+def reading(
+    stand: Stand,
+    played: str = READING,
+    *,
+    interrupted: bool = False,
+    gate: asyncio.Event | None = None,
+) -> FakeHandle:
+    handle = FakeHandle(
+        played, True, [], stand.agent, interrupted, gate or opened(), played
+    )
+    handle.chat_items.append(
+        llm.FunctionCallOutput(
+            call_id="read", name="open_approval", output="{}", is_error=False
+        )
+    )
+    return handle
 
 
-async def stopped(agent: VocaAgent, text: str) -> None:
-    with pytest.raises(StopResponse):
-        await answer(agent, text)
+async def read(
+    stand: Stand,
+    played: str = READING,
+    *,
+    interrupted: bool = False,
+    ids: tuple[str | None, ...] = (None,),
+) -> FakeHandle:
+    gate = asyncio.Event()
+    handle = reading(stand, played, interrupted=interrupted, gate=gate)
+    for id in ids:
+        await stand.agent.open_approval(ctx("read", handle), id)
+    gate.set()
+    await until(lambda: stand.agent.reading is None)
+    return handle
+
+
+async def say(stand: Stand, text: str) -> None:
+    ctx = stand.agent.chat_ctx.copy()
+    ctx.add_message(role="assistant", content=text)
+    await stand.agent.update_chat_ctx(ctx)
+
+
+async def turn(
+    stand: Stand, text: str, answer: str | None = "Ответ агента."
+) -> llm.ChatContext:
+    turn_ctx = stand.agent.chat_ctx.copy()
+    message = said(text)
+    await stand.agent.on_user_turn_completed(turn_ctx, message)
+    ctx = stand.agent.chat_ctx.copy()
+    ctx.items.append(message)
+    if answer is not None:
+        ctx.add_message(role="assistant", content=answer)
+    await stand.agent.update_chat_ctx(ctx)
+    return turn_ctx
+
+
+def notes(turn_ctx: llm.ChatContext) -> list[str]:
+    return [
+        item.text_content or ""
+        for item in turn_ctx.items
+        if item.type == "message" and item.role == "system"
+    ]
 
 
 def facts(ctx: llm.ChatContext) -> list[tuple[str, dict[str, Any]]]:
@@ -451,108 +608,689 @@ def summaries(agent: VocaAgent) -> int:
     )
 
 
-def approvals(stand: Stand, key: str) -> list[object]:
-    return [row["approval"] for row in stand.rows(key) if "approval" in row]
+def approvals(stand: Stand, key: str) -> list[tuple[object, object]]:
+    return [
+        (row["approval"], row["by"]) for row in stand.rows(key) if "approval" in row
+    ]
 
 
-def test_announcement_text() -> None:
-    text = announcement_text(waiting("a"), VOCABULARY)
-    assert text == (
-        "Hermes просит подтверждения по поручению «Удали каталог /tmp/x»: "
-        "удаление в корневом каталоге. Подтвердите на экране или скажите "
-        "„Подтверждаю“ или „Отклоняю“."
-    )
-    assert "rm -r" not in text
-    long = ("слово " * 20)[:100]
-    assert len(long) == 100
-    quoted = announcement_text(replace(waiting("b"), text=long), VOCABULARY)
-    assert 0 < len(quoted.split("«")[1].split("»")[0]) <= 60
-    bare = waiting("c", {"command": "rm -r /tmp/x", "request_id": "p1"})
-    assert announcement_text(bare, VOCABULARY) == (
-        "Hermes просит подтверждения по поручению «Удали каталог /tmp/x»: "
-        "опасная команда. Подтвердите на экране или скажите "
-        "„Подтверждаю“ или „Отклоняю“."
-    )
+def outcomes(stand: Stand) -> list[object]:
+    return [row["outcome"] for row in stand.all_rows("approval_judge")]
 
 
-def test_interrupted_announcement_still_active(tmp_path: Path) -> None:
-    async def main() -> None:
-        stand = Stand(tmp_path)
-        session = FakeSession(interrupts=[True, True])
-        stand.agent.on_task_change(stand.put(waiting("a")))
-        stand.start(session)
-        stand.open()
-        await until(lambda: stand.agent.active is not None)
-        assert spoken(session) == [announcement_text(waiting("a"), VOCABULARY)] * 2
-        assert stand.agent.active is not None
-        assert stand.agent.active.key == "a"
-        rows = [row for row in stand.rows("a") if row.get("announced")]
-        assert [row["interrupted"] for row in rows] == [True, True]
-        await stopped(stand.agent, "Подтверждаю")
-        assert stand.backend.approved == [("run_a", "once", APPROVAL)]
-        await stand.agent.stop_delegation()
-
-    asyncio.run(main())
-
-
-def test_announcement_fact_not_spoken_text(tmp_path: Path) -> None:
+def test_request_mentioned_by_model(tmp_path: Path) -> None:
     async def main() -> None:
         stand = Stand(tmp_path)
         session = FakeSession(agent=stand.agent)
-        await activate(stand, session, waiting("a"))
-        assert session.calls[0][2] is False
-        ctx = stand.agent.chat_ctx
-        texts = [
-            item.text_content or "" for item in ctx.items if item.type == "message"
+        stand.start(session)
+        stand.open()
+        event = await request(stand, waiting("a"))
+        assert event.id is not None
+        await until(lambda: stand.repo.event(1).state == EventState.MENTIONED)
+        assert len(session.replies) == 1
+        instructions, tool_choice, interruptible = session.replies[0]
+        assert instructions.startswith(REQUEST_PROMPT)
+        assert EVENT_PROMPT not in instructions
+        assert (tool_choice, interruptible) == ("none", True)
+        items = stand.agent.chat_ctx.items
+        fact = next(
+            index
+            for index, item in enumerate(items)
+            if item.type == "function_call_output"
+        )
+        spoken = next(
+            index
+            for index, item in enumerate(items)
+            if item.type == "message" and item.role == "assistant"
+        )
+        assert fact < spoken
+        assert facts(stand.agent.chat_ctx) == [
+            (
+                "list_notifications",
+                {
+                    "id": "1",
+                    "event": "approval_mentioned",
+                    "request": "удаление в корневом каталоге",
+                    "command": "rm -r /tmp/x",
+                    "danger": "high",
+                },
+            )
         ]
-        assert not any("Hermes просит подтверждения" in text for text in texts)
-        calls = [item.name for item in ctx.items if item.type == "function_call"]
-        assert calls == ["list_tasks"]
-        [(name, output)] = facts(ctx)
-        assert name == "list_tasks"
-        assert output == {
-            "id": "a",
-            "event": "approval_requested",
-            "text": "Удали каталог /tmp/x",
-            "request": "удаление в корневом каталоге",
-            "command": "rm -r /tmp/x",
-            "interrupted": False,
-        }
+        assert stand.all_rows("approval_event") == [
+            {
+                **stand.all_rows("approval_event")[0],
+                "event_id": "1",
+                "tool_call_id": "a",
+                "state": "mentioned",
+            }
+        ]
         await stand.agent.stop_delegation()
 
     asyncio.run(main())
 
 
-def test_expiry_fact(tmp_path: Path) -> None:
+def test_interrupted_mention_repeated(tmp_path: Path) -> None:
     async def main() -> None:
         stand = Stand(tmp_path)
-        session = FakeSession()
+        gate = asyncio.Event()
+        session = FakeSession(
+            agent=stand.agent, interrupts=[True, False], gates=[opened(), gate]
+        )
+        stand.start(session)
+        stand.open()
+        await request(stand, waiting("a"))
+        await until(lambda: len(session.replies) == 2)
+        assert stand.repo.event(1).state == EventState.ARRIVED
+        gate.set()
+        await until(lambda: stand.repo.event(1).state == EventState.MENTIONED)
+        assert events_of(stand.agent.chat_ctx) == ["approval_mentioned"]
+        assert all(REQUEST_PROMPT in reply[0] for reply in session.replies)
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_request_and_result_one_reply(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path)
+        session = FakeSession(agent=stand.agent)
+        done = finished("r")
+        await stand.repo.save(done, NOW, arrival(done, NOW))
+        stand.agent.enqueue(done)
+        await request(stand, waiting("a"))
+        await settle()
+        stand.start(session)
+        stand.open()
+        await until(lambda: stand.repo.tasks["r"].delivered_at is not None)
+        assert len(session.replies) == 1
+        record = session.replies[0][0]
+        assert record.index(REQUEST_PROMPT) < record.index(EVENT_PROMPT)
+        assert stand.repo.event(2).state == EventState.MENTIONED
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_mentioned_request_not_mentioned_again(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path)
+        session = FakeSession(agent=stand.agent)
+        stand.start(session)
+        stand.open()
         task = waiting("a")
-        await activate(stand, session, task)
-        expired = stand.put(replace(task, status=TaskStatus.RUNNING, approval=None))
-        stand.agent.on_task_change(expired)
-        await until(lambda: "approval_expired" in events_of(stand.agent.chat_ctx))
+        await request(stand, task)
+        await until(lambda: stand.repo.event(1).state == EventState.MENTIONED)
+        stand.agent.on_task_change(task)
+        await settle()
+        assert len(session.replies) == 1
+        await stand.agent.stop_delegation()
+        other = waiting("b", PACKAGE, created_at=2.0)
+        await stand.repo.save(other, NOW, arrival(other, NOW))
+        second = stand.make_agent()
+        fresh = FakeSession(agent=second)
+        stand.start(fresh, second)
+        stand.open(second)
+        await second.enqueue_undelivered()
+        await until(lambda: stand.repo.event(2).state == EventState.MENTIONED)
+        await settle()
+        assert len(fresh.replies) == 1
+        assert '"id": "2"' in fresh.replies[0][0]
+        assert '"id": "1"' not in fresh.replies[0][0]
+        await second.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_open_approval_returns_request(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path)
+        task = waiting("a")
+        event = await request(stand, task)
+        handle = reading(stand, gate=asyncio.Event())
+        bare = json.loads(await stand.agent.open_approval(ctx("x", handle)))
+        named = json.loads(await stand.agent.open_approval(ctx("x", handle), "1"))
+        assert bare == named == notification_view(event, task, NOW)
+        assert stand.agent.reading is not None
+        assert stand.agent.reading.ids == ["1", "1"]
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_open_approval_errors(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path)
+        handle = reading(stand, gate=asyncio.Event())
+        with pytest.raises(ToolError, match=NO_REQUEST):
+            await stand.agent.open_approval(ctx("x", handle))
+        await request(stand, waiting("a"))
+        with pytest.raises(ToolError, match=REQUEST_UNKNOWN):
+            await stand.agent.open_approval(ctx("x", handle), "9")
+        await request(stand, waiting("b", PACKAGE, created_at=2.0))
+        with pytest.raises(ToolError, match=REQUEST_AMBIGUOUS):
+            await stand.agent.open_approval(ctx("x", handle))
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_reading_marks_essence(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path)
+        await request(stand, waiting("a"))
+        await read(stand, "Он хочет удалить каталог voca-48-a. Разрешить?")
+        assert stand.repo.event(1).state == EventState.ESSENCE
+        [row] = stand.all_rows("approval_read")
+        assert (row["event_ids"], row["essence"], row["interrupted"]) == (
+            ["1"],
+            True,
+            False,
+        )
+        assert row["played"] == "Он хочет удалить каталог voca-48-a. Разрешить?"
+        assert [row["state"] for row in stand.all_rows("approval_event")] == ["essence"]
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_cut_before_first_sentence_keeps_state(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path)
+        await request(stand, waiting("a"))
+        await read(stand, "Он хочет удал", interrupted=True)
+        assert stand.repo.event(1).state == EventState.ARRIVED
+        [row] = stand.all_rows("approval_read")
+        assert (row["essence"], row["interrupted"]) == (False, True)
+        assert stand.agent.about == {}
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_cut_after_first_sentence_marks_essence(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path)
+        await mentioned(stand, waiting("a", PACKAGE))
+        await read(stand, "Он хочет удалить пакет.", interrupted=True)
+        assert stand.repo.event(1).state == EventState.ESSENCE
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_hook_settles_finished_reading(tmp_path: Path) -> None:
+    async def main() -> None:
+        sorter = FakeSorter({"Да, удаляй": sorted_(confidence=0.97)})
+        stand = Stand(tmp_path, sorter=sorter)
+        await request(stand, waiting("a"))
+        gate = asyncio.Event()
+        handle = reading(stand, gate=gate)
+        await stand.agent.open_approval(ctx("read", handle))
+        await say(stand, READING)
+        handle.chat_items.append(stand.agent.chat_ctx.items[-1])
+        handle.finished = True
+        await turn(stand, "Да, удаляй")
+        assert stand.agent.reading is None
+        assert stand.repo.event(1).state == EventState.ESSENCE
+        assert stand.backend.approved == [("run_a", "once", APPROVAL)]
+        gate.set()
+        await settle()
+        assert len(stand.all_rows("approval_read")) == 1
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_conversation_a(tmp_path: Path) -> None:
+    async def main() -> None:
+        sorter = FakeSorter(
+            {
+                "Да, давай": sorted_(confidence=0.97),
+                "Да, удаляй": sorted_(confidence=0.97),
+            }
+        )
+        stand = Stand(tmp_path, sorter=sorter)
+        await mentioned(stand, waiting("a"))
+        turn_ctx = stand.agent.chat_ctx.copy()
+        items = turn_ctx.items
+        message = said("Да, давай")
+        await stand.agent.on_user_turn_completed(turn_ctx, message)
+        assert turn_ctx.items is items
+        assert notes(turn_ctx) == []
+        assert stand.backend.approved == []
+        ctx = stand.agent.chat_ctx.copy()
+        ctx.items.append(message)
+        await stand.agent.update_chat_ctx(ctx)
+        await read(stand)
+        await turn(stand, "Да, удаляй")
+        assert stand.backend.approved == [("run_a", "once", APPROVAL)]
         assert facts(stand.agent.chat_ctx)[-1] == (
             "list_tasks",
-            {"id": "a", "event": "approval_expired", "by": "hermes"},
+            {
+                "id": "a",
+                "event": "approved",
+                "by": "voice",
+                "request": "удаление в корневом каталоге",
+            },
+        )
+        assert approvals(stand, "a") == [("once", "voice")]
+        assert outcomes(stand) == ["pass", "approve"]
+        assert stand.all_rows("approval_judge")[1]["binding"] == "content"
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_conversation_b(tmp_path: Path) -> None:
+    async def main() -> None:
+        sorter = FakeSorter(
+            {
+                "А что именно там лежит?": sorted_("asks"),
+                "Не надо, отклони": sorted_(reply="deny", confidence=0.7),
+            }
+        )
+        stand = Stand(tmp_path, sorter=sorter)
+        await mentioned(stand, waiting("a"))
+        await read(stand)
+        asked = await turn(stand, "А что именно там лежит?")
+        [text] = notes(asked)
+        assert text.startswith(ASK_NOTE)
+        assert "rm -r /tmp/x" in text
+        assert stand.backend.approved == []
+        await turn(stand, "Не надо, отклони")
+        assert stand.backend.approved == [("run_a", "deny", APPROVAL)]
+        assert stand.all_rows("approval_judge")[1]["binding"] == "place"
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_conversation_v(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path, sorter=FakeSorter({"Да": sorted_(confidence=0.96)}))
+        await mentioned(stand, waiting("a"))
+        await read(stand)
+        first = await turn(stand, "Да")
+        [text] = notes(first)
+        assert text.startswith(CONFIRM_NOTE)
+        assert stand.backend.approved == []
+        await turn(stand, "Да")
+        assert stand.backend.approved == [("run_a", "once", APPROVAL)]
+        assert outcomes(stand) == ["confirm", "approve"]
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_conversation_g(tmp_path: Path) -> None:
+    async def main() -> None:
+        mixed = "Пакет удаляй, а каталог не трогай"
+        sorter = FakeSorter({"Да, разрешаю": sorted_(), mixed: sorted_(target=2)})
+        stand = Stand(tmp_path, sorter=sorter)
+        await mentioned(stand, waiting("a"))
+        await request(stand, waiting("b", PACKAGE, created_at=2.0))
+        await read(
+            stand, "Первый удаляет каталог. Второй удаляет пакет.", ids=("1", "2")
+        )
+        first = await turn(stand, "Да, разрешаю")
+        assert notes(first)[0].startswith(CLARIFY_WHICH_NOTE)
+        second = await turn(stand, mixed)
+        assert notes(second)[0].startswith(CLARIFY_WHICH_NOTE)
+        third = await turn(stand, "Да, разрешаю")
+        assert notes(third)[0].startswith(LEFT_NOTE)
+        assert stand.backend.approved == []
+        assert outcomes(stand) == ["clarify_which", "clarify_which", "left"]
+        assert stand.all_rows("approval_judge")[2]["clarified"] == 2
+        assert sorter.counts == [2, 2, 2]
+        assert all(
+            event.state != EventState.CLOSED for event in stand.repo.events.values()
         )
         await stand.agent.stop_delegation()
 
     asyncio.run(main())
 
 
-def test_answered_not_reannounced(tmp_path: Path) -> None:
+def test_conversation_zh(tmp_path: Path) -> None:
+    async def main() -> None:
+        time_ = "Подожди, а сколько сейчас времени?"
+        sorter = FakeSorter({time_: sorted_("other"), "Да": sorted_()})
+        stand = Stand(tmp_path, sorter=sorter)
+        await mentioned(stand, waiting("a", PACKAGE))
+        await read(stand, "Он хочет удалить пакет voca-48-none. Разрешить?")
+        other = await turn(stand, time_, "Сейчас полдень. Запрос ждёт ответа.")
+        [text] = notes(other)
+        assert text.startswith(PENDING_NOTE)
+        yes = await turn(stand, "Да")
+        assert notes(yes) == []
+        assert stand.backend.approved == []
+        assert outcomes(stand) == ["pass", "pass"]
+        assert stand.all_rows("approval_judge")[0]["event_ids"] == ["1"]
+        assert stand.all_rows("approval_judge")[1]["event_ids"] == []
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_conversation_z(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand = Stand(
+            tmp_path, sorter=FakeSorter({"Да-да, удаляй": sorted_(confidence=0.9)})
+        )
+        await mentioned(stand, waiting("a", PACKAGE))
+        await read(stand, "Он хочет удалить пакет.", interrupted=True)
+        await turn(stand, "Да-да, удаляй")
+        assert stand.backend.approved == [("run_a", "once", PACKAGE)]
+        assert outcomes(stand) == ["approve"]
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_conversation_i(tmp_path: Path) -> None:
+    async def main() -> None:
+        named = "Не надо читать, пусть удаляет каталог"
+        stand = Stand(tmp_path, sorter=FakeSorter({named: sorted_(confidence=0.96)}))
+        await mentioned(stand, waiting("a"))
+        await turn(stand, named)
+        assert stand.repo.event(1).state == EventState.MENTIONED
+        assert stand.backend.approved == [("run_a", "once", APPROVAL)]
+        assert stand.all_rows("approval_judge")[0]["binding"] == "content"
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_short_yes_after_unrelated_phrase(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path, sorter=FakeSorter({"Да": sorted_()}))
+        await mentioned(stand, waiting("a"))
+        await read(stand)
+        await say(stand, "Кстати, завтра будет дождь.")
+        yes = await turn(stand, "Да")
+        assert notes(yes) == []
+        assert stand.backend.approved == []
+        assert outcomes(stand) == ["pass"]
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_event_speech_after_confirm_is_no_place(tmp_path: Path) -> None:
+    async def main() -> None:
+        unsure = "Ну, может быть"
+        sorter = FakeSorter(
+            {"Да": sorted_(confidence=0.96), unsure: sorted_(confidence=0.3)}
+        )
+        stand = Stand(tmp_path, sorter=sorter)
+        session = FakeSession(agent=stand.agent)
+        await mentioned(stand, waiting("a"))
+        await read(stand)
+        await turn(stand, "Да", None)
+        stand.start(session)
+        stand.open()
+        await say(stand, "Точно удалить каталог целиком?")
+        done = finished("r")
+        await stand.repo.save(done, NOW, arrival(done, NOW))
+        stand.agent.enqueue(done)
+        await until(lambda: stand.repo.tasks["r"].delivered_at is not None)
+        yes = await turn(stand, "Да")
+        assert notes(yes) == []
+        assert stand.backend.approved == []
+        await read(stand)
+        await turn(stand, unsure, None)
+        await say(stand, "Разрешить удаление каталога?")
+        await stand.agent.approve_from_page("a", "p1", "deny")
+        await until(lambda: len(session.replies) == 2)
+        await settle()
+        assert stand.backend.approved == [("run_a", "deny", APPROVAL)]
+        assert outcomes(stand) == ["confirm", "pass", "clarify_sure"]
+        assert stand.agent._place() is None
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_two_clarifications_then_left(tmp_path: Path) -> None:
+    async def main() -> None:
+        unsure = "Ну, может быть"
+        other = "А какая погода?"
+        sorter = FakeSorter({unsure: sorted_(confidence=0.3), other: sorted_("other")})
+        stand = Stand(tmp_path, sorter=sorter)
+        await mentioned(stand, waiting("a"))
+        await read(stand)
+        await turn(stand, unsure)
+        assert stand.agent.clarified == 1
+        await turn(stand, unsure)
+        assert stand.agent.clarified == 2
+        left = await turn(stand, unsure)
+        assert notes(left)[0].startswith(LEFT_NOTE)
+        assert stand.agent.clarified == 0
+        assert outcomes(stand) == ["clarify_sure", "clarify_sure", "left"]
+        await read(stand)
+        await turn(stand, unsure)
+        assert stand.agent.clarified == 1
+        await turn(stand, other)
+        assert stand.agent.clarified == 0
+        assert stand.backend.approved == []
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_sorter_failure_never_approves(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path, sorter=FakeSorter())
+        await mentioned(stand, waiting("a"))
+        await read(stand)
+        answered = await turn(stand, "Да, удаляй")
+        [text] = notes(answered)
+        assert text.startswith(UNAVAILABLE_NOTE)
+        assert stand.backend.approved == []
+        assert outcomes(stand) == ["unavailable"]
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_sorter_off_never_approves(tmp_path: Path) -> None:
     async def main() -> None:
         stand = Stand(tmp_path)
-        session = FakeSession()
+        await mentioned(stand, waiting("a"))
+        await read(stand)
+        answered = await turn(stand, "Да, удаляй")
+        assert notes(answered)[0].startswith(UNAVAILABLE_NOTE)
+        assert stand.backend.approved == []
+        assert stand.repo.event(1).danger == Danger.HIGH
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_resumed_speech_holds_decision(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand = Stand(
+            tmp_path, sorter=FakeSorter({"Да, удаляй": sorted_(confidence=0.97)})
+        )
+        await mentioned(stand, waiting("a"))
+        agent = stand.agent
+        agent.quiet_at = agent.clock()
+        hook = asyncio.ensure_future(turn(stand, "Да, удаляй"))
+        await asyncio.sleep(0.05)
+        assert not hook.done()
+        agent.on_user_state(
+            UserStateChangedEvent(
+                old_state="listening", new_state="speaking", created_at=agent.clock()
+            )
+        )
+        turn_ctx = await hook
+        assert notes(turn_ctx) == []
+        assert stand.backend.approved == []
+        assert outcomes(stand) == ["approve", "resumed"]
+        await agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_decision_waits_for_silence(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand = Stand(
+            tmp_path, sorter=FakeSorter({"Да, удаляй": sorted_(confidence=0.97)})
+        )
+        await mentioned(stand, waiting("a"))
+        agent = stand.agent
+        agent.quiet_at = agent.clock() - 0.2
+        started = time.monotonic()
+        await turn(stand, "Да, удаляй")
+        assert time.monotonic() - started >= 0.25
+        assert stand.backend.approved == [("run_a", "once", APPROVAL)]
+        await agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_approval_gone_fact(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand = Stand(
+            tmp_path, sorter=FakeSorter({"Да, удаляй": sorted_(confidence=0.97)})
+        )
+        stand.backend.approvals = [ApprovalNotActive("a")]
+        await mentioned(stand, waiting("a"))
+        await turn(stand, "Да, удаляй")
+        output = next(
+            item
+            for item in stand.agent.chat_ctx.items
+            if item.type == "function_call_output" and "approval_failed" in item.output
+        )
+        assert output.is_error
+        assert json.loads(output.output) == {
+            "id": "a",
+            "event": "approval_failed",
+            "by": "voice",
+            "error": APPROVAL_GONE,
+        }
+        assert approvals(stand, "a") == []
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_danger_by_rule_only(tmp_path: Path) -> None:
+    async def main() -> None:
+        sorter = FakeSorter({"Да, удаляй": sorted_(confidence=0.5)})
+        stand = Stand(tmp_path, sorter=sorter)
+        await mentioned(stand, waiting("a", PACKAGE))
+        await turn(stand, "Да, удаляй")
+        assert stand.repo.event(1).danger == Danger.MEDIUM
+        [row] = stand.all_rows("approval_judge")
+        assert (row["outcome"], row["threshold"]) == ("approve", 0.5)
+        for state, count in zip(sorter.seen, sorter.counts, strict=True):
+            body = sorter_body(SORTER_PROMPT, state, "d1-2B", count)
+            assert list(body["questions"]) == ["kind", "relation", "answer"]
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_expiry_fact(tmp_path: Path) -> None:
+    async def expire(stand: Stand, answer: bool) -> list[object]:
         task = waiting("a")
-        await activate(stand, session, task)
-        await stopped(stand.agent, "Подтверждаю")
+        await mentioned(stand, task)
+        if answer:
+            await turn(stand, "Да, удаляй")
+        stand.agent.on_task_change(
+            stand.put(replace(task, status=TaskStatus.RUNNING, approval=None))
+        )
+        await settle()
+        assert stand.agent.waiting == {}
+        await stand.agent.stop_delegation()
+        return events_of(stand.agent.chat_ctx)
+
+    async def main() -> None:
+        sorter = FakeSorter({"Да, удаляй": sorted_(confidence=0.97)})
+        silent = Stand(tmp_path / "silent", sorter=sorter)
+        assert (await expire(silent, False))[-1] == "approval_expired"
+        assert facts(silent.agent.chat_ctx)[-1] == (
+            "list_tasks",
+            {"id": "a", "event": "approval_expired", "by": "hermes"},
+        )
+        voiced = Stand(tmp_path / "voiced", sorter=sorter)
+        assert "approval_expired" not in await expire(voiced, True)
+
+    asyncio.run(main())
+
+
+def test_button_reply(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path)
+        session = FakeSession(agent=stand.agent, interrupts=[False, True])
+        stand.start(session)
+        stand.open()
+        await request(stand, waiting("a"))
+        await until(lambda: len(session.replies) == 1)
+        await until(lambda: stand.repo.event(1).state == EventState.MENTIONED)
+        result = await stand.agent.approve_from_page("a", "p1", "deny")
+        assert result == {"ok": True}
+        assert facts(stand.agent.chat_ctx)[-1] == (
+            "list_tasks",
+            {"id": "a", "event": "denied", "by": "button"},
+        )
+        await until(lambda: len(session.replies) == 2)
+        record = session.replies[1][0]
+        assert record.startswith(BUTTON_PROMPT)
+        assert '"pressed": [{"task": "a", "event": "denied"' in record
+        assert REQUEST_PROMPT not in record
+        await settle()
+        assert len(session.replies) == 2
+        assert stand.agent.pressed == {}
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_reminder_once_before_expiry(tmp_path: Path) -> None:
+    async def main() -> None:
+        pauses: list[float] = []
+        alarm = asyncio.Event()
+
+        async def sleep(seconds: float) -> None:
+            pauses.append(seconds)
+            if seconds > 60:
+                await alarm.wait()
+            await asyncio.sleep(0)
+
+        stand = Stand(tmp_path, approval_reminder_s=60, sleep=sleep)
+        session = FakeSession(agent=stand.agent)
+        stand.start(session)
+        stand.open()
+        await request(stand, waiting("a"))
+        await until(lambda: stand.repo.event(1).state == EventState.MENTIONED)
+        assert NOW + 300 - 60 - NOW in pauses
+        assert len(session.replies) == 1
+        alarm.set()
+        await until(lambda: len(session.replies) == 2)
+        assert session.replies[1][0].startswith(REMIND_PROMPT)
+        assert '"expiring": [{"id": "1"' in session.replies[1][0]
+        stand.agent.on_task_change(stand.repo.tasks["a"])
+        await settle()
+        assert len(session.replies) == 2
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_reminder_skipped_after_expiry(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path, approval_reminder_s=60, clock=lambda: NOW + 301)
+        session = FakeSession(agent=stand.agent)
+        task = waiting("a")
+        await stand.repo.save(task, NOW, arrival(task, NOW))
+        await stand.repo.advance_event(1, EventState.MENTIONED, NOW)
+        stand.start(session)
+        stand.open()
         stand.agent.on_task_change(task)
         await settle()
-        assert not stand.agent.announcements
-        assert stand.agent.active is None
-        assert spoken(session) == [announcement_text(task, VOCABULARY), "Подтверждено"]
+        assert stand.agent.timers == {1}
+        assert session.replies == []
         await stand.agent.stop_delegation()
 
     asyncio.run(main())
@@ -560,21 +1298,22 @@ def test_answered_not_reannounced(tmp_path: Path) -> None:
 
 def test_facts_survive_restore(tmp_path: Path) -> None:
     async def main() -> None:
-        stand = Stand(tmp_path)
-        session = FakeSession()
-        await activate(stand, session, waiting("a"))
-        await stopped(stand.agent, "Отклоняю")
+        deny = "Не надо, отклони"
+        stand = Stand(tmp_path, sorter=FakeSorter({deny: sorted_(reply="deny")}))
+        session = FakeSession(agent=stand.agent)
+        stand.start(session)
+        stand.open()
+        await request(stand, waiting("a"))
+        await until(lambda: stand.repo.event(1).state == EventState.MENTIONED)
+        await turn(stand, deny)
         await stand.agent.stop_delegation()
         data = stand.agent.chat_ctx.to_dict(
             exclude_function_call=False, exclude_timestamp=False
         )
         restored = llm.ChatContext.from_dict(data)
-        directory = tmp_path / "instructions"
-        loader = InstructionLoader(directory)
-        instructions = loader.load()
+        instructions = stand.loader.load()
         agent = VocaAgent(
-            vocabulary=VOCABULARY,
-            loader=loader,
+            loader=stand.loader,
             instructions=instructions,
             log=JsonlLog(tmp_path / "second.jsonl", session="t2"),
             cards=CardState(instructions),
@@ -582,266 +1321,10 @@ def test_facts_survive_restore(tmp_path: Path) -> None:
             ctx_low=6553,
             chat_ctx=restored,
         )
-        ctx = agent.chat_ctx
-        calls = [
-            (item.name, json.loads(item.arguments))
-            for item in ctx.items
-            if item.type == "function_call"
-        ]
-        assert calls == [("list_tasks", {}), ("list_tasks", {})]
-        assert [(name, output["event"]) for name, output in facts(ctx)] == [
-            ("list_tasks", "approval_requested"),
+        assert [(name, output["event"]) for name, output in facts(agent.chat_ctx)] == [
+            ("list_notifications", "approval_mentioned"),
             ("list_tasks", "denied"),
         ]
-
-    asyncio.run(main())
-
-
-def test_interrupted_announcement_repeated_once(tmp_path: Path) -> None:
-    async def main() -> None:
-        stand = Stand(tmp_path)
-        session = FakeSession(interrupts=[True, False])
-        await activate(stand, session, waiting("a"))
-        assert len(session.calls) == 2
-        assert stand.agent.active is not None
-        assert stand.agent.active.key == "a"
-        await stand.agent.stop_delegation()
-
-    asyncio.run(main())
-
-
-def test_interrupted_first_holds_queue(tmp_path: Path) -> None:
-    async def main() -> None:
-        stand = Stand(tmp_path)
-        session = FakeSession(interrupts=[True, True, False])
-        await activate(stand, session, waiting("a"), waiting("b", created_at=2.0))
-        await settle()
-        assert spoken(session) == [announcement_text(waiting("a"), VOCABULARY)] * 2
-        assert stand.agent.active is not None
-        assert stand.agent.active.key == "a"
-        await stopped(stand.agent, "Подтверждаю")
-        assert stand.backend.approved == [("run_a", "once", APPROVAL)]
-        await until(lambda: len(session.calls) == 4)
-        assert spoken(session)[-1] == announcement_text(
-            waiting("b", created_at=2.0), VOCABULARY
-        )
-        await stand.agent.stop_delegation()
-
-    asyncio.run(main())
-
-
-def test_next_announcement_waits_for_active(tmp_path: Path) -> None:
-    async def main() -> None:
-        stand = Stand(tmp_path)
-        session = FakeSession()
-        await activate(stand, session, waiting("a"), waiting("b", created_at=2.0))
-        await settle()
-        await settle()
-        assert len(session.calls) == 1
-        assert stand.agent.active is not None
-        assert stand.agent.active.key == "a"
-        await stopped(stand.agent, "Подтверждаю")
-        await until(lambda: len(session.calls) == 3)
-        await until(lambda: stand.agent.active is not None)
-        assert spoken(session)[1:] == [
-            "Подтверждено",
-            announcement_text(waiting("b", created_at=2.0), VOCABULARY),
-        ]
-        assert stand.agent.active is not None
-        assert stand.agent.active.key == "b"
-        await stand.agent.stop_delegation()
-
-    asyncio.run(main())
-
-
-def test_announcement_before_result_and_results_play(tmp_path: Path) -> None:
-    async def main() -> None:
-        stand = Stand(tmp_path)
-        stand.put(waiting("a"))
-        stand.put(waiting("b", created_at=2.0))
-        stand.put(finished("c", "Третья.", 3.0))
-        session = FakeSession()
-        await stand.agent.enqueue_undelivered()
-        stand.start(session)
-        stand.open()
-        await until(lambda: stand.repo.tasks["c"].delivered_at is not None)
-        await settle()
-        announced = announcement_text(waiting("a"), VOCABULARY)
-        assert spoken(session) == [announced]
-        assert len(session.replies) == 1
-        assert "Третья." in session.replies[0][0]
-        kinds = [kind for kind, _ in session.events]
-        assert session.events.index(("say", announced)) < kinds.index("reply")
-        assert stand.agent.active is not None
-        assert stand.agent.active.key == "a"
-        await stand.agent.stop_delegation()
-
-    asyncio.run(main())
-
-
-def test_expired_request_releases_active(tmp_path: Path) -> None:
-    async def main() -> None:
-        stand = Stand(tmp_path)
-        session = FakeSession()
-        task = waiting("a")
-        await activate(stand, session, task)
-        expired = stand.put(replace(task, status=TaskStatus.RUNNING, approval=None))
-        stand.agent.on_task_change(expired)
-        await settle()
-        assert stand.agent.active is None
-        assert len(session.calls) == 1
-        await answer(stand.agent, "Подтверждаю")
-        assert stand.backend.approved == []
-        await stand.agent.stop_delegation()
-
-    asyncio.run(main())
-
-
-def test_new_request_replaces_active(tmp_path: Path) -> None:
-    async def main() -> None:
-        stand = Stand(tmp_path)
-        session = FakeSession()
-        task = waiting("a")
-        await activate(stand, session, task)
-        second = {**APPROVAL, "request_id": "p2"}
-        stand.agent.on_task_change(stand.put(replace(task, approval=second)))
-        await until(lambda: len(session.calls) == 2)
-        await until(lambda: stand.agent.active is not None)
-        assert stand.agent.active is not None
-        assert stand.agent.active.approval["request_id"] == "p2"
-        await stopped(stand.agent, "Подтверждаю")
-        assert stand.backend.approved == [("run_a", "once", second)]
-        await stand.agent.stop_delegation()
-
-    asyncio.run(main())
-
-
-def test_waiting_task_announced_on_join(tmp_path: Path) -> None:
-    async def main() -> None:
-        stand = Stand(tmp_path)
-        stand.put(waiting("a"))
-        session = FakeSession()
-        await stand.agent.enqueue_undelivered()
-        stand.start(session)
-        stand.open()
-        await until(lambda: len(session.calls) == 1)
-        assert spoken(session) == [announcement_text(waiting("a"), VOCABULARY)]
-        await stand.agent.stop_delegation()
-
-    asyncio.run(main())
-
-
-@pytest.mark.parametrize(
-    ("text", "choice", "reply"),
-    [("Подтверждаю.", "once", "Подтверждено"), ("Отклоняю", "deny", "Отклонено")],
-)
-def test_phrase_with_active_request_approves(
-    tmp_path: Path, text: str, choice: str, reply: str
-) -> None:
-    async def main() -> None:
-        stand = Stand(tmp_path)
-        session = FakeSession(agent=stand.agent)
-        await activate(stand, session, waiting("a"))
-        await stopped(stand.agent, text)
-        assert stand.backend.approved == [("run_a", choice, APPROVAL)]
-        assert session.calls[-1] == (reply, True, True)
-        await session.handles[-1].wait_for_playout()
-        event = {"once": "approved", "deny": "denied"}[choice]
-        tail = [
-            item.output if item.type == "function_call_output" else item.text_content
-            for item in stand.agent.chat_ctx.items[-2:]
-        ]
-        assert json.loads(str(tail[0])) == {"id": "a", "event": event, "by": "voice"}
-        assert tail[1] == reply
-        assert stand.agent.active is None
-        rows = [row for row in stand.rows("a") if "approval" in row]
-        assert [(row["approval"], row["status"]) for row in rows] == [
-            (choice, "waiting_approval")
-        ]
-        users = [
-            item.text_content
-            for item in stand.agent.chat_ctx.items
-            if item.type == "message" and item.role == "user"
-        ]
-        assert text not in users
-        await stand.agent.stop_delegation()
-
-    asyncio.run(main())
-
-
-def test_phrase_without_active_request_goes_on(tmp_path: Path) -> None:
-    async def main() -> None:
-        stand = Stand(tmp_path)
-        session = FakeSession()
-        stand.start(session)
-        stand.open()
-        await answer(stand.agent, "Подтверждаю")
-        assert stand.backend.approved == []
-        assert session.calls == []
-        await stand.agent.stop_delegation()
-
-    asyncio.run(main())
-
-
-def test_other_reply_keeps_active(tmp_path: Path) -> None:
-    async def main() -> None:
-        decider = FakeDecider({"да, давай": decided("unrelated")})
-        stand = Stand(tmp_path, decider=decider)
-        session = FakeSession()
-        await activate(stand, session, waiting("a"))
-        await answer(stand.agent, "да, давай")
-        assert stand.backend.approved == []
-        assert stand.agent.active is not None
-        assert stand.agent.active.key == "a"
-        await stand.agent.stop_delegation()
-
-    asyncio.run(main())
-
-
-def test_conflict_says_not_active(tmp_path: Path) -> None:
-    async def main() -> None:
-        stand = Stand(tmp_path)
-        stand.backend.approvals = [ApprovalNotActive("409 approval_not_pending")]
-        session = FakeSession()
-        await activate(stand, session, waiting("a"))
-        await stopped(stand.agent, "Подтверждаю")
-        assert spoken(session)[-1] == "Запрос подтверждения уже не активен"
-        assert stand.agent.active is None
-        assert approvals(stand, "a") == []
-        await stand.agent.stop_delegation()
-
-    asyncio.run(main())
-
-
-def test_changed_task_goes_on(tmp_path: Path) -> None:
-    async def main() -> None:
-        stand = Stand(tmp_path)
-        session = FakeSession()
-        task = waiting("a")
-        await activate(stand, session, task)
-        stand.put(replace(task, status=TaskStatus.RUNNING))
-        await answer(stand.agent, "Подтверждаю")
-        assert stand.backend.approved == []
-        assert stand.decider.seen == []
-        assert len(session.calls) == 1
-        assert approvals(stand, "a") == []
-        await stand.agent.stop_delegation()
-
-    asyncio.run(main())
-
-
-def test_network_failure_keeps_active(tmp_path: Path) -> None:
-    async def main() -> None:
-        stand = Stand(tmp_path)
-        stand.backend.approvals = [OutcomeUnknown("ReadTimeout")]
-        session = FakeSession()
-        await activate(stand, session, waiting("a"))
-        active = stand.agent.active
-        await stopped(stand.agent, "Подтверждаю")
-        assert spoken(session)[-1] == "Не удалось передать подтверждение"
-        assert stand.agent.active is active
-        assert approvals(stand, "a") == []
-        await stand.agent.stop_delegation()
 
     asyncio.run(main())
 
@@ -849,404 +1332,21 @@ def test_network_failure_keeps_active(tmp_path: Path) -> None:
 def test_pending_summary_waits_for_next_turn(tmp_path: Path) -> None:
     async def main() -> None:
         fake = FakeSummarizer(Summary("## О чём говорили\nфакт 1", 50, 1200), hold=True)
-        stand = Stand(tmp_path, limits=LIMITS, summarizer=fake)
+        stand = Stand(tmp_path, limits=LIMITS, summarizer=fake, sorter=FakeSorter())
         agent = stand.agent
         await agent.update_chat_ctx(history(6))
         agent.maybe_compact()
         assert agent.pending is not None
-        await activate(stand, FakeSession(agent=agent), waiting("a"))
-        fake.gate.set()
-        await agent.pending.task
-        await stopped(agent, "Подтверждаю")
+        await request(stand, waiting("a"))
+        await turn(stand, "Привет")
         assert agent.pending is not None
         assert summaries(agent) == 0
-        await answer(agent, "Привет")
+        fake.gate.set()
+        await agent.pending.task
+        await turn(stand, "Как дела?")
         assert agent.pending is None
         assert summaries(agent) == 1
         await agent.stop_delegation()
-
-    asyncio.run(main())
-
-
-def test_phrase_with_tail_goes_to_llm(tmp_path: Path) -> None:
-    async def main() -> None:
-        stand = Stand(tmp_path)
-        session = FakeSession()
-        await activate(stand, session, waiting("a"))
-        turn_ctx = stand.agent.chat_ctx.copy()
-        message = said("Подтверждаю. А что дальше?")
-        await stand.agent.on_user_turn_completed(turn_ctx, message)
-        assert stand.backend.approved == [("run_a", "once", APPROVAL)]
-        assert message.text_content == "А что дальше?"
-        assert "approved" in events_of(turn_ctx)
-        assert "Подтверждено" not in spoken(session)
-        assert stand.agent.active is None
-        await stand.agent.stop_delegation()
-
-    asyncio.run(main())
-
-
-def test_deny_with_tail(tmp_path: Path) -> None:
-    async def main() -> None:
-        stand = Stand(tmp_path)
-        session = FakeSession()
-        await activate(stand, session, waiting("a"))
-        turn_ctx = stand.agent.chat_ctx.copy()
-        message = said("Отклоняю, отмени вообще задачу.")
-        await stand.agent.on_user_turn_completed(turn_ctx, message)
-        assert stand.backend.approved == [("run_a", "deny", APPROVAL)]
-        assert ("list_tasks", {"id": "a", "event": "denied", "by": "voice"}) in (
-            facts(turn_ctx)
-        )
-        assert message.text_content == "отмени вообще задачу"
-        assert "Отклонено" not in spoken(session)
-        await stand.agent.stop_delegation()
-
-    asyncio.run(main())
-
-
-@pytest.mark.parametrize("text", ["подверждаю", "Подтверждаем", "отклоню"])
-def test_near_miss_says_unclear(tmp_path: Path, text: str) -> None:
-    async def main() -> None:
-        stand = Stand(tmp_path)
-        session = FakeSession()
-        await activate(stand, session, waiting("a"))
-        active = stand.agent.active
-        await stopped(stand.agent, text)
-        assert spoken(session)[-1] == unclear_text(VOCABULARY)
-        assert session.calls[-1] == (unclear_text(VOCABULARY), True, True)
-        assert stand.backend.approved == []
-        assert stand.agent.active is active
-        assert facts(stand.agent.chat_ctx)[-1] == (
-            "list_tasks",
-            {"id": "a", "event": "approval_not_recognized", "by": "voice"},
-        )
-        await stand.agent.stop_delegation()
-
-    asyncio.run(main())
-
-
-def test_both_keywords_unclear(tmp_path: Path) -> None:
-    async def main() -> None:
-        stand = Stand(tmp_path)
-        session = FakeSession()
-        await activate(stand, session, waiting("a"))
-        await stopped(stand.agent, "Подтверждаю или отклоняю")
-        assert spoken(session)[-1] == unclear_text(VOCABULARY)
-        assert stand.backend.approved == []
-        assert stand.agent.active is not None
-        await stand.agent.stop_delegation()
-
-    asyncio.run(main())
-
-
-def test_echo_window_unclear(tmp_path: Path) -> None:
-    async def main() -> None:
-        stand = Stand(tmp_path)
-        session = FakeSession()
-        await activate(stand, session, waiting("a"))
-        agent = stand.agent
-        with pytest.raises(StopResponse):
-            await agent.on_user_turn_completed(
-                agent.chat_ctx.copy(), said("Подтверждаю", agent.heard_at - 1)
-            )
-        assert spoken(session)[-1] == unclear_text(VOCABULARY)
-        assert stand.backend.approved == []
-        assert agent.active is not None
-        with pytest.raises(StopResponse):
-            await agent.on_user_turn_completed(
-                agent.chat_ctx.copy(), said("Подтверждаю", agent.heard_at + 1)
-            )
-        assert stand.backend.approved == [("run_a", "once", APPROVAL)]
-        await agent.stop_delegation()
-
-    asyncio.run(main())
-
-
-def test_other_phrase_with_active_goes_to_llm(tmp_path: Path) -> None:
-    async def main() -> None:
-        decider = FakeDecider({"А что он удалит?": decided("unrelated")})
-        stand = Stand(tmp_path, decider=decider)
-        session = FakeSession()
-        await activate(stand, session, waiting("a"))
-        active = stand.agent.active
-        await answer(stand.agent, "А что он удалит?")
-        assert stand.backend.approved == []
-        assert stand.agent.active is active
-        assert len(session.calls) == 1
-        await stand.agent.stop_delegation()
-
-    asyncio.run(main())
-
-
-def test_queue_waits_for_answer(tmp_path: Path) -> None:
-    async def main() -> None:
-        decider = FakeDecider({"А что он удалит?": decided("unrelated")})
-        stand = Stand(tmp_path, decider=decider)
-        session = FakeSession()
-        await activate(stand, session, waiting("a"), waiting("b", created_at=2.0))
-        await settle()
-        assert spoken(session) == [announcement_text(waiting("a"), VOCABULARY)]
-        await answer(stand.agent, "А что он удалит?")
-        await settle()
-        assert len(session.calls) == 1
-        await stopped(stand.agent, "Подтверждаю")
-        await until(lambda: len(session.calls) == 3)
-        assert spoken(session)[-1] == announcement_text(
-            waiting("b", created_at=2.0), VOCABULARY
-        )
-        await stand.agent.stop_delegation()
-
-    asyncio.run(main())
-
-
-def test_unclear_reply_moves_echo_window(tmp_path: Path) -> None:
-    async def main() -> None:
-        stand = Stand(tmp_path)
-        session = FakeSession()
-        await activate(stand, session, waiting("a"))
-        agent = stand.agent
-        before = agent.heard_at
-        await stopped(agent, "подверждаю")
-        await until(lambda: agent.heard_at > before)
-        with pytest.raises(StopResponse):
-            await agent.on_user_turn_completed(
-                agent.chat_ctx.copy(),
-                said("Подтверждаю", (before + agent.heard_at) / 2),
-            )
-        assert spoken(session)[-1] == unclear_text(VOCABULARY)
-        assert stand.backend.approved == []
-        await agent.stop_delegation()
-
-    asyncio.run(main())
-
-
-async def heard(agent: VocaAgent, text: str, started: float) -> None:
-    await agent.on_user_turn_completed(agent.chat_ctx.copy(), said(text, started))
-
-
-def test_barge_in_phrase_counts(tmp_path: Path) -> None:
-    async def main() -> None:
-        stand = Stand(tmp_path)
-        session = FakeSession(interrupts=[True, True])
-        await activate(stand, session, waiting("a"))
-        agent = stand.agent
-        with pytest.raises(StopResponse):
-            await heard(agent, "Подтверждаю.", agent.heard_at - 1)
-        assert stand.backend.approved == [("run_a", "once", APPROVAL)]
-        assert spoken(session)[-1] == "Подтверждено"
-        await agent.stop_delegation()
-
-    asyncio.run(main())
-
-
-def test_barge_in_while_replaying(tmp_path: Path) -> None:
-    async def main() -> None:
-        stand = Stand(tmp_path)
-        replay = asyncio.Event()
-        session = FakeSession(interrupts=[True, False], gates=[opened(), replay])
-        stand.agent.on_task_change(stand.put(waiting("a")))
-        stand.start(session)
-        stand.open()
-        await until(lambda: len(session.calls) == 2)
-        agent = stand.agent
-        assert agent.active is None
-        with pytest.raises(StopResponse):
-            await heard(agent, "Подтверждаю", agent.heard_at - 1)
-        assert stand.backend.approved == [("run_a", "once", APPROVAL)]
-        replay.set()
-        await settle()
-        assert agent.active is None
-        assert len(session.calls) == 3
-        await agent.stop_delegation()
-
-    asyncio.run(main())
-
-
-def test_barge_in_echo_rejected(tmp_path: Path) -> None:
-    async def main() -> None:
-        stand = Stand(tmp_path)
-        session = FakeSession(interrupts=[True, True])
-        await activate(stand, session, waiting("a"))
-        agent = stand.agent
-        for text in (
-            "Подтверждаю по поручению «Удали каталог",
-            "Подтверждаю или Отклоняю",
-        ):
-            with pytest.raises(StopResponse):
-                await heard(agent, text, agent.heard_at - 1)
-            assert spoken(session)[-1] == unclear_text(VOCABULARY)
-        assert stand.backend.approved == []
-        assert agent.active is not None
-        await agent.stop_delegation()
-
-    asyncio.run(main())
-
-
-def test_barge_in_filler_not_counted(tmp_path: Path) -> None:
-    async def main() -> None:
-        stand = Stand(tmp_path)
-        session = FakeSession(interrupts=[True, True])
-        await activate(stand, session, waiting("a"))
-        agent = stand.agent
-        with pytest.raises(StopResponse):
-            await heard(agent, "Ммм, подтверждаю, хорошо. Давай.", agent.heard_at - 1)
-        assert stand.backend.approved == []
-        assert spoken(session)[-1] == unclear_text(VOCABULARY)
-        assert agent.active is not None
-        await agent.stop_delegation()
-
-    asyncio.run(main())
-
-
-def test_configured_keywords(tmp_path: Path) -> None:
-    custom = ApprovalConfig(confirm=["Принимаю"], deny=["Запрещаю"]).vocabulary()
-
-    async def main() -> None:
-        stand = Stand(tmp_path, vocabulary=custom)
-        session = FakeSession()
-        await activate(stand, session, waiting("a"))
-        assert spoken(session)[0].endswith(
-            "Подтвердите на экране или скажите „Принимаю“ или „Запрещаю“."
-        )
-        await stopped(stand.agent, "Подтверждаю")
-        assert stand.backend.approved == []
-        assert spoken(session)[-1] == unclear_text(custom)
-        await stopped(stand.agent, "Примаю")
-        assert spoken(session)[-1] == unclear_text(custom)
-        await stopped(stand.agent, "Принимаю.")
-        assert stand.backend.approved == [("run_a", "once", APPROVAL)]
-        await stand.agent.stop_delegation()
-
-    asyncio.run(main())
-
-
-def test_echo_checked_only_near_the_announcement(tmp_path: Path) -> None:
-    async def main() -> None:
-        stand = Stand(tmp_path)
-        session = FakeSession()
-        await activate(stand, session, waiting("a"))
-        agent = stand.agent
-        message = said("Подтверждаю, удали каталог /tmp/x в файл", agent.heard_at + 1)
-        await agent.on_user_turn_completed(agent.chat_ctx.copy(), message)
-        assert stand.backend.approved == [("run_a", "once", APPROVAL)]
-        assert message.text_content == "удали каталог /tmp/x в файл"
-        assert "a" not in agent.announced
-        await agent.stop_delegation()
-
-    asyncio.run(main())
-
-
-PHRASE_OK = "Ну окей, давай подтвердим его."
-
-
-async def turn(agent: VocaAgent, text: str) -> tuple[llm.ChatContext, llm.ChatMessage]:
-    turn_ctx = agent.chat_ctx.copy()
-    message = said(text)
-    await agent.on_user_turn_completed(turn_ctx, message)
-    return turn_ctx, message
-
-
-def test_decision_approve(tmp_path: Path) -> None:
-    async def main() -> None:
-        stand = Stand(tmp_path, decider=FakeDecider({PHRASE_OK: decided("approve")}))
-        session = FakeSession()
-        await activate(stand, session, waiting("a"))
-        await stopped(stand.agent, PHRASE_OK)
-        assert stand.backend.approved == [("run_a", "once", APPROVAL)]
-        assert spoken(session)[-1] == "Подтверждено"
-        await stand.agent.stop_delegation()
-
-    asyncio.run(main())
-
-
-def test_decision_deny_more(tmp_path: Path) -> None:
-    text = "Отклоняю, отмени вообще задачу"
-
-    async def main() -> None:
-        decider = FakeDecider({text: decided("deny_more")})
-        stand = Stand(tmp_path, decider=decider)
-        session = FakeSession()
-        await activate(stand, session, waiting("a"))
-        turn_ctx, message = await turn(stand.agent, text)
-        assert stand.backend.approved == [("run_a", "deny", APPROVAL)]
-        assert "Отклонено" not in spoken(session)
-        assert message.text_content == text
-        assert ("list_tasks", {"id": "a", "event": "denied", "by": "voice"}) in (
-            facts(turn_ctx)
-        )
-        await stand.agent.stop_delegation()
-
-    asyncio.run(main())
-
-
-def test_decision_repeat(tmp_path: Path) -> None:
-    async def main() -> None:
-        decider = FakeDecider({"Повтори запрос": decided("repeat")})
-        stand = Stand(tmp_path, decider=decider)
-        session = FakeSession()
-        await activate(stand, session, waiting("a"))
-        await stopped(stand.agent, "Повтори запрос")
-        await until(lambda: len(session.calls) == 2)
-        assert spoken(session) == [announcement_text(waiting("a"), VOCABULARY)] * 2
-        assert stand.backend.approved == []
-        await stand.agent.stop_delegation()
-
-    asyncio.run(main())
-
-
-@pytest.mark.parametrize(
-    "decision",
-    [decided("unclear"), decided("unclear", confidence=0.4, picked="approve")],
-    ids=["unclear", "low_confidence"],
-)
-def test_decision_unclear(tmp_path: Path, decision: Decision) -> None:
-    async def main() -> None:
-        stand = Stand(tmp_path, decider=FakeDecider({PHRASE_OK: decision}))
-        session = FakeSession()
-        await activate(stand, session, waiting("a"))
-        active = stand.agent.active
-        await stopped(stand.agent, PHRASE_OK)
-        assert spoken(session)[-1] == unclear_text(VOCABULARY)
-        assert stand.backend.approved == []
-        assert stand.agent.active is active
-        await stand.agent.stop_delegation()
-
-    asyncio.run(main())
-
-
-def test_decision_low_confidence(tmp_path: Path) -> None:
-    async def main() -> None:
-        decision = decided("unclear", confidence=0.4, picked="approve")
-        stand = Stand(tmp_path, decider=FakeDecider({PHRASE_OK: decision}))
-        session = FakeSession()
-        await activate(stand, session, waiting("a"))
-        await stopped(stand.agent, PHRASE_OK)
-        assert stand.backend.approved == []
-        rows = [
-            json.loads(line)
-            for line in stand.events.read_text(encoding="utf-8").splitlines()
-        ]
-        [row] = [row for row in rows if row["kind"] == "approval_decision"]
-        assert (row["verdict"], row["picked"]) == ("unclear", "approve")
-        await stand.agent.stop_delegation()
-
-    asyncio.run(main())
-
-
-def test_decision_unrelated_goes_to_llm(tmp_path: Path) -> None:
-    text = "А что он хочет удалить?"
-
-    async def main() -> None:
-        decider = FakeDecider({text: decided("unrelated")})
-        stand = Stand(tmp_path, decider=decider)
-        session = FakeSession()
-        await activate(stand, session, waiting("a"))
-        _, message = await turn(stand.agent, text)
-        assert message.text_content == text
-        assert stand.backend.approved == []
-        assert stand.agent.active is not None
-        await stand.agent.stop_delegation()
 
     asyncio.run(main())
 
@@ -1255,11 +1355,10 @@ def test_glue_reaches_turn_when_request_unrelated(tmp_path: Path) -> None:
     glued = "Попроси Гермеса создать папку отчёты, и в ней файл за ноябрь"
 
     async def main() -> None:
-        decider = FakeDecider({glued: decided("unrelated")})
-        stand = Stand(tmp_path, decider=decider)
-        session = FakeSession()
-        await activate(stand, session, waiting("a"))
-        base = stand.agent.heard_at
+        sorter = FakeSorter({glued: sorted_("other")})
+        stand = Stand(tmp_path, sorter=sorter)
+        await request(stand, waiting("a"))
+        base = 1000.0
         ctx = stand.agent.chat_ctx.copy()
         ctx.add_message(
             role="user",
@@ -1276,177 +1375,12 @@ def test_glue_reaches_turn_when_request_unrelated(tmp_path: Path) -> None:
         message = said("отчёты, и в ней файл за ноябрь", base + 101.5)
         await stand.agent.on_user_turn_completed(turn_ctx, message)
         assert message.text_content == glued
-        assert [situation.phrase for situation in decider.seen] == [glued]
+        assert [state["фраза пользователя"] for state in sorter.seen] == [glued]
+        assert [row["branch"] for row in stand.all_rows("sorter")] == ["judge"]
         ids = [item.id for item in turn_ctx.items]
         assert "fragment" not in ids and "cut" not in ids
-        assert stand.agent.active is not None
-        await stand.agent.stop_delegation()
-
-    asyncio.run(main())
-
-
-def test_decision_situation(tmp_path: Path) -> None:
-    async def main() -> None:
-        decider = FakeDecider({PHRASE_OK: decided("unrelated")})
-        stand = Stand(tmp_path, decider=decider)
-        session = FakeSession()
-        await activate(stand, session, waiting("a"))
-        await answer(stand.agent, PHRASE_OK)
-        [situation] = decider.seen
-        assert situation == Situation(
-            task="Удали каталог /tmp/x",
-            request="удаление в корневом каталоге",
-            command="rm -r /tmp/x",
-            announcement=announcement_text(waiting("a"), VOCABULARY),
-            phrase=PHRASE_OK,
-        )
-        await stand.agent.stop_delegation()
-
-    asyncio.run(main())
-
-
-def test_decision_fallback_keyword(tmp_path: Path) -> None:
-    async def main() -> None:
-        stand = Stand(tmp_path, decider=FakeDecider(failure="timeout"))
-        session = FakeSession()
-        await activate(stand, session, waiting("a"))
-        await stopped(stand.agent, "Подтверждаю")
-        assert stand.backend.approved == [("run_a", "once", APPROVAL)]
-        assert spoken(session)[-1] == "Подтверждено"
-        await stand.agent.stop_delegation()
-
-    asyncio.run(main())
-
-
-def test_decision_fallback_other_unclear(tmp_path: Path) -> None:
-    async def main() -> None:
-        stand = Stand(tmp_path, decider=FakeDecider(failure="timeout"))
-        session = FakeSession()
-        await activate(stand, session, waiting("a"))
-        await stopped(stand.agent, "да, давай")
-        assert spoken(session)[-1] == unclear_text(VOCABULARY)
+        assert outcomes(stand) == ["pass"]
         assert stand.backend.approved == []
-        await stand.agent.stop_delegation()
-
-    asyncio.run(main())
-
-
-def test_decision_after_button(tmp_path: Path) -> None:
-    async def main() -> None:
-        decider = FakeDecider({PHRASE_OK: decided("approve")})
-        stand = Stand(tmp_path, decider=decider)
-        session = FakeSession()
-        await activate(stand, session, waiting("a"))
-
-        async def press() -> None:
-            await stand.agent.approve_from_page("a", "p1", "once")
-
-        decider.during = press
-        _, message = await turn(stand.agent, PHRASE_OK)
-        assert message.text_content == PHRASE_OK
-        assert stand.backend.approved == [("run_a", "once", APPROVAL)]
-        assert "Подтверждено" not in spoken(session)
-        await stand.agent.stop_delegation()
-
-    asyncio.run(main())
-
-
-def test_decision_logged(tmp_path: Path) -> None:
-    async def main() -> None:
-        stand = Stand(tmp_path, decider=FakeDecider({PHRASE_OK: decided("approve")}))
-        session = FakeSession()
-        await activate(stand, session, waiting("a"))
-        await stopped(stand.agent, PHRASE_OK)
-        rows = [
-            json.loads(line)
-            for line in stand.events.read_text(encoding="utf-8").splitlines()
-        ]
-        found = [row for row in rows if row["kind"] == "approval_decision"]
-        assert found[0]["tool_call_id"] == "a"
-        assert found[0]["phrase"] == PHRASE_OK
-        assert found[0]["verdict"] == "approve"
-        assert found[0]["confidence"] == 0.9
-        assert "extra" not in found[0]
-        assert found[0]["ms"] == 12
-        await stand.agent.stop_delegation()
-
-    asyncio.run(main())
-
-
-def test_decision_fallback_logged(tmp_path: Path) -> None:
-    async def main() -> None:
-        stand = Stand(tmp_path, decider=FakeDecider(failure="connection"))
-        session = FakeSession()
-        await activate(stand, session, waiting("a"))
-        await stopped(stand.agent, "Подтверждаю")
-        rows = [
-            json.loads(line)
-            for line in stand.events.read_text(encoding="utf-8").splitlines()
-        ]
-        [row] = [row for row in rows if row["kind"] == "approval_decision"]
-        assert row["fallback"] == "connection"
-        await stand.agent.stop_delegation()
-
-    asyncio.run(main())
-
-
-def test_echo_rejected_before_decision(tmp_path: Path) -> None:
-    async def main() -> None:
-        decider = FakeDecider({PHRASE_OK: decided("approve")})
-        stand = Stand(tmp_path, decider=decider)
-        session = FakeSession()
-        await activate(stand, session, waiting("a"))
-        agent = stand.agent
-        with pytest.raises(StopResponse):
-            await heard(agent, PHRASE_OK, agent.heard_at - 1)
-        assert decider.seen == []
-        assert spoken(session)[-1] == unclear_text(VOCABULARY)
-        await agent.stop_delegation()
-
-    asyncio.run(main())
-
-
-def test_decision_approve_more(tmp_path: Path) -> None:
-    text = "Подтверждаю, и скажи потом, сколько времени"
-
-    async def main() -> None:
-        decider = FakeDecider({text: decided("approve_more")})
-        stand = Stand(tmp_path, decider=decider)
-        session = FakeSession()
-        await activate(stand, session, waiting("a"))
-        turn_ctx, message = await turn(stand.agent, text)
-        assert stand.backend.approved == [("run_a", "once", APPROVAL)]
-        assert "Подтверждено" not in spoken(session)
-        assert message.text_content == text
-        assert ("list_tasks", {"id": "a", "event": "approved", "by": "voice"}) in (
-            facts(turn_ctx)
-        )
-        await stand.agent.stop_delegation()
-
-    asyncio.run(main())
-
-
-def test_decision_stale_after_new_request(tmp_path: Path) -> None:
-    async def main() -> None:
-        decider = FakeDecider({"Повтори запрос": decided("repeat")})
-        stand = Stand(tmp_path, decider=decider)
-        session = FakeSession()
-        task = waiting("a")
-        await activate(stand, session, task)
-        second = {**APPROVAL, "request_id": "p2"}
-
-        async def replace_request() -> None:
-            stand.agent.on_task_change(stand.put(replace(task, approval=second)))
-
-        decider.during = replace_request
-        _, message = await turn(stand.agent, "Повтори запрос")
-        assert message.text_content == "Повтори запрос"
-        await until(lambda: len(session.calls) == 2)
-        await until(lambda: stand.agent.active is not None)
-        assert stand.agent.active is not None
-        assert stand.agent.active.approval == second
-        await settle()
-        assert len(session.calls) == 2
         await stand.agent.stop_delegation()
 
     asyncio.run(main())

@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
-from voca.delegation.events import Event
+from voca.delegation.events import Event, EventState
 from voca.delegation.model import Task, TaskStatus
 
 
@@ -67,6 +67,10 @@ class TaskRepository(Protocol):
     async def list_all(self) -> list[Task]: ...
 
     async def list_events(self, open_only: bool) -> list[Event]: ...
+
+    async def advance_event(
+        self, event_id: int, state: EventState, at: float
+    ) -> bool: ...
 
 
 class DelegationBackend(Protocol):

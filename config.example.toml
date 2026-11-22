@@ -76,30 +76,23 @@ timeout_s = 60
 path = "~/.voca/tasks.sqlite3"
 # Seconds from the task's creation after which VOCA sends /stop to the run.
 run_timeout = 900
-
-[approval]
-# confirm/deny: the hint of the announcement and the card, and the fallback when the decision model
-# is unavailable: the exact first word answers the request. Matching lowers case and folds ё to е.
-confirm = ["Подтверждаю"]
-deny = ["Отклоняю"]
-# A phrase repeating this many words in a row of the announcement is its echo.
-echo_words = 3
+# Hermes `approvals.timeout` of the `voca` profile: a request expires this many seconds after it arrived.
+approval_timeout_s = 300
+# The agent reminds once this many seconds before the expiry, in silence; 0 turns the reminder off.
+approval_reminder_s = 60
 
 [decision]
-# The decision model judges the user's reply to an active approval request (VOCA-36);
-# it also sorts every user reply into noise or a reply (VOCA-46):
+# The decision model sorts every user reply into noise or a reply (VOCA-46) and, while Hermes approval
+# requests wait, answers the questions of the approval judge (VOCA-48):
 # LiquidAI d1-2B on scripts/decision.sh, GPU by default, VOCA_DECISION_NGL=0 in .env runs it on the CPU.
 # The model file is VOCA_DECISION_MODEL in .env (scripts do not read this file).
-# false: every reply takes the fallback (the exact first word of [approval]).
+# false: no sorter; nothing is approved or denied by voice, the buttons answer.
 enabled = true
 # POST <url>/v1/systemone; scripts/env.sh exports VOCA_DECISION__URL, which overrides this.
 url = "http://127.0.0.1:8086"
 model = "d1-2B"
-# Seconds to wait for the verdict; on timeout the fallback answers.
+# HTTP timeout of the decision client.
 timeout_s = 1.5
-# A verdict with lower confidence counts as unclear («Не разобрал…»).
-threshold = 0.6
-instructions = "Ассистент озвучил запрос подтверждения команды и ждёт ответа пользователя. Что пользователь отвечает этой фразой на запрос?"
 # The sorter question: is the user's reply noise or a reply; the criteria are [decision.sorter_criteria].
 sorter_instructions = "Ассистент разговаривает с пользователем голосом. В состоянии — последняя фраза ассистента, ожидающие запросы подтверждения команд и фраза пользователя в виде распознанной речи. Что это за фраза пользователя?"
 # Seconds to wait for the sorter; on failure while the agent speaks the length threshold decides.
@@ -110,19 +103,39 @@ sorter_keep_words = ["нет", "не", "ни", "стоп", "да", "давай"]
 sorter_max_words = 4
 # When the sorter fails while the agent speaks, a reply with fewer words and no keep word is dropped.
 sorter_min_words = 2
-
-[decision.verdicts]
-# Exactly these seven; approve/deny answer and stop the turn, *_more answer and pass the phrase on,
-# repeat plays the announcement again, unrelated goes to the main model, unclear says «Не разобрал…».
-approve = "Пользователь разрешает выполнить команду: подтверждает, соглашается, разрешает, и больше ничего не просит"
-approve_more = "Пользователь разрешает выполнить команду, и во фразе есть ещё вопрос, просьба или поручение"
-deny = "Пользователь запрещает команду: отклоняет, отказывается, просит не выполнять её, и больше ничего не просит"
-deny_more = "Пользователь запрещает команду, и во фразе есть ещё вопрос, просьба или поручение"
-repeat = "Пользователь просит повторить или ещё раз озвучить запрос"
-unrelated = "Фраза не отвечает на запрос: вопрос, просьба, новое поручение или разговор о другом"
-unclear = "Ответ неясен: колебание, оговорка, противоречие или обрывок, по которому решение не понять"
+# The question asked while requests wait: does the reply answer a request, ask about it, or neither;
+# the criteria are [decision.sorter_relation_criteria].
+sorter_relation_instructions = "Ассистент ждёт ответа на запрос подтверждения команды. Как фраза пользователя связана с этим запросом?"
+# The question asked while requests wait: approve or deny; the criteria are [decision.sorter_answer_criteria].
+sorter_answer_instructions = "Ассистент ждёт ответа на запрос подтверждения команды. Что пользователь отвечает этой фразой на запрос?"
+# The question asked while two or more requests wait: which request the reply is about.
+sorter_target_instructions = "Ассистент ждёт ответа на несколько запросов подтверждения команд, они пронумерованы: запрос 1, запрос 2 и далее. К какому запросу относится фраза пользователя?"
+# The criterion of request n of the target question; must contain {n}.
+sorter_target_request = "только к запросу {n}"
+# The criterion «no single request» of the target question.
+sorter_target_unclear = "к нескольким запросам, ни к одному или непонятно"
+# The judge's confidence (kind × relation × answer, × target with two or more requests) needed to approve
+# a request of this danger level.
+threshold_low = 0.45
+threshold_medium = 0.5
+threshold_high = 0.55
+# The judge's confidence needed to deny a request.
+threshold_deny = 0.45
+# Clarifications in a row; then the agent says the request stays in the queue.
+clarify_limit = 2
 
 [decision.sorter_criteria]
 # Exactly these two; noise is dropped, reply makes a turn.
 noise = "шум, обрывок, поддакивание или междометие без смысла: «угу», «ага», «yeah», «okay», «ну»"
 reply = "осмысленная реплика: ответ, вопрос, просьба или мысль"
+
+[decision.sorter_relation_criteria]
+# Exactly these three.
+answers = "отвечает на запрос: разрешает или запрещает выполнить команду"
+asks = "спрашивает о запросе: что именно будет сделано, зачем, просит повторить"
+other = "не о запросе: другая тема, просьба или разговор"
+
+[decision.sorter_answer_criteria]
+# Exactly these two.
+approve = "подтверждает: разрешает выполнить команду"
+deny = "отклоняет: запрещает выполнять команду"

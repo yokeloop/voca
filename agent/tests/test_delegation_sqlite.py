@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from voca.delegation.danger import Danger
-from voca.delegation.events import Event, EventKind, EventState
+from voca.delegation.events import Event, EventKind, EventState, arrival
 from voca.delegation.model import Task, TaskStatus
 from voca.delegation.sqlite import MIGRATIONS, SqliteTaskRepository, TaskStoreError
 
@@ -352,3 +352,44 @@ def test_events_survive_reopen(tmp_path: Path) -> None:
     assert [(event.tool_call_id, event.state) for event in events] == [
         ("k", EventState.ARRIVED)
     ]
+
+
+def test_advance_event(tmp_path: Path) -> None:
+    repo = SqliteTaskRepository.open(tmp_path / "tasks.sqlite3")
+    task = Task("k", "a", TaskStatus.QUEUED, 1.0)
+    waiting = task.transition(TaskStatus.RUNNING, run_id="r").transition(
+        TaskStatus.WAITING_APPROVAL,
+        approval={"description": "delete in root path", "request_id": "r1"},
+    )
+    second = replace(
+        waiting, approval={"description": "delete in root path", "request_id": "r2"}
+    )
+
+    async def main() -> tuple[list[bool], list[Event], list[Event]]:
+        await repo.insert(task)
+        await repo.save(waiting, 2.0, arrival(waiting, 2.0))
+        (event,) = await repo.list_events(open_only=True)
+        assert event.id is not None
+        steps = [
+            await repo.advance_event(event.id, EventState.MENTIONED, 3.0),
+            await repo.advance_event(event.id, EventState.ESSENCE, 4.0),
+        ]
+        middle = await repo.list_events(open_only=False)
+        steps.append(await repo.advance_event(event.id, EventState.MENTIONED, 5.0))
+        await repo.save(second, 6.0)
+        steps.append(await repo.advance_event(event.id, EventState.ESSENCE, 7.0))
+        steps.append(
+            await repo.advance_event(event.id + 100, EventState.MENTIONED, 7.0)
+        )
+        return steps, middle, await repo.list_events(open_only=False)
+
+    steps, middle, final = asyncio.run(main())
+    repo.close()
+    assert steps == [True, True, False, False, False]
+    assert [(event.state, event.updated_at) for event in middle] == [
+        (EventState.ESSENCE, 4.0)
+    ]
+    assert [
+        (event.state, event.closed_reason, event.updated_at) for event in final
+    ] == [(EventState.CLOSED, "resolved", 6.0)]
+    assert [event.danger for event in final] == [Danger.HIGH]
