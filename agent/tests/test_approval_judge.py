@@ -8,7 +8,9 @@ from voca.conversation.approval_judge import (
     Place,
     Request,
     Rules,
+    deny_marked,
     essence_spoken,
+    interrogative,
     judge,
     mentions,
     objects,
@@ -229,6 +231,58 @@ def test_noise_kind_passes() -> None:
 def test_deny_without_binding_with_two_requests_passes() -> None:
     verdict = judge("Нет", [DIR, PKG], answer(reply="deny", target=1), None, RULES, 0)
     assert (verdict.outcome, verdict.ids) == ("pass", ())
+
+
+def test_question_about_request_not_deny() -> None:
+    place = Place(("1",), "essence")
+    for text in (
+        "Ты мне ответь, безопасно ли выполнять эту команду.",
+        "Безопасно это?",
+    ):
+        verdict = judge(
+            text, [DIR], answer(reply="deny", confidence=0.505), place, RULES, 0
+        )
+        assert (verdict.outcome, verdict.ids) == ("asks", ("1",)), text
+
+
+def test_safe_statement_not_deny() -> None:
+    place = Place(("1",), "essence")
+    for text in ("Это безопасная команда.", "Команда безопасная."):
+        verdict = judge(
+            text, [DIR], answer(reply="deny", confidence=0.9), place, RULES, 0
+        )
+        assert (verdict.outcome, verdict.ids) == ("clarify_sure", ("1",)), text
+        assert verdict.threshold == RULES.deny
+
+
+def test_unmarked_deny_at_clarify_limit() -> None:
+    verdict = judge(
+        "Команда безопасная.",
+        [DIR],
+        answer(reply="deny", confidence=0.9),
+        Place(("1",), "essence"),
+        RULES,
+        2,
+    )
+    assert verdict.outcome == "left"
+
+
+def test_deny_marker() -> None:
+    for text in (
+        "Нет",
+        "Не надо",
+        "Ни в коем случае",
+        "Нельзя",
+        "Отклоняю",
+        "Отмени",
+        "Запрещаю",
+    ):
+        assert deny_marked(text), text
+    for text in ("Стоп, стоп", "Хватит", "Это безопасно", "Команда безопасная."):
+        assert not deny_marked(text), text
+    assert interrogative("Безопасно ли это")
+    assert interrogative("А это безопасно?")
+    assert not interrogative("Это безопасно.")
 
 
 def corpus_cases(expect: list[str]) -> list[tuple[str, Request]]:
