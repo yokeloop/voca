@@ -7,6 +7,7 @@ from typing import Any
 
 from voca.delegation.danger import Danger
 from voca.delegation.events import (
+    NEXT,
     Event,
     EventKind,
     EventState,
@@ -197,6 +198,25 @@ class SqliteTaskRepository:
                 self.db.execute("ROLLBACK")
             raise
 
+    def _advance(self, event_id: int, state: EventState, at: float) -> bool:
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            row = self.db.execute(
+                f"SELECT {EVENT_COLUMNS} FROM events WHERE id = ?", (event_id,)
+            ).fetchone()
+            changed = row is not None and state in NEXT[event_of(row).state]
+            if changed:
+                self.db.execute(
+                    "UPDATE events SET state = ?, updated_at = ? WHERE id = ?",
+                    (state.value, at, event_id),
+                )
+            self.db.execute("COMMIT")
+            return changed
+        except BaseException:
+            if self.db.in_transaction:
+                self.db.execute("ROLLBACK")
+            raise
+
     def _get(self, key: str) -> Task | None:
         row = self.db.execute(
             f"SELECT {COLUMNS} FROM tasks WHERE tool_call_id = ?", (key,)
@@ -249,3 +269,7 @@ class SqliteTaskRepository:
     async def list_events(self, open_only: bool) -> list[Event]:
         async with self.lock:
             return await asyncio.to_thread(self._events, open_only)
+
+    async def advance_event(self, event_id: int, state: EventState, at: float) -> bool:
+        async with self.lock:
+            return await asyncio.to_thread(self._advance, event_id, state, at)
