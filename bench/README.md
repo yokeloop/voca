@@ -36,7 +36,7 @@ Scripts:
   messages and delegation facts, then one user turn; the first tool call must be
   the expected one (`delegate`, `steer_task`, `cancel_task`, `open_approval`,
   `list_tasks`), and a `none` case passes with no call (only
-  `list_tasks` in `c05`, `c08`, `c09`) and a Russian answer without a claimed action
+  `list_tasks` or `list_notifications` in `c05`, `c08`, and `list_tasks` in `c09`) and a Russian answer without a claimed action
   or the announcement text. The tools and instructions come from `VocaAgent`
   with `instructions.example`, the model from the agent's `make_llm`; the
   result goes to `tools.json`.

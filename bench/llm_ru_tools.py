@@ -34,7 +34,11 @@ INSTRUCTIONS = Path(__file__).resolve().parents[1] / "instructions.example"
 CLAIMS = re.compile(
     r"(?i)отправил|отменил|отменено|изменю|уточнил|подтвердил|подтверждено|отклонил|отклонено"
 )
-LOOKUPS = {"c05", "c08", "c09"}
+LOOKUPS = {
+    "c05": ["list_tasks", "list_notifications"],
+    "c08": ["list_tasks", "list_notifications"],
+    "c09": ["list_tasks"],
+}
 
 
 def cyrillic(text: str) -> float:
@@ -189,7 +193,7 @@ def tool_ok(item: dict[str, Any], result: ChatResult) -> bool:
     names = [call.name for call in result.tool_calls]
     if item["expect"] != "none":
         return bool(names) and names[0] == item["expect"]
-    allowed = ["list_tasks"] if item["id"] in LOOKUPS else []
+    allowed = LOOKUPS.get(item["id"], [])
     if any(name not in allowed for name in names):
         return False
     if names:
