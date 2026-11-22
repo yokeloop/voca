@@ -171,7 +171,7 @@ def test_decision_defaults() -> None:
     assert decision.url == "http://127.0.0.1:8086"
     assert decision.model == "d1-2B"
     assert decision.timeout_s == 1.5
-    assert decision.rules() == Rules(0.45, 0.50, 0.55, 0.45, 2)
+    assert decision.rules() == Rules(0.45, 0.50, 0.50, 0.45, 2)
     prompt = decision.sorter_prompt()
     texts = [
         prompt.relation_instructions,

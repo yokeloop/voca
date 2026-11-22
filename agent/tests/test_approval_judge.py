@@ -86,7 +86,7 @@ def test_named_action_after_essence_approves() -> None:
     assert verdict.binding == "content"
     assert verdict.ids == ("1",)
     assert verdict.confidence == pytest.approx(0.97)
-    assert verdict.threshold == 0.55
+    assert verdict.threshold == 0.50
 
 
 def test_question_about_request() -> None:
@@ -169,7 +169,7 @@ def test_other_reply_with_place_passes_with_ids() -> None:
 
 @pytest.mark.parametrize(
     ("danger", "threshold"),
-    [(Danger.LOW, 0.45), (Danger.MEDIUM, 0.50), (Danger.HIGH, 0.55)],
+    [(Danger.LOW, 0.45), (Danger.MEDIUM, 0.50), (Danger.HIGH, 0.50)],
 )
 def test_thresholds_by_danger(danger: Danger, threshold: float) -> None:
     request = Request("1", danger, True, "удаление в корневом каталоге", None)
