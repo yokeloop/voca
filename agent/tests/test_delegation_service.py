@@ -78,7 +78,9 @@ class FakeRepo:
     ) -> None:
         key = (tool_call_id, "approval", request_id)
         event = self.events.get(key)
-        if event is not None and event.state != EventState.CLOSED:
+        if event is not None and (
+            event.state != EventState.CLOSED or event.closed_reason == "resolved"
+        ):
             self.events[key] = replace(
                 event, state=EventState.CLOSED, closed_reason=reason, updated_at=at
             )

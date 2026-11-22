@@ -225,7 +225,7 @@ class SqliteTaskRepository:
             self.db.execute(
                 "UPDATE events SET state = 'closed', closed_reason = ?, updated_at = ? "
                 "WHERE tool_call_id = ? AND kind = 'approval' AND request_id = ? "
-                "AND state != 'closed'",
+                "AND (state != 'closed' OR closed_reason = 'resolved')",
                 (reason, at, tool_call_id, request_id),
             )
             self.db.execute("COMMIT")
