@@ -4,7 +4,7 @@ from typing import Any
 
 from livekit import rtc
 
-from voca.conversation.approval import Choice
+from voca.delegation.model import Choice
 
 APPROVE = "voca.approve"
 CANCEL = "voca.cancel_task"

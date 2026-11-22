@@ -30,7 +30,6 @@ from voca.clientio.history import HistoryChannel, send_on_wait
 from voca.clientio.metrics import bind_metrics
 from voca.config import Settings, config_path
 from voca.conversation.agent import VocaAgent, records
-from voca.conversation.approval import approval_prompt
 from voca.conversation.instructions import InstructionError, InstructionLoader
 from voca.delegation.hermes import HermesBackend
 from voca.delegation.service import DelegationService
@@ -90,8 +89,7 @@ async def entrypoint(ctx: JobContext) -> None:
         items=len(restored.items),
         estimate=sum(item.tokens for item in records(restored)),
     )
-    vocabulary = settings.approval.vocabulary()
-    cards = CardState(instructions, approval_prompt(vocabulary))
+    cards = CardState(instructions)
     cards.bind(ctx.room)
     if tasks is not None:
         cards.bind_tasks(tasks)
@@ -114,13 +112,14 @@ async def entrypoint(ctx: JobContext) -> None:
         if current.compacted_at is not None
         else current.started_at,
         delegation=delegation,
-        vocabulary=vocabulary,
-        decider=decider,
         sorter=decider if settings.decision.enabled else None,
         sorter_prompt=settings.decision.sorter_prompt(),
         glue_window_s=settings.agent.glue_window_s,
         action_silence_s=settings.agent.action_silence_s,
         event_silence_s=settings.agent.event_silence_s,
+        rules=settings.decision.rules(),
+        approval_timeout_s=settings.delegation.approval_timeout_s,
+        approval_reminder_s=settings.delegation.approval_reminder_s,
     )
     if delegation is not None:
         delegation.on_change = agent.on_task_change
