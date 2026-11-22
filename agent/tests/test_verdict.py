@@ -4,92 +4,16 @@ import pytest
 
 from voca.conversation.verdict import (
     KINDS,
-    VERDICTS,
-    Decision,
+    RELATIONS,
+    REPLIES,
     DecisionFailure,
-    Prompt,
-    Situation,
     Sorted,
     SorterPrompt,
     drop,
-    read_answer,
     read_sort,
-    request_body,
     sorter_body,
     sorter_state,
 )
-
-PROMPT = Prompt(
-    instructions="Что отвечает пользователь?",
-    verdicts={name: f"описание {name}" for name in VERDICTS},
-    threshold=0.6,
-)
-SITUATION = Situation(
-    task="Удали каталог /tmp/x",
-    request="удаление в корневом каталоге",
-    command="rm -r /tmp/x",
-    announcement="Hermes просит подтверждения",
-    phrase="Подтверждаю.",
-)
-
-
-def answer(choice: Any = "approve", confidence: Any = 0.9) -> Any:
-    return {
-        "answers": {
-            "verdict": {"type": "choice", "choice": choice, "confidence": confidence},
-        }
-    }
-
-
-def test_request_body_shape() -> None:
-    body = request_body(PROMPT, SITUATION, "d1-2B")
-    assert body["model"] == "d1-2B"
-    assert body["state"] == {
-        "поручение": "Удали каталог /tmp/x",
-        "запрос": "удаление в корневом каталоге",
-        "команда": "rm -r /tmp/x",
-        "объявление": "Hermes просит подтверждения",
-        "фраза пользователя": "Подтверждаю.",
-    }
-    verdict = body["questions"]["verdict"]
-    assert verdict["type"] == "choice"
-    assert verdict["instructions"] == "Что отвечает пользователь?"
-    assert list(verdict["criteria"]) == list(VERDICTS)
-    assert list(body["questions"]) == ["verdict"]
-    bare = Situation("t", "r", None, "a", "p")
-    assert "команда" not in request_body(PROMPT, bare, "d1-2B")["state"]
-
-
-def test_read_answer_confident() -> None:
-    assert read_answer(answer(), PROMPT, 120) == Decision(
-        "approve", "approve", 0.9, 120
-    )
-
-
-def test_read_answer_below_threshold_is_unclear() -> None:
-    decision = read_answer(answer(confidence=0.4), PROMPT, 5)
-    assert decision == Decision("unclear", "approve", 0.4, 5)
-
-
-def test_read_answer_more() -> None:
-    decision = read_answer(answer("deny_more", 0.8), PROMPT, 5)
-    assert decision == Decision("deny_more", "deny_more", 0.8, 5)
-
-
-@pytest.mark.parametrize(
-    "data",
-    [
-        {},
-        None,
-        answer(choice="maybe"),
-        answer(confidence="0.9"),
-        answer(confidence=1.5),
-        {"answers": {"verdict": None}},
-    ],
-)
-def test_read_answer_bad_shape(data: Any) -> None:
-    assert read_answer(data, PROMPT, 7) == DecisionFailure("bad_answer", 7)
-
 
 SORTER = SorterPrompt(
     instructions="Что это за фраза пользователя?",
@@ -97,6 +21,13 @@ SORTER = SorterPrompt(
     keep_words=frozenset({"нет", "не", "ни", "стоп", "да", "давай"}),
     max_words=4,
     min_words=2,
+    relation_instructions="Как фраза связана с запросом?",
+    relation_criteria={name: f"связь {name}" for name in RELATIONS},
+    answer_instructions="Что отвечает пользователь?",
+    answer_criteria={name: f"ответ {name}" for name in REPLIES},
+    target_instructions="К какому запросу?",
+    target_request="только к запросу {n}",
+    target_unclear="непонятно",
 )
 NOISE = Sorted("noise", 0.9, 30)
 REPLY = Sorted("reply", 0.9, 30)
@@ -109,6 +40,28 @@ def sort_answer(choice: Any = "noise", confidence: Any = 0.8) -> Any:
             "kind": {"type": "choice", "choice": choice, "confidence": confidence},
         }
     }
+
+
+def full_answer(
+    relation: Any = "answers",
+    reply: Any = "approve",
+    target: Any = None,
+    relation_confidence: Any = 0.9,
+) -> Any:
+    data = sort_answer("reply", 0.95)
+    data["answers"]["relation"] = {
+        "type": "choice",
+        "choice": relation,
+        "confidence": relation_confidence,
+    }
+    data["answers"]["answer"] = {"type": "choice", "choice": reply, "confidence": 0.7}
+    if target is not None:
+        data["answers"]["target"] = {
+            "type": "choice",
+            "choice": target,
+            "confidence": 0.6,
+        }
+    return data
 
 
 def test_sorter_body_shape() -> None:
@@ -126,6 +79,36 @@ def test_sorter_body_shape() -> None:
         },
     }
     assert list(body["questions"]["kind"]["criteria"]) == list(KINDS)
+    assert sorter_body(SORTER, state, "d1-2B", 0) == body
+
+
+def test_sorter_body_one_request() -> None:
+    body = sorter_body(SORTER, {"фраза пользователя": "Да."}, "d1-2B", 1)
+    assert list(body["questions"]) == ["kind", "relation", "answer"]
+    assert body["questions"]["relation"] == {
+        "type": "choice",
+        "instructions": "Как фраза связана с запросом?",
+        "criteria": {name: f"связь {name}" for name in RELATIONS},
+    }
+    assert body["questions"]["answer"] == {
+        "type": "choice",
+        "instructions": "Что отвечает пользователь?",
+        "criteria": {name: f"ответ {name}" for name in REPLIES},
+    }
+
+
+def test_sorter_body_two_requests() -> None:
+    body = sorter_body(SORTER, {"фраза пользователя": "Да."}, "d1-2B", 2)
+    assert list(body["questions"]) == ["kind", "relation", "answer", "target"]
+    assert body["questions"]["target"] == {
+        "type": "choice",
+        "instructions": "К какому запросу?",
+        "criteria": {
+            "request_1": "только к запросу 1",
+            "request_2": "только к запросу 2",
+            "unclear": "непонятно",
+        },
+    }
 
 
 def test_sorter_state_requests() -> None:
@@ -155,6 +138,38 @@ def test_sorter_state_requests() -> None:
 def test_read_sort_ok() -> None:
     assert read_sort(sort_answer(), 40) == Sorted("noise", 0.8, 40)
     assert read_sort(sort_answer("reply", 0.1), 40) == Sorted("reply", 0.1, 40)
+
+
+def test_read_sort_answers() -> None:
+    assert read_sort(full_answer("asks", "deny"), 40, 1) == Sorted(
+        "reply",
+        0.95,
+        40,
+        relation="asks",
+        relation_confidence=0.9,
+        answer="deny",
+        answer_confidence=0.7,
+    )
+
+
+def test_read_sort_target() -> None:
+    picked = read_sort(full_answer(target="request_2"), 40, 2)
+    assert isinstance(picked, Sorted)
+    assert (picked.target, picked.target_confidence) == (2, 0.6)
+    unclear = read_sort(full_answer(target="unclear"), 40, 2)
+    assert isinstance(unclear, Sorted)
+    assert (unclear.target, unclear.target_confidence) == (None, 0.6)
+
+
+def test_read_sort_missing_answers() -> None:
+    assert read_sort(sort_answer("reply"), 5, 1) == DecisionFailure("bad_answer", 5)
+    assert read_sort(full_answer(target="request_3"), 5, 2) == DecisionFailure(
+        "bad_answer", 5
+    )
+    assert read_sort(full_answer(), 5, 2) == DecisionFailure("bad_answer", 5)
+    assert read_sort(full_answer(relation_confidence=1.5), 5, 1) == DecisionFailure(
+        "bad_answer", 5
+    )
 
 
 @pytest.mark.parametrize(

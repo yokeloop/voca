@@ -182,7 +182,6 @@ def make_decider(settings: Settings) -> DecisionClient:
         return DecisionClient(
             None,
             model=decision.model,
-            prompt=decision.prompt(),
             sorter=decision.sorter_prompt(),
             sorter_timeout_s=decision.sorter_timeout_s,
         )

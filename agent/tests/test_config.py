@@ -1,11 +1,10 @@
-import json
 from pathlib import Path
 
 import pydantic
 import pytest
 
 from voca.config import Settings
-from voca.conversation.verdict import VERDICTS
+from voca.conversation.approval_judge import Rules
 
 EXAMPLE = Path(__file__).resolve().parents[2] / "config.example.toml"
 
@@ -106,6 +105,12 @@ def test_delegation_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
     write_config(tmp_path, monkeypatch, "[delegation]\nunknown = 1\n")
     with pytest.raises(pydantic.ValidationError):
         Settings()
+    monkeypatch.delenv("VOCA_CONFIG")
+    assert Settings().delegation.approval_timeout_s == 300
+    assert Settings().delegation.approval_reminder_s == 60
+    write_config(tmp_path, monkeypatch, "[delegation]\napproval_reminder_s = 300\n")
+    with pytest.raises(pydantic.ValidationError):
+        Settings()
 
 
 def test_hermes_key_only_from_env(
@@ -151,59 +156,12 @@ def test_example_config_is_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     assert Settings().model_dump() == defaults
 
 
-def test_approval_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    approval = Settings().approval
-    assert approval.confirm == ["Подтверждаю"]
-    assert approval.deny == ["Отклоняю"]
-    assert approval.echo_words == 3
-    monkeypatch.setenv("VOCA_APPROVAL__CONFIRM", '["Принимаю", "Согласен"]')
-    vocabulary = Settings().approval.vocabulary()
-    assert vocabulary.confirm == ("Принимаю", "Согласен")
-    monkeypatch.delenv("VOCA_APPROVAL__CONFIRM")
-    write_config(
-        tmp_path,
-        monkeypatch,
-        '[approval]\ndeny = ["Запрещаю"]\necho_words = 4\n',
-    )
-    vocabulary = Settings().approval.vocabulary()
-    assert vocabulary.deny == ("Запрещаю",)
-    assert vocabulary.echo_words == 4
-    for text in ('[approval]\nconfirm = ["Да ладно"]\n', "[approval]\nconfirm = []\n"):
-        write_config(tmp_path, monkeypatch, text)
-        with pytest.raises(pydantic.ValidationError):
-            Settings()
-
-
-@pytest.mark.parametrize(
-    "text",
-    [
-        '[approval]\nconfirm = ["Подтверждаю"]\ndeny = ["подтверждаю"]\n',
-        '[approval]\nconfirm = ["Подтверждаю"]\ndeny = ["ПОДТВЕРЖДАЮ"]\n',
-        '[approval]\nrefusal_words = ["нет"]\n',
-        "[approval]\nnear = 2\n",
-        "[approval]\necho_words = 0\n",
-    ],
-)
-def test_approval_settings_rejected(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, text: str
-) -> None:
-    write_config(tmp_path, monkeypatch, text)
-    with pytest.raises(pydantic.ValidationError):
-        Settings()
-
-
-def test_approval_words_disjoint(
+def test_approval_section_rejected(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    write_config(
-        tmp_path, monkeypatch, '[approval]\nconfirm = ["Ёлка"]\ndeny = ["елка"]\n'
-    )
+    write_config(tmp_path, monkeypatch, '[approval]\nconfirm = ["Да"]\n')
     with pytest.raises(pydantic.ValidationError):
         Settings()
-    write_config(
-        tmp_path, monkeypatch, '[approval]\nconfirm = ["Да"]\ndeny = ["Дай"]\n'
-    )
-    assert Settings().approval.vocabulary().deny == ("Дай",)
 
 
 def test_decision_defaults() -> None:
@@ -212,42 +170,50 @@ def test_decision_defaults() -> None:
     assert decision.url == "http://127.0.0.1:8086"
     assert decision.model == "d1-2B"
     assert decision.timeout_s == 1.5
-    prompt = decision.prompt()
-    assert prompt.threshold == 0.6
-    assert set(prompt.verdicts) == set(VERDICTS)
-    assert all(text.strip() for text in prompt.verdicts.values())
-    assert prompt.instructions.strip()
+    assert decision.rules() == Rules(0.45, 0.50, 0.55, 0.45, 2)
+    prompt = decision.sorter_prompt()
+    texts = [
+        prompt.relation_instructions,
+        *prompt.relation_criteria.values(),
+        prompt.answer_instructions,
+        *prompt.answer_criteria.values(),
+        prompt.target_instructions,
+        prompt.target_request,
+        prompt.target_unclear,
+    ]
+    assert all(text.strip() for text in texts)
+    assert set(prompt.relation_criteria) == {"answers", "asks", "other"}
+    assert set(prompt.answer_criteria) == {"approve", "deny"}
 
 
 def test_decision_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("VOCA_DECISION__URL", "http://127.0.0.1:9999")
     monkeypatch.setenv("VOCA_DECISION__ENABLED", "false")
-    verdicts = {name: f"свой текст {name}" for name in VERDICTS}
-    monkeypatch.setenv("VOCA_DECISION__VERDICTS", json.dumps(verdicts))
+    monkeypatch.setenv("VOCA_DECISION__THRESHOLD_HIGH", "0.9")
     decision = Settings().decision
     assert decision.url == "http://127.0.0.1:9999"
     assert decision.enabled is False
-    assert decision.prompt().verdicts == verdicts
+    assert decision.rules().high == 0.9
 
 
 @pytest.mark.parametrize(
     "text",
     [
-        '[decision.verdicts]\napprove = "a"\ndeny = "d"\nrepeat = "r"\nunrelated = "u"\nunclear = "c"\n',
+        '[decision.sorter_relation_criteria]\nanswers = "a"\nasks = "q"\n',
         (
-            '[decision.verdicts]\napprove = "a"\napprove_more = "am"\ndeny = "d"\n'
-            'deny_more = "dm"\nrepeat = "r"\nunrelated = "u"\nunclear = "c"\nmaybe = "m"\n'
+            '[decision.sorter_relation_criteria]\nanswers = "a"\nasks = "q"\n'
+            'other = "o"\nmaybe = "m"\n'
         ),
-        (
-            '[decision.verdicts]\napprove = " "\napprove_more = "am"\ndeny = "d"\n'
-            'deny_more = "dm"\nrepeat = "r"\nunrelated = "u"\nunclear = "c"\n'
-        ),
-        '[decision]\ninstructions = ""\n',
+        '[decision.sorter_answer_criteria]\napprove = " "\ndeny = "d"\n',
+        '[decision]\nsorter_target_request = "запрос"\n',
+        "[decision]\nthreshold_high = 0\n",
+        "[decision]\nthreshold_deny = 1.5\n",
+        "[decision]\nclarify_limit = -1\n",
+        '[decision]\ninstructions = "x"\n',
+        "[decision]\nthreshold = 0.6\n",
         "[decision]\nextra_threshold = 0.5\n",
         '[decision]\nurl = ""\n',
         '[decision]\nmodel = ""\n',
-        "[decision]\nthreshold = 0\n",
-        "[decision]\nthreshold = 1.5\n",
         '[decision]\nextra = "x"\n',
         "[decision]\ntimeout_s = 0\n",
     ],
