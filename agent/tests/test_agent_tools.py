@@ -8,32 +8,29 @@ from livekit.agents import ToolError
 from tests.test_agent_approval import (
     APPROVAL,
     FakeSession,
+    FakeSorter,
     Stand,
-    activate,
     facts,
     finished,
+    request,
     settle,
-    spoken,
-    stopped,
+    sorted_,
+    turn,
     until,
     waiting,
 )
-from voca.config import ApprovalConfig
 from voca.conversation.agent import (
     APPROVAL_GONE,
+    BUTTON_PROMPT,
     DELEGATE_UNAVAILABLE,
-    NO_REQUEST,
     NOT_STEERABLE,
     TASK_AMBIGUOUS,
     TASK_CLOSED,
-    announcement_text,
 )
 from voca.delegation.danger import Danger
 from voca.delegation.events import Event, EventKind, EventState
 from voca.delegation.model import Task, TaskStatus
 from voca.delegation.ports import RunState
-
-VOCABULARY = ApprovalConfig().vocabulary()
 
 
 def running(key: str, created_at: float = 1.0) -> Task:
@@ -55,7 +52,7 @@ def test_tool_names(tmp_path: Path) -> None:
         "list_notifications",
         "cancel_task",
         "steer_task",
-        "repeat_approval",
+        "open_approval",
     }
     assert not any("approve" in name for name in names)
 
@@ -81,7 +78,6 @@ def test_list_tasks_open_and_recent(tmp_path: Path) -> None:
         assert listed[0]["approval"] == {
             "request": "удаление в корневом каталоге",
             "command": "rm -r /tmp/x",
-            "active": False,
         }
         assert listed[2]["result"] == "Ответ."
 
@@ -239,40 +235,17 @@ def test_steer_not_running(tmp_path: Path) -> None:
     asyncio.run(main())
 
 
-def test_repeat_approval(tmp_path: Path) -> None:
-    async def main() -> None:
-        stand = Stand(tmp_path)
-        session = FakeSession()
-        await activate(stand, session, waiting("a"))
-        assert await stand.agent.repeat_approval() is None
-        await until(lambda: len(session.calls) == 2)
-        await until(lambda: stand.agent.active is not None)
-        assert spoken(session) == [announcement_text(waiting("a"), VOCABULARY)] * 2
-        assert stand.agent.active is not None
-        assert stand.agent.active.key == "a"
-        await stand.agent.stop_delegation()
-
-    asyncio.run(main())
-
-
-def test_repeat_without_request(tmp_path: Path) -> None:
-    async def main() -> None:
-        stand = Stand(tmp_path)
-        with pytest.raises(ToolError, match=NO_REQUEST):
-            await stand.agent.repeat_approval()
-
-    asyncio.run(main())
-
-
 def test_approve_from_page(tmp_path: Path) -> None:
     async def main() -> None:
         stand = Stand(tmp_path)
-        session = FakeSession()
-        await activate(stand, session, waiting("a"))
+        session = FakeSession(agent=stand.agent)
+        stand.start(session)
+        stand.open()
+        await request(stand, waiting("a"))
+        await until(lambda: len(session.replies) == 1)
         result = await stand.agent.approve_from_page("a", "p1", "once")
         assert result == {"ok": True}
         assert stand.backend.approved == [("run_a", "once", APPROVAL)]
-        assert stand.agent.active is None
         assert facts(stand.agent.chat_ctx)[-1] == (
             "list_tasks",
             {"id": "a", "event": "approved", "by": "button"},
@@ -280,29 +253,31 @@ def test_approve_from_page(tmp_path: Path) -> None:
         rows = [row for row in stand.rows("a") if "approval" in row]
         assert [(row["approval"], row["by"]) for row in rows] == [("once", "button")]
         await settle()
-        assert len(session.calls) == 1
+        assert len(session.replies) == 2
+        assert session.replies[1][0].startswith(BUTTON_PROMPT)
         await stand.agent.stop_delegation()
 
     asyncio.run(main())
 
 
-def test_approve_from_page_queued_request(tmp_path: Path) -> None:
+def test_approve_from_page_second_request(tmp_path: Path) -> None:
     async def main() -> None:
-        stand = Stand(tmp_path)
-        session = FakeSession()
-        await activate(stand, session, waiting("a"), waiting("b", created_at=2.0))
+        sorter = FakeSorter({"Да, удаляй": sorted_(confidence=0.97)})
+        stand = Stand(tmp_path, sorter=sorter)
+        await request(stand, waiting("a"))
+        await request(stand, waiting("b", created_at=2.0))
         result = await stand.agent.approve_from_page("b", "p1", "deny")
         assert result == {"ok": True}
         assert stand.backend.approved == [("run_b", "deny", APPROVAL)]
-        assert not stand.agent.announcements
-        assert stand.agent.active is not None
-        assert stand.agent.active.key == "a"
-        await stopped(stand.agent, "Подтверждаю")
-        await settle()
-        assert spoken(session) == [
-            announcement_text(waiting("a"), VOCABULARY),
-            "Подтверждено",
+        assert stand.agent.waiting["a"] == "p1"
+        pairs = await stand.agent._requests()
+        assert [event.tool_call_id for event, _ in pairs] == ["a"]
+        await turn(stand, "Да, удаляй")
+        assert stand.backend.approved == [
+            ("run_b", "deny", APPROVAL),
+            ("run_a", "once", APPROVAL),
         ]
+        assert sorter.counts == [1]
         await stand.agent.stop_delegation()
 
     asyncio.run(main())
@@ -359,24 +334,5 @@ def test_steer_wrong_state_with_id(tmp_path: Path) -> None:
         with pytest.raises(ToolError, match=NOT_STEERABLE):
             await stand.agent.steer_task("добавь b.txt", "a")
         assert stand.backend.steers == []
-
-    asyncio.run(main())
-
-
-def test_repeat_barged(tmp_path: Path) -> None:
-    async def main() -> None:
-        stand = Stand(tmp_path)
-        session = FakeSession(interrupts=[True, True])
-        await activate(stand, session, waiting("a"))
-        agent = stand.agent
-        assert agent.barged is agent.active
-        item = agent.active
-        assert item is not None
-        agent.announcements.append(item)
-        agent._repeat(item)
-        assert agent.barged is None
-        assert [queued.key for queued in agent.announcements] == ["a"]
-        await until(lambda: len(session.calls) == 3)
-        await stand.agent.stop_delegation()
 
     asyncio.run(main())
