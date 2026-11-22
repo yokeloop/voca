@@ -247,11 +247,45 @@ def test_sorter_defaults() -> None:
         "reply": "осмысленная реплика: ответ, вопрос, просьба или мысль",
     }
     assert decision.sorter_timeout_s == 0.3
-    assert decision.sorter_keep_words == ["нет", "не", "ни", "стоп", "да", "давай"]
+    assert decision.sorter_keep_words == [
+        "нет",
+        "не",
+        "ни",
+        "стоп",
+        "да",
+        "давай",
+        "хватит",
+        "стой",
+        "подожди",
+        "подождите",
+        "погоди",
+        "замолчи",
+        "замолчите",
+        "достаточно",
+        "тихо",
+    ]
     assert decision.sorter_max_words == 4
     assert decision.sorter_min_words == 2
     prompt = decision.sorter_prompt()
-    assert prompt.keep_words == frozenset({"нет", "не", "ни", "стоп", "да", "давай"})
+    assert prompt.keep_words == frozenset(
+        {
+            "нет",
+            "не",
+            "ни",
+            "стоп",
+            "да",
+            "давай",
+            "хватит",
+            "стой",
+            "подожди",
+            "подождите",
+            "погоди",
+            "замолчи",
+            "замолчите",
+            "достаточно",
+            "тихо",
+        }
+    )
     assert prompt.instructions == decision.sorter_instructions
     assert prompt.criteria == decision.sorter_criteria
     assert (prompt.max_words, prompt.min_words) == (4, 2)
