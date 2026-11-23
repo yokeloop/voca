@@ -645,6 +645,18 @@ class VocaAgent(Agent):
         if self.delegation is not None and self.deliverer is None and not self.stopped:
             self.speaker = session
             self.deliverer = asyncio.create_task(self._deliver_loop(session, sent))
+            self.deliverer.add_done_callback(self._delivery_done)
+
+    def _delivery_done(self, task: asyncio.Task[None]) -> None:
+        if self.stopped:
+            return
+        if task.cancelled():
+            logging.getLogger("voca.tasks").error("delivery loop stopped: cancelled")
+            return
+        if task.exception() is not None:
+            logging.getLogger("voca.tasks").error(
+                "delivery loop stopped", exc_info=task.exception()
+            )
 
     async def _ready(self, sent: Callable[[], Awaitable[None]]) -> None:
         while True:

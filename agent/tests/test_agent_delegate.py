@@ -1198,7 +1198,9 @@ def test_cancelled_idle_keeps_delivery(tmp_path: Path) -> None:
     asyncio.run(main())
 
 
-def test_stop_delegation_cancels_idle_wait(tmp_path: Path) -> None:
+def test_stop_delegation_cancels_idle_wait(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
     async def main() -> None:
         stand = Stand(tmp_path)
         session = StuckSession()
@@ -1212,7 +1214,29 @@ def test_stop_delegation_cancels_idle_wait(tmp_path: Path) -> None:
         assert deliverer.done()
         assert deliverer.cancelled()
 
-    asyncio.run(main())
+    with caplog.at_level("ERROR", logger="voca.tasks"):
+        asyncio.run(main())
+    assert not any(
+        "delivery loop stopped" in record.message for record in caplog.records
+    )
+
+
+def test_delivery_exit_logged(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path)
+        stand.start(FakeSession())
+        stand.open()
+        await settle()
+        deliverer = stand.agent.deliverer
+        assert deliverer is not None
+        deliverer.cancel()
+        await settle()
+
+    with caplog.at_level("ERROR", logger="voca.tasks"):
+        asyncio.run(main())
+    assert (
+        sum("delivery loop stopped" in record.message for record in caplog.records) == 1
+    )
 
 
 def failed(error: str) -> Task:
