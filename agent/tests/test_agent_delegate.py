@@ -1147,6 +1147,72 @@ def test_no_background_after_stop_delegation(tmp_path: Path) -> None:
     asyncio.run(main())
 
 
+class CancellingSession(FakeSession):
+    def __init__(self, *, cancel_on: set[int], **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.cancel_on = cancel_on
+
+    async def wait_for_idle(self) -> None:
+        self.idles += 1
+        self.events.append(("idle", ""))
+        if self.idles in self.cancel_on:
+            eou = asyncio.ensure_future(asyncio.sleep(10))
+            asyncio.get_running_loop().call_soon(eou.cancel)
+            await asyncio.shield(eou)
+
+
+class StuckSession(FakeSession):
+    async def wait_for_idle(self) -> None:
+        self.idles += 1
+        self.events.append(("idle", ""))
+        await asyncio.Event().wait()
+
+
+def test_cancelled_idle_keeps_delivery(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path)
+        session = CancellingSession(interrupts=[True, False], cancel_on={2})
+        stand.start(session)
+        stand.agent.enqueue(stand.put(finished("a")))
+        stand.open()
+        await until(lambda: stand.repo.tasks["a"].delivered_at is not None)
+        assert len(session.replies) == 2
+        deliverer = stand.agent.deliverer
+        assert deliverer is not None
+        assert not deliverer.done()
+        stand.agent.enqueue(stand.put(finished("b")))
+        task = waiting("c")
+        await stand.repo.save(task, NOW, arrival(task, NOW))
+        stand.agent.on_task_change(task)
+        await until(
+            lambda: stand.repo.tasks["b"].delivered_at is not None
+            and any(
+                event.tool_call_id == "c" and event.state == EventState.MENTIONED
+                for event in stand.repo.events.values()
+            )
+        )
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_stop_delegation_cancels_idle_wait(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path)
+        session = StuckSession()
+        stand.start(session)
+        stand.agent.enqueue(stand.put(finished("a")))
+        stand.open()
+        await until(lambda: session.idles == 1)
+        await asyncio.wait_for(stand.agent.stop_delegation(), 1)
+        deliverer = stand.agent.deliverer
+        assert deliverer is not None
+        assert deliverer.done()
+        assert deliverer.cancelled()
+
+    asyncio.run(main())
+
+
 def failed(error: str) -> Task:
     return Task("k", "t", TaskStatus.FAILED, created_at=0.0, error=error)
 

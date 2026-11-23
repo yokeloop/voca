@@ -411,6 +411,20 @@ def talking(session: AgentSession[Any], voiced: SpeechHandle | None) -> bool:
     )
 
 
+async def _idle(session: AgentSession[Any]) -> bool:
+    while True:
+        try:
+            await session.wait_for_idle()
+        except ActivityClosedError:
+            return False
+        except asyncio.CancelledError:
+            current = asyncio.current_task()
+            if current is not None and current.cancelling():
+                raise
+            continue
+        return True
+
+
 def last_message_at(ctx: llm.ChatContext) -> float | None:
     times = [
         item.created_at
@@ -660,9 +674,7 @@ class VocaAgent(Agent):
     async def _moment(self, session: AgentSession[Any]) -> bool:
         assert self.delegation is not None
         while True:
-            try:
-                await session.wait_for_idle()
-            except ActivityClosedError:
+            if not await _idle(session):
                 return False
             if self.replied:
                 return True
@@ -833,9 +845,7 @@ class VocaAgent(Agent):
                 return True
             for task in tasks:
                 self._task_row(task, interrupted=handle.interrupted)
-            try:
-                await session.wait_for_idle()
-            except ActivityClosedError:
+            if not await _idle(session):
                 return False
             if not handle.interrupted:
                 await self.delegation.sleep(UNHEARD_RETRY_S)
