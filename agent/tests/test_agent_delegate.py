@@ -10,6 +10,7 @@ from typing import Any, Literal, cast
 import pytest
 from livekit.agents import RunContext, ToolError, llm, stt
 from livekit.agents.voice import AgentSession
+from livekit.agents.voice.agent_activity import ActivityClosedError
 from livekit.agents.voice.events import (
     AgentStateChangedEvent,
     UserInputTranscribedEvent,
@@ -1180,10 +1181,15 @@ class CancellingSession(FakeSession):
 
 
 class StuckSession(FakeSession):
+    def __init__(self) -> None:
+        super().__init__()
+        self.release = asyncio.Event()
+
     async def wait_for_idle(self) -> None:
         self.idles += 1
         self.events.append(("idle", ""))
-        await asyncio.Event().wait()
+        await self.release.wait()
+        raise ActivityClosedError()
 
 
 def test_cancelled_idle_keeps_delivery(tmp_path: Path) -> None:
@@ -1226,11 +1232,16 @@ def test_stop_delegation_cancels_idle_wait(
         stand.agent.enqueue(stand.put(finished("a")))
         stand.open()
         await until(lambda: session.idles == 1)
-        await asyncio.wait_for(stand.agent.stop_delegation(), 1)
+        stopping = asyncio.ensure_future(stand.agent.stop_delegation())
+        await asyncio.wait({stopping}, timeout=1)
         deliverer = stand.agent.deliverer
         assert deliverer is not None
-        assert deliverer.done()
-        assert deliverer.cancelled()
+        try:
+            assert deliverer.done()
+            assert deliverer.cancelled()
+        finally:
+            session.release.set()
+            await stopping
 
     with caplog.at_level("ERROR", logger="voca.tasks"):
         asyncio.run(main())
