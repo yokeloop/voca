@@ -1185,10 +1185,12 @@ def test_cancelled_idle_keeps_delivery(tmp_path: Path) -> None:
         await stand.repo.save(task, NOW, arrival(task, NOW))
         stand.agent.on_task_change(task)
         await until(
-            lambda: stand.repo.tasks["b"].delivered_at is not None
-            and any(
-                event.tool_call_id == "c" and event.state == EventState.MENTIONED
-                for event in stand.repo.events.values()
+            lambda: (
+                stand.repo.tasks["b"].delivered_at is not None
+                and any(
+                    event.tool_call_id == "c" and event.state == EventState.MENTIONED
+                    for event in stand.repo.events.values()
+                )
             )
         )
         await stand.agent.stop_delegation()
