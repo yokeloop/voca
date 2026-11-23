@@ -859,9 +859,11 @@ class VocaAgent(Agent):
                 self._task_row(task, interrupted=handle.interrupted)
             if not await _idle(session):
                 return False
-            if not handle.interrupted:
+            if handle.interrupted:
+                self.replied = False
+            else:
                 await self.delegation.sleep(UNHEARD_RETRY_S)
-            self.replied = True
+                self.replied = True
             self.retry.update(spoken)
             return True
         finally:

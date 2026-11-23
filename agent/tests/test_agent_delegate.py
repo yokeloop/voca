@@ -822,21 +822,39 @@ def test_unheard_delivery_waits_before_repeat(tmp_path: Path) -> None:
     asyncio.run(main())
 
 
-def test_interrupted_delivery_repeats_without_pause(tmp_path: Path) -> None:
+def test_interrupted_delivery_waits_for_silence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     async def main() -> None:
         stand = Stand(tmp_path)
         pauses: list[float] = []
+        release = asyncio.Event()
 
         async def sleep(seconds: float) -> None:
             pauses.append(seconds)
+            if len(pauses) == 2:
+                await release.wait()
 
         stand.service.sleep = sleep
-        session = FakeSession(interrupts=[True, False])
+        gate = asyncio.Event()
+        session = FakeSession(interrupts=[True, False], gates=[gate, opened()])
+        monkeypatch.setattr(VocaAgent, "session", property(lambda _: session))
         stand.start(session)
         stand.agent.enqueue(stand.put(finished("a")))
         stand.open()
+        await until(lambda: len(session.replies) == 1)
+        stand.agent.on_agent_state(
+            AgentStateChangedEvent(old_state="thinking", new_state="speaking")
+        )
+        stand.agent.on_agent_state(
+            AgentStateChangedEvent(old_state="speaking", new_state="listening")
+        )
+        gate.set()
+        await until(lambda: pauses == [EVENT_SILENCE_S, EVENT_SILENCE_S])
+        await settle()
+        assert len(session.replies) == 1
+        release.set()
         await until(lambda: stand.repo.tasks["a"].delivered_at is not None)
-        assert pauses == [EVENT_SILENCE_S]
         assert len(session.replies) == 2
         await stand.agent.stop_delegation()
 
