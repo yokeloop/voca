@@ -411,6 +411,20 @@ def talking(session: AgentSession[Any], voiced: SpeechHandle | None) -> bool:
     )
 
 
+async def _idle(session: AgentSession[Any]) -> bool:
+    while True:
+        try:
+            await session.wait_for_idle()
+        except ActivityClosedError:
+            return False
+        except asyncio.CancelledError:
+            current = asyncio.current_task()
+            if current is not None and current.cancelling():
+                raise
+            continue
+        return True
+
+
 def last_message_at(ctx: llm.ChatContext) -> float | None:
     times = [
         item.created_at
@@ -631,6 +645,18 @@ class VocaAgent(Agent):
         if self.delegation is not None and self.deliverer is None and not self.stopped:
             self.speaker = session
             self.deliverer = asyncio.create_task(self._deliver_loop(session, sent))
+            self.deliverer.add_done_callback(self._delivery_done)
+
+    def _delivery_done(self, task: asyncio.Task[None]) -> None:
+        if self.stopped:
+            return
+        if task.cancelled():
+            logging.getLogger("voca.tasks").error("delivery loop stopped: cancelled")
+            return
+        if task.exception() is not None:
+            logging.getLogger("voca.tasks").error(
+                "delivery loop stopped", exc_info=task.exception()
+            )
 
     async def _ready(self, sent: Callable[[], Awaitable[None]]) -> None:
         while True:
@@ -660,9 +686,7 @@ class VocaAgent(Agent):
     async def _moment(self, session: AgentSession[Any]) -> bool:
         assert self.delegation is not None
         while True:
-            try:
-                await session.wait_for_idle()
-            except ActivityClosedError:
+            if not await _idle(session):
                 return False
             if self.replied:
                 return True
@@ -833,13 +857,13 @@ class VocaAgent(Agent):
                 return True
             for task in tasks:
                 self._task_row(task, interrupted=handle.interrupted)
-            try:
-                await session.wait_for_idle()
-            except ActivityClosedError:
+            if not await _idle(session):
                 return False
-            if not handle.interrupted:
+            if handle.interrupted:
+                self.replied = False
+            else:
                 await self.delegation.sleep(UNHEARD_RETRY_S)
-            self.replied = True
+                self.replied = True
             self.retry.update(spoken)
             return True
         finally:

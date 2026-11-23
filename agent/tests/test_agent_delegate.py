@@ -10,6 +10,7 @@ from typing import Any, Literal, cast
 import pytest
 from livekit.agents import RunContext, ToolError, llm, stt
 from livekit.agents.voice import AgentSession
+from livekit.agents.voice.agent_activity import ActivityClosedError
 from livekit.agents.voice.events import (
     AgentStateChangedEvent,
     UserInputTranscribedEvent,
@@ -822,21 +823,39 @@ def test_unheard_delivery_waits_before_repeat(tmp_path: Path) -> None:
     asyncio.run(main())
 
 
-def test_interrupted_delivery_repeats_without_pause(tmp_path: Path) -> None:
+def test_interrupted_delivery_waits_for_silence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     async def main() -> None:
         stand = Stand(tmp_path)
         pauses: list[float] = []
+        release = asyncio.Event()
 
         async def sleep(seconds: float) -> None:
             pauses.append(seconds)
+            if len(pauses) == 2:
+                await release.wait()
 
         stand.service.sleep = sleep
-        session = FakeSession(interrupts=[True, False])
+        gate = asyncio.Event()
+        session = FakeSession(interrupts=[True, False], gates=[gate, opened()])
+        monkeypatch.setattr(VocaAgent, "session", property(lambda _: session))
         stand.start(session)
         stand.agent.enqueue(stand.put(finished("a")))
         stand.open()
+        await until(lambda: len(session.replies) == 1)
+        stand.agent.on_agent_state(
+            AgentStateChangedEvent(old_state="thinking", new_state="speaking")
+        )
+        stand.agent.on_agent_state(
+            AgentStateChangedEvent(old_state="speaking", new_state="listening")
+        )
+        gate.set()
+        await until(lambda: pauses == [EVENT_SILENCE_S, EVENT_SILENCE_S])
+        await settle()
+        assert len(session.replies) == 1
+        release.set()
         await until(lambda: stand.repo.tasks["a"].delivered_at is not None)
-        assert pauses == [EVENT_SILENCE_S]
         assert len(session.replies) == 2
         await stand.agent.stop_delegation()
 
@@ -1145,6 +1164,108 @@ def test_no_background_after_stop_delegation(tmp_path: Path) -> None:
         assert stand.repo.tasks["call-1"].is_open
 
     asyncio.run(main())
+
+
+class CancellingSession(FakeSession):
+    def __init__(self, *, cancel_on: set[int], **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.cancel_on = cancel_on
+
+    async def wait_for_idle(self) -> None:
+        self.idles += 1
+        self.events.append(("idle", ""))
+        if self.idles in self.cancel_on:
+            eou = asyncio.ensure_future(asyncio.sleep(10))
+            asyncio.get_running_loop().call_soon(eou.cancel)
+            await asyncio.shield(eou)
+
+
+class StuckSession(FakeSession):
+    def __init__(self) -> None:
+        super().__init__()
+        self.release = asyncio.Event()
+
+    async def wait_for_idle(self) -> None:
+        self.idles += 1
+        self.events.append(("idle", ""))
+        await self.release.wait()
+        raise ActivityClosedError()
+
+
+def test_cancelled_idle_keeps_delivery(tmp_path: Path) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path)
+        session = CancellingSession(interrupts=[True, False], cancel_on={2})
+        stand.start(session)
+        stand.agent.enqueue(stand.put(finished("a")))
+        stand.open()
+        await until(lambda: stand.repo.tasks["a"].delivered_at is not None)
+        assert len(session.replies) == 2
+        deliverer = stand.agent.deliverer
+        assert deliverer is not None
+        assert not deliverer.done()
+        stand.agent.enqueue(stand.put(finished("b")))
+        task = waiting("c")
+        await stand.repo.save(task, NOW, arrival(task, NOW))
+        stand.agent.on_task_change(task)
+        await until(
+            lambda: (
+                stand.repo.tasks["b"].delivered_at is not None
+                and any(
+                    event.tool_call_id == "c" and event.state == EventState.MENTIONED
+                    for event in stand.repo.events.values()
+                )
+            )
+        )
+        await stand.agent.stop_delegation()
+
+    asyncio.run(main())
+
+
+def test_stop_delegation_cancels_idle_wait(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path)
+        session = StuckSession()
+        stand.start(session)
+        stand.agent.enqueue(stand.put(finished("a")))
+        stand.open()
+        await until(lambda: session.idles == 1)
+        stopping = asyncio.ensure_future(stand.agent.stop_delegation())
+        await asyncio.wait({stopping}, timeout=1)
+        deliverer = stand.agent.deliverer
+        assert deliverer is not None
+        try:
+            assert deliverer.done()
+            assert deliverer.cancelled()
+        finally:
+            session.release.set()
+            await stopping
+
+    with caplog.at_level("ERROR", logger="voca.tasks"):
+        asyncio.run(main())
+    assert not any(
+        "delivery loop stopped" in record.message for record in caplog.records
+    )
+
+
+def test_delivery_exit_logged(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    async def main() -> None:
+        stand = Stand(tmp_path)
+        stand.start(FakeSession())
+        stand.open()
+        await settle()
+        deliverer = stand.agent.deliverer
+        assert deliverer is not None
+        deliverer.cancel()
+        await settle()
+
+    with caplog.at_level("ERROR", logger="voca.tasks"):
+        asyncio.run(main())
+    assert (
+        sum("delivery loop stopped" in record.message for record in caplog.records) == 1
+    )
 
 
 def failed(error: str) -> Task:
