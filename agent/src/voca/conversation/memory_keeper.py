@@ -7,7 +7,18 @@ from datetime import date
 from pathlib import Path
 
 from voca.config import MemoryConfig
-from voca.conversation.memory import BATCH, build_extract_prompt, due, fits
+from voca.conversation.memory import (
+    BATCH,
+    Entry,
+    Op,
+    apply_ops,
+    build_extract_prompt,
+    build_retry_prompt,
+    fits,
+    parse_file,
+    parse_ops,
+    render_file,
+)
 from voca.conversation.summarizer import Failure, Summarizer, Summary
 from voca.session.model import ArchiveRow
 from voca.session.store import SessionStore
@@ -18,20 +29,17 @@ def state_path(memory: Path) -> Path:
     return memory.with_suffix(".state.json")
 
 
-def read_state(path: Path) -> tuple[int, float | None]:
+def read_state(path: Path) -> int:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return 0, None
+        return 0
     if not isinstance(data, dict):
-        return 0, None
+        return 0
     last_id = data.get("last_message_id")
-    run_at = data.get("run_at")
     if not isinstance(last_id, int) or isinstance(last_id, bool):
-        return 0, None
-    if not isinstance(run_at, int | float) or isinstance(run_at, bool):
-        return 0, None
-    return last_id, float(run_at)
+        return 0
+    return last_id
 
 
 def write_atomic(path: Path, text: str) -> None:
@@ -73,26 +81,29 @@ class MemoryKeeper:
         self.model = model
         self.clock = clock
         self.state = state_path(config.path)
-        self.attempted_at: float | None = None
+        self.failed_at: int | None = None
         self.task: asyncio.Task[None] | None = None
 
     def check(self) -> bool:
-        if self.config.interval_hours == 0 or (
+        if self.config.every_turns == 0 or (
             self.task is not None and not self.task.done()
         ):
             return False
-        last_id, run_at = read_state(self.state)
-        known = [at for at in (run_at, self.attempted_at) if at is not None]
-        last_at = max(known) if known else None
-        now = self.clock()
-        if not due(now, last_at, self.config.interval_hours):
+        last_id = read_state(self.state)
+        since = (
+            self.failed_at
+            if self.failed_at is not None and self.failed_at > last_id
+            else last_id
+        )
+        probe = self.store.after(since, BATCH)
+        user_turns = sum(1 for _, row in probe if row.kind == "user")
+        if user_turns < self.config.every_turns:
             return False
-        batch = self.store.after(last_id, BATCH)
-        if not batch:
-            return False
-        self.attempted_at = now
+        batch = probe if since == last_id else self.store.after(last_id, BATCH)
+        user_turns = sum(1 for _, row in batch if row.kind == "user")
         if not self.model.ready:
             self.log.write("memory_failed", reason="no_key", ms=0, messages=len(batch))
+            self.failed_at = batch[-1][0]
             return False
         try:
             current = read_current(self.config.path)
@@ -104,83 +115,146 @@ class MemoryKeeper:
                 messages=len(batch),
                 error=type(error).__name__,
             )
+            self.failed_at = batch[-1][0]
             return False
+        entries = parse_file(current)
         prompt = build_extract_prompt(
-            current,
+            entries,
             [row for _, row in batch],
-            today=date.fromtimestamp(now),
+            today=date.fromtimestamp(self.clock()),
             max_chars=self.config.max_chars,
         )
-        self.task = asyncio.create_task(self._run(current, batch, prompt, now))
+        self.task = asyncio.create_task(
+            self._run(current, entries, batch, user_turns, prompt)
+        )
         return True
 
-    async def _run(
-        self,
-        current: str,
-        batch: list[tuple[int, ArchiveRow]],
-        prompt: str,
-        at: float,
-    ) -> None:
-        messages = len(batch)
-        named: dict[str, str] = {}
+    async def _ask(self, prompt: str) -> tuple[Summary | Failure, dict[str, str]]:
         (outcome,) = await asyncio.gather(
             self.model.summarize(prompt), return_exceptions=True
         )
         if isinstance(outcome, BaseException) and not isinstance(outcome, Exception):
             raise outcome
-        result: Summary | Failure
         if isinstance(outcome, Exception):
-            result = Failure("error", 0)
-            named = {"error": type(outcome).__name__}
-        else:
-            result = outcome
+            return Failure("error", 0), {"error": type(outcome).__name__}
+        return outcome, {}
+
+    async def _run(
+        self,
+        current: str,
+        entries: list[Entry],
+        batch: list[tuple[int, ArchiveRow]],
+        user_turns: int,
+        prompt: str,
+    ) -> None:
+        result, named = await self._ask(prompt)
+        attempts = 1
         if isinstance(result, Failure):
             self.log.write(
                 "memory_failed",
                 reason=result.reason,
                 ms=result.ms,
-                messages=messages,
+                messages=len(batch),
+                attempts=attempts,
                 **named,
             )
+            self.failed_at = batch[-1][0]
             return
-        if not fits(result.body, self.config.max_chars):
-            self.log.write(
-                "memory_failed", reason="too_long", ms=result.ms, messages=messages
-            )
-            return
-        try:
-            write_atomic(self.config.path, result.body)
-        except OSError as error:
+        ms = result.ms
+        ops: list[Op] | None = parse_ops(result.body, entries)
+        if ops is None:
             self.log.write(
                 "memory_failed",
-                reason="write",
-                ms=result.ms,
-                messages=messages,
-                error=type(error).__name__,
+                reason="bad_reply",
+                ms=ms,
+                messages=len(batch),
+                attempts=attempts,
             )
+            self.failed_at = batch[-1][0]
             return
+        text = render_file(apply_ops(entries, ops))
+        if not fits(text, self.config.max_chars):
+            over = len(text) - self.config.max_chars
+            retry, named = await self._ask(
+                build_retry_prompt(prompt, result.body, over)
+            )
+            attempts = 2
+            ms += retry.ms
+            if isinstance(retry, Failure):
+                self.log.write(
+                    "memory_failed",
+                    reason=retry.reason,
+                    ms=ms,
+                    messages=len(batch),
+                    attempts=attempts,
+                    **named,
+                )
+                self.failed_at = batch[-1][0]
+                return
+            ops = parse_ops(retry.body, entries)
+            if ops is None:
+                self.log.write(
+                    "memory_failed",
+                    reason="bad_reply",
+                    ms=ms,
+                    messages=len(batch),
+                    attempts=attempts,
+                )
+                self.failed_at = batch[-1][0]
+                return
+            text = render_file(apply_ops(entries, ops))
+            if not fits(text, self.config.max_chars):
+                self.log.write(
+                    "memory_failed",
+                    reason="too_long",
+                    ms=ms,
+                    messages=len(batch),
+                    attempts=attempts,
+                )
+                self.failed_at = batch[-1][0]
+                return
+        if ops:
+            try:
+                write_atomic(self.config.path, text + "\n")
+            except OSError as error:
+                self.log.write(
+                    "memory_failed",
+                    reason="write",
+                    ms=ms,
+                    messages=len(batch),
+                    attempts=attempts,
+                    error=type(error).__name__,
+                )
+                self.failed_at = batch[-1][0]
+                return
         last_message_id = batch[-1][0]
         try:
-            write_atomic(
-                self.state,
-                json.dumps({"last_message_id": last_message_id, "run_at": at}),
-            )
+            write_atomic(self.state, json.dumps({"last_message_id": last_message_id}))
         except OSError as error:
             self.log.write(
                 "memory_failed",
                 reason="write",
-                ms=result.ms,
-                messages=messages,
+                ms=ms,
+                messages=len(batch),
+                attempts=attempts,
                 error=type(error).__name__,
             )
+            self.failed_at = batch[-1][0]
             return
+        self.failed_at = None
+        chars_before = len(current.strip())
         self.log.write(
             "memory_updated",
-            chars_before=len(current.strip()),
-            chars_after=len(result.body),
-            messages=messages,
+            added=sum(1 for op in ops if op.op == "add"),
+            replaced=sum(1 for op in ops if op.op == "replace"),
+            removed=sum(1 for op in ops if op.op == "remove"),
+            chars_before=chars_before,
+            chars_after=len(text) if ops else chars_before,
+            messages=len(batch),
+            user_turns=user_turns,
             last_message_id=last_message_id,
-            ms=result.ms,
+            ms=ms,
+            attempts=attempts,
         )
 
     def cancel(self) -> None:
