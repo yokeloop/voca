@@ -4,6 +4,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from typing import Any, Literal
 
+from voca.delegation.events import DENIED, arrival, request_of
 from voca.delegation.model import (
     CANCELLED,
     LOST,
@@ -54,7 +55,8 @@ class DelegationService:
         self.on_change = on_change
 
     async def _save(self, task: Task) -> Task:
-        await self.repo.save(task)
+        now = self.clock()
+        await self.repo.save(task, now, arrival(task, now))
         if self.on_change is not None:
             self.on_change(task)
         return task
@@ -241,6 +243,8 @@ class DelegationService:
             raise ApprovalNotActive(key)
         assert task.run_id is not None
         await self.backend.approve(task.run_id, choice, task.approval)
+        if choice == "deny":
+            await self.repo.close_request(key, request_of(task), DENIED, self.clock())
 
     async def cancel(self, key: str) -> Task:
         task = await self._get(key)

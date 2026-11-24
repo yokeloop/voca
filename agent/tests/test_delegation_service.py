@@ -4,6 +4,8 @@ from typing import Any, Literal
 
 import pytest
 
+from voca.delegation.danger import Danger
+from voca.delegation.events import Event, EventState, arrival
 from voca.delegation.model import Task, TaskStatus
 from voca.delegation.ports import (
     ApprovalNotActive,
@@ -30,6 +32,7 @@ AUTHORITY_APPROVAL = {**APPROVAL, "request_id": "p1", "execution_generation": 3}
 class FakeRepo:
     def __init__(self) -> None:
         self.tasks: dict[str, Task] = {}
+        self.events: dict[tuple[str, str, str], Event] = {}
 
     async def insert(self, task: Task) -> tuple[Task, bool]:
         if task.tool_call_id in self.tasks:
@@ -37,8 +40,12 @@ class FakeRepo:
         self.tasks[task.tool_call_id] = task
         return task, True
 
-    async def save(self, task: Task) -> None:
+    async def save(self, task: Task, at: float, event: Event | None = None) -> None:
         self.tasks[task.tool_call_id] = task
+        if event is not None:
+            key = (event.tool_call_id, event.kind.value, event.request_id)
+            if key not in self.events:
+                self.events[key] = replace(event, id=len(self.events) + 1)
 
     async def get(self, key: str) -> Task | None:
         return self.tasks.get(key)
@@ -57,6 +64,26 @@ class FakeRepo:
 
     async def list_all(self) -> list[Task]:
         return sorted(self.tasks.values(), key=lambda task: -task.created_at)
+
+    async def list_events(self, open_only: bool) -> list[Event]:
+        found = [
+            event
+            for event in self.events.values()
+            if not open_only or event.state != EventState.CLOSED
+        ]
+        return sorted(found, key=lambda event: (event.created_at, event.id or 0))
+
+    async def close_request(
+        self, tool_call_id: str, request_id: str, reason: str, at: float
+    ) -> None:
+        key = (tool_call_id, "approval", request_id)
+        event = self.events.get(key)
+        if event is not None and (
+            event.state != EventState.CLOSED or event.closed_reason == "resolved"
+        ):
+            self.events[key] = replace(
+                event, state=EventState.CLOSED, closed_reason=reason, updated_at=at
+            )
 
 
 def take(queue: list[Any]) -> Any:
@@ -191,6 +218,14 @@ def test_rejected_post_fails_unavailable() -> None:
     assert len(backend.posts) == 1
 
 
+def test_rejected_post_records_failure_event() -> None:
+    service, repo, backend, _, _ = make()
+    backend.created = [Rejected("429 rate_limit_exceeded")]
+    with pytest.raises(Unavailable):
+        asyncio.run(service.delegate("k", "a"))
+    assert repo.events[("k", "failure", "")].state == EventState.ARRIVED
+
+
 def test_unknown_outcome_retries_once() -> None:
     service, repo, backend, _, _ = make()
     backend.created = [OutcomeUnknown("502"), "run_1"]
@@ -209,19 +244,31 @@ def test_unknown_outcome_retries_once() -> None:
 
 
 def test_waiting_approval_round_trip() -> None:
-    service, _repo, backend, _, seen = make()
+    service, repo, backend, clock, seen = make()
     backend.created = ["run_1"]
     backend.runs["run_1"] = [
         state("run_1", TaskStatus.WAITING_APPROVAL, approval=APPROVAL),
         state("run_1", TaskStatus.RUNNING),
         state("run_1", TaskStatus.SUCCEEDED, result="ok"),
     ]
+    asked: list[float] = []
+
+    def on_change(task: Task) -> None:
+        seen.append(task)
+        if task.status == TaskStatus.WAITING_APPROVAL:
+            asked.append(clock.now)
+
+    service.on_change = on_change
 
     async def main() -> Task:
         await service.delegate("k", "a")
         return await service.watch("k")
 
     task = asyncio.run(main())
+    request = repo.events[("k", "approval", "r1")]
+    assert request.danger == Danger.HIGH
+    assert request.created_at == asked[0]
+    assert repo.events[("k", "result", "")].state == EventState.ARRIVED
     assert task.status == TaskStatus.SUCCEEDED
     assert task.approval is None
     waiting = [item for item in seen if item.status == TaskStatus.WAITING_APPROVAL]
@@ -234,6 +281,26 @@ def test_waiting_approval_round_trip() -> None:
         "running",
         "succeeded",
     ]
+
+
+def test_approval_danger_from_table() -> None:
+    service, repo, backend, _, _ = make()
+    backend.created = ["run_1"]
+    backend.runs["run_1"] = [
+        state(
+            "run_1",
+            TaskStatus.WAITING_APPROVAL,
+            approval={**APPROVAL, "description": "package manager uninstall"},
+        ),
+        state("run_1", TaskStatus.SUCCEEDED, result="ok"),
+    ]
+
+    async def main() -> Task:
+        await service.delegate("k", "a")
+        return await service.watch("k")
+
+    asyncio.run(main())
+    assert repo.events[("k", "approval", "r1")].danger == Danger.MEDIUM
 
 
 def test_deadline_stops_and_times_out() -> None:
@@ -353,6 +420,24 @@ def test_approve_once_and_deny() -> None:
         ("run_1", "deny", APPROVAL),
     ]
     assert repo.tasks["k"].status == TaskStatus.WAITING_APPROVAL
+
+
+def test_deny_closes_request_denied() -> None:
+    key = ("k", "approval", "r1")
+    for choice, state, reason in (
+        ("deny", EventState.CLOSED, "denied"),
+        ("once", EventState.ARRIVED, None),
+    ):
+        service, repo, _, _, _ = make()
+        waiting_task(repo)
+        event = arrival(repo.tasks["k"], 0.0)
+        assert event is not None
+        repo.events[key] = replace(event, id=1)
+        asyncio.run(service.approve("k", choice))
+        assert (repo.events[key].state, repo.events[key].closed_reason) == (
+            state,
+            reason,
+        )
 
 
 def test_approve_authority_passes_generation() -> None:
@@ -512,6 +597,15 @@ def test_cancel_queued_without_run() -> None:
     assert task.stop_reason == "user"
     assert task.delivered_at is not None
     assert backend.stopped == []
+
+
+def test_cancel_queued_event_closed() -> None:
+    service, repo, _, _, _ = make()
+    repo.tasks["k"] = Task("k", "a", TaskStatus.QUEUED, created_at=0)
+    asyncio.run(service.cancel("k"))
+    event = repo.events[("k", "failure", "")]
+    assert event.state == EventState.CLOSED
+    assert event.closed_reason == "cancelled"
 
 
 def test_cancel_closed_raises() -> None:

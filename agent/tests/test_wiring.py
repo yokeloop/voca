@@ -28,7 +28,7 @@ from voca.app.wiring import (
 from voca.app.worker import run, server_options
 from voca.config import Settings
 from voca.conversation.compaction import Limits
-from voca.conversation.verdict import DecisionFailure, Situation
+from voca.conversation.verdict import DecisionFailure
 from voca.speech.prepare import Prepared
 from voca.telemetry.jsonl import JsonlLog
 
@@ -52,8 +52,8 @@ def test_build_session_options() -> None:
             assert options.interruption["mode"] == "vad"
             assert options.interruption["min_duration"] == 0.5
             assert options.interruption["min_words"] == 0
-            assert options.preemptive_generation["enabled"] is False
-            assert options.endpointing["min_delay"] == 0.5
+            assert options.preemptive_generation["enabled"] is True
+            assert options.endpointing["min_delay"] == 0.2
             assert options.aec_warmup_duration == 3.0
             assert options.tts_text_transforms == TTS_TEXT_TRANSFORMS
             assert session.vad is vad
@@ -266,12 +266,25 @@ def test_make_summarizer(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_make_decider_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("VOCA_DECISION__ENABLED", "false")
-    situation = Situation("t", "r", None, "a", "p")
 
     async def main() -> object:
         decider = make_decider(Settings())
-        result = await decider.decide(situation)
+        result = await decider.sort({"фраза пользователя": "да"})
         await decider.aclose()
         return result
 
     assert asyncio.run(main()) == DecisionFailure("disabled", 0)
+
+
+def test_make_decider_sorter() -> None:
+    async def main() -> None:
+        decider = make_decider(Settings())
+        try:
+            assert decider.sorter == Settings().decision.sorter_prompt()
+            assert decider.sorter_timeout_s == 0.3
+            assert decider.client is not None
+            assert decider.client.timeout.read == 1.5
+        finally:
+            await decider.aclose()
+
+    asyncio.run(main())

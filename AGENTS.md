@@ -12,12 +12,12 @@ Hermes. This file is the working contract for agents and contributors.
   (prewarm, entrypoint, `WorkerOptions`), `app/wiring.py` (the plugins,
   `PreparedTTS`, `build_session`, `SpeechLanguageClient`), `conversation/`
   (`VocaAgent`: the tool-call markup filter in `llm_node`, the `delegate`,
-  `list_tasks`, `cancel_task`, `steer_task` and `repeat_approval`
-  tools, the delegation facts in the context and the delivery of results, approval announcements and the reply to an active request judged first in `on_user_turn_completed` (echo, decision model, fallback word), instructions, accepting a finished
+  `list_tasks`, `list_notifications`, `cancel_task`, `steer_task` and `open_approval`
+  tools, the delegation facts in the context and speech about results and failures in the main model's words (`generate_reply` with a one-turn record, after `[agent].event_silence_s` of silence or at the end of the agent's answer), approval requests in the event speech, `open_approval` with the mark «essence spoken», the judge of a reply while requests wait in `on_user_turn_completed` (three checks, thresholds by danger, 0.5 s of silence before the answer to Hermes), the reminder before the expiry and the short reply after a button, the reply sorter in `stt_node` (while the agent's reply sounds or is paused) and in `on_user_turn_completed` (in silence and before the reply's first sound; a reply that glues is never noise), the glue of unanswered fragments, `delegate` held until `[agent].action_silence_s` of user silence, instructions, accepting a finished
   summary and the emergency context trim in `on_user_turn_completed`, the threshold trigger `maybe_compact`,
   the idle and daily check `check_due`, failures spoken aloud;
   `instructions.py`: `InstructionLoader` with the last valid set; `context.py`: `trim_chat_ctx` — the emergency path at
-  `hard_limit`; `approval.py`: the fallback phrase parse (the exact first word, the tail), the echo check and the hint texts; `verdict.py`: the decision model's request body and answer reading (pure); `decision.py`: `DecisionClient`, the HTTP adapter of `POST /v1/systemone`; `descriptions.py`: the Russian descriptions of Hermes approval requests; `compaction.py`: the compaction plan and the summariser
+  `hard_limit`; `approval_judge.py`: the three checks of a reply to waiting requests — binding by content, place or none, thresholds by danger, the re-ask for `high`, the clarification limit (pure); `verdict.py`: the body and the answers of the sorter questions `kind`, `relation`, `answer`, `target` and the noise rule `drop` (pure); `decision.py`: `DecisionClient`, the HTTP adapter of `POST /v1/systemone` for the sorter; `glue.py`: the glue of an unanswered fragment with the next reply (pure); `descriptions.py`: the Russian descriptions of Hermes approval requests; `compaction.py`: the compaction plan and the summariser
   prompt; `summarizer.py`: the call to `[compression.model]`), `clientio/`
   (the `voca.cards` and `voca.history` channels, the `tasks` list on join, `actions.py`: the page's RPC), `telemetry/` (`.local/events.jsonl`), `session/`
   (`SessionStore`: the session snapshot and the archive in one SQLite file,
@@ -25,14 +25,16 @@ Hermes. This file is the working contract for agents and contributors.
   tasks given to Hermes through the Runs API, the state machine, polling, the
   deadline with `/stop`, `recover()` and `approve()`; `hermes.py` — the Runs
   API adapter and the only status mapping; `sqlite.py` — the task file
-  `[delegation].path`; `voca bench delegate`), `config.py` (`Settings`: the
+  `[delegation].path`; `events.py` — the event kinds and states, the event on
+  arrival; `danger.py` — the table of danger levels by Hermes descriptions; `voca bench delegate`), `config.py` (`Settings`: the
   environment and the agent config file, «Agent config»).
   `agent/src/voca/speech/` prepares text before TTS: the tool-call markup
   filter, LaTeX and tables, the quotes audio.cpp rejects (`„‟‚‹` → `«`,
   `“”›` → `»`), numbers as words, stress and the first fragment.
   `markup`, `numbers`, `prepare`, `conversation/context`,
-  `conversation/compaction`, `conversation/approval`, `conversation/descriptions`, `conversation/verdict`, `conversation/instructions`, `session/model`,
-  `delegation/model`, `delegation/ports` and `delegation/service` are pure
+  `conversation/compaction`, `conversation/approval_judge`, `conversation/descriptions`, `conversation/verdict`, `conversation/glue`, `conversation/instructions`, `session/model`,
+  `delegation/model`, `delegation/ports`, `delegation/service`,
+  `delegation/events` and `delegation/danger` are pure
   modules, which
   `tests/test_import_boundaries.py` checks.
 - `instructions.example/` — a sample `SOUL.md`, `user.md` and `agent.md`; the
@@ -127,32 +129,49 @@ The former flat names of these settings (`VOCA_` plus the field name, without
 a section) are no longer read.
 
 - `[model]` — the context window, the reasoning budget, sampling.
-- `[agent]` — the seven pipeline settings; G5/G6 tune them.
+- `[agent]` — the pipeline settings (G5/G6 tune them), `glue_window_s` (3.0: an
+  unanswered fragment and the next reply within this gap are one turn),
+  `action_silence_s` (0.5: `delegate` waits this much user silence, after the
+  final transcript of any speech that came after the last one, at most 3 s) and
+  `event_silence_s` (1.5: the silence of both the user and the agent before the
+  agent speaks about waiting results and failures; at the end of the agent's
+  answer it speaks at once).
 - `[session]` — the session history file and how much of it a client gets.
 - `[compression]` — the compression triggers and the trim.
 - `[compression.model]` — the summariser.
-- `[delegation]` — the task file and the run deadline.
-- `[approval]` — `confirm` and `deny` (single words; the first of each is
-  spoken in the announcement and shown on the card; an exact first word is
-  the fallback answer when the decision model is unavailable) and
-  `echo_words` (words in a row of the announcement that make an echo). No
-  word of the voice protocol is in the code. A `confirm` word equal to a
-  `deny` word after normalisation is refused.
-- `[decision]` — the decision model of voice approval: `enabled` (true),
-  `url` (`http://127.0.0.1:8086`, env `VOCA_DECISION__URL`, set by
-  `scripts/env.sh`), `model` (`d1-2B`), `timeout_s` (1.5), `threshold` (0.6,
-  a lower confidence is `unclear`), `instructions` (the question) and
-  `verdicts` (exactly `approve`, `approve_more`, `deny`, `deny_more`,
-  `repeat`, `unrelated`, `unclear`, each with its Russian description). Empty
-  texts, a missing or an unknown verdict are refused. The model file is not
-  here: `VOCA_DECISION_MODEL` for `scripts/decision.sh`.
+- `[delegation]` — the task file, the run deadline, `approval_timeout_s`
+  (300: Hermes `approvals.timeout` of the `voca` profile) and
+  `approval_reminder_s` (60: the reminder before the expiry; 0 — off).
+- `[decision]` — the decision model of the reply sorter and the approval
+  judge: `enabled` (true; false — nothing is approved or denied by voice, the
+  buttons answer), `url` (`http://127.0.0.1:8086`, env `VOCA_DECISION__URL`,
+  set by `scripts/env.sh`), `model` (`d1-2B`), `timeout_s` (1.5, the HTTP
+  timeout); the sorter questions `sorter_instructions` and `sorter_criteria`
+  (exactly `noise`, `reply`), `sorter_relation_instructions` and
+  `sorter_relation_criteria` (exactly `answers`, `asks`, `other`),
+  `sorter_answer_instructions` and `sorter_answer_criteria` (exactly
+  `approve`, `deny`), `sorter_target_instructions`, `sorter_target_request`
+  (with `{n}`) and `sorter_target_unclear`; `threshold_low`,
+  `threshold_medium`, `threshold_high` (0.45, 0.50, 0.50: the judge's
+  confidence needed to approve a request of that danger level; high 0.50
+  after the VOCA-48 stand: short «Да.» 0.51–0.54), `threshold_deny` (0.45)
+  and `clarify_limit` (2: clarifications in a row);
+  `sorter_timeout_s` (0.3); `sorter_keep_words` (single words; a reply with
+  one of them is never noise; the default includes the stop commands), `sorter_max_words` (4: only a reply of at most
+  this many words is dropped as noise), `sorter_min_words` (2: when the sorter
+  fails while the agent speaks, a reply with fewer words and no keep word is
+  dropped). Empty texts, a missing or an unknown criterion and a
+  `sorter_target_request` without `{n}` are refused. The question texts live
+  here; the one-turn records the agent gives the main model are code
+  constants. The model file is not here: `VOCA_DECISION_MODEL` for
+  `scripts/decision.sh`.
 
 `[session].history_on_join` is how many archive rows a joining client gets
 in `voca.history` («Client channel»); `[session].path` is the session store
 («Session store»).
 
 `[delegation].path` (default `~/.voca/tasks.sqlite3`, env
-`VOCA_DELEGATION__PATH`) is the task file: the directory 0700 and the file 0600
+`VOCA_DELEGATION__PATH`) is the task file, tables `tasks` and `events`; the schema is 3: the directory 0700 and the file 0600
 when VOCA creates them, WAL, migrations by `user_version`; a newer schema is
 refused. It is separate from the session store and is backed up with `~/.voca/`
 (E5). `[delegation].run_timeout` (900 s, `VOCA_DELEGATION__RUN_TIMEOUT`) counts
@@ -243,7 +262,7 @@ port `VOCA_DECISION_PORT` (8086) is free; with `--check` it stops there.
 Otherwise it `exec`s llama-server with `--alias d1-2B`, `127.0.0.1:8086`,
 `-c 2048`, `--parallel 1`, `-t $VOCA_DECISION_THREADS` (4), `-ngl
 $VOCA_DECISION_NGL` (99: the GPU; `0` runs it on the CPU) and `--cache-ram
-256`. The agent calls `POST /v1/systemone`.
+256`. The agent calls `POST /v1/systemone` for the reply sorter and the approval judge.
 
 `scripts/llama.sh [--check]` sources the profile
 `scripts/llm-profiles/$VOCA_LLM_PROFILE.sh` (README 0.3.1), which sets `model`
@@ -294,7 +313,7 @@ classes come from `livekit-api` in the `agent/` environment.
   "queued"|"running"|"waiting_approval"|"unknown"|"succeeded"|"failed",
   "text", "result": string|null, "error": string|null, "created_at",
   "delivered_at": number|null, "approval": {"description", "command",
-  "choices", "request_id", "hint"}|null}`. `approval` is set only while the task is
+  "choices", "request_id"}|null}`. `approval` is set only while the task is
   `waiting_approval`. `task`, `state` and `tasks` share one send chain, so
   their order is kept. The agent sends them from the `delegate` tool, its
   watchers and the delivery.
@@ -311,9 +330,7 @@ classes come from `livekit-api` in the `agent/` environment.
 - The task block is separate from the transcript: neither `history` nor a
   disconnect clears it. A card shows the status, the text, the full result,
   the error and «озвучено» once `delivered_at` is set. A `waiting_approval`
-  card also shows `description`, `command`, the agent's `hint` (built from
-  `[approval]`: «Подтвердите на экране или скажите „<confirm>“ или „<deny>“»)
-  and the buttons «Подтвердить» and «Отклонить»
+  card also shows `description`, `command` and the buttons «Подтвердить» and «Отклонить»
   (only with a `request_id`); every open card has «Отменить задачу».
 - The page calls RPC methods of the agent participant (the one with
   `lk.agent.state`): `voca.approve` with `{"tool_call_id", "request_id",
@@ -321,8 +338,9 @@ classes come from `livekit-api` in the `agent/` environment.
   response timeout 45 s; `voca.cancel_task` answers once the cancel has
   started, its outcome comes as a `task` message. The answer is `{"ok": true}` or `{"ok": false,
   "error"}`; an invalid payload gives «неверный запрос». The agent answers a
-  request only when `request_id` matches the waiting one, speaks nothing and
-  puts a fact into the model's context.
+  request only when `request_id` matches the waiting one, puts a fact into the model's
+  context, and the main model says one short phrase about the press in the
+  event speech.
 - The agent sends a JSON `history` message on the text stream topic
   `voca.history` to one participant (`destination_identities`):
   `{"type": "history", "session_id", "items": [{"id", "at", "who":

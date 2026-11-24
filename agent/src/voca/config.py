@@ -18,8 +18,8 @@ from pydantic_settings import (
     TomlConfigSettingsSource,
 )
 
-from voca.conversation.approval import Vocabulary, normalize
-from voca.conversation.verdict import VERDICTS, Prompt
+from voca.conversation.approval_judge import Rules
+from voca.conversation.verdict import KINDS, RELATIONS, REPLIES, SorterPrompt
 
 WORD = re.compile(r"^\w+$")
 DAILY_AT = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
@@ -53,39 +53,11 @@ class AgentConfig(BaseModel):
     interruption_min_duration: float = 0.5
     interruption_min_words: int = 0
     aec_warmup: float = 3.0
-    endpointing_min_delay: float = 0.5
-    preemptive_generation: bool = False
-
-
-class ApprovalConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    confirm: list[str] = Field(default=["Подтверждаю"], min_length=1)
-    deny: list[str] = Field(default=["Отклоняю"], min_length=1)
-    echo_words: int = Field(default=3, ge=1)
-
-    @field_validator("confirm", "deny")
-    @classmethod
-    def single_words(cls, value: list[str]) -> list[str]:
-        for word in value:
-            if not WORD.match(word):
-                raise ValueError(f"ключевое слово — одно слово: {word!r}")
-        return value
-
-    @model_validator(mode="after")
-    def distinct_words(self) -> Self:
-        for confirm in self.confirm:
-            for deny in self.deny:
-                if normalize(confirm) == normalize(deny):
-                    raise ValueError(f"confirm {confirm!r} и deny {deny!r} совпадают")
-        return self
-
-    def vocabulary(self) -> Vocabulary:
-        return Vocabulary(
-            confirm=tuple(self.confirm),
-            deny=tuple(self.deny),
-            echo_words=self.echo_words,
-        )
+    endpointing_min_delay: float = 0.2
+    preemptive_generation: bool = True
+    glue_window_s: float = Field(default=3.0, gt=0)
+    action_silence_s: float = Field(default=0.5, ge=0)
+    event_silence_s: float = Field(default=1.5, ge=0)
 
 
 class DecisionConfig(BaseModel):
@@ -95,47 +67,143 @@ class DecisionConfig(BaseModel):
     url: str = "http://127.0.0.1:8086"
     model: str = "d1-2B"
     timeout_s: float = Field(default=1.5, gt=0)
-    threshold: float = Field(default=0.6, gt=0, le=1)
-    instructions: str = (
-        "Ассистент озвучил запрос подтверждения команды и ждёт ответа "
-        "пользователя. Что пользователь отвечает этой фразой на запрос?"
+    sorter_instructions: str = (
+        "Ассистент разговаривает с пользователем голосом. В состоянии — последняя "
+        "фраза ассистента, ожидающие запросы подтверждения команд и фраза "
+        "пользователя в виде распознанной речи. Что это за фраза пользователя?"
     )
-    verdicts: dict[str, str] = {
-        "approve": "Пользователь разрешает выполнить команду: подтверждает, "
-        "соглашается, разрешает, и больше ничего не просит",
-        "approve_more": "Пользователь разрешает выполнить команду, и во фразе "
-        "есть ещё вопрос, просьба или поручение",
-        "deny": "Пользователь запрещает команду: отклоняет, отказывается, "
-        "просит не выполнять её, и больше ничего не просит",
-        "deny_more": "Пользователь запрещает команду, и во фразе есть ещё "
-        "вопрос, просьба или поручение",
-        "repeat": "Пользователь просит повторить или ещё раз озвучить запрос",
-        "unrelated": "Фраза не отвечает на запрос: вопрос, просьба, новое "
-        "поручение или разговор о другом",
-        "unclear": "Ответ неясен: колебание, оговорка, противоречие или обрывок, "
-        "по которому решение не понять",
+    sorter_criteria: dict[str, str] = {
+        "noise": "шум, обрывок, поддакивание или междометие без смысла: "
+        "«угу», «ага», «yeah», «okay», «ну»",
+        "reply": "осмысленная реплика: ответ, вопрос, просьба или мысль",
     }
+    sorter_timeout_s: float = Field(default=0.3, gt=0)
+    sorter_keep_words: list[str] = Field(
+        default=[
+            "нет",
+            "не",
+            "ни",
+            "стоп",
+            "да",
+            "давай",
+            "хватит",
+            "стой",
+            "подожди",
+            "подождите",
+            "погоди",
+            "замолчи",
+            "замолчите",
+            "достаточно",
+            "тихо",
+        ],
+        min_length=1,
+    )
+    sorter_max_words: int = Field(default=4, ge=1)
+    sorter_min_words: int = Field(default=2, ge=1)
+    sorter_relation_instructions: str = (
+        "Ассистент ждёт ответа на запрос подтверждения команды. Как фраза "
+        "пользователя связана с этим запросом?"
+    )
+    sorter_relation_criteria: dict[str, str] = {
+        "answers": "отвечает на запрос: разрешает или запрещает выполнить команду",
+        "asks": "спрашивает о запросе: что именно будет сделано, зачем, "
+        "просит повторить",
+        "other": "не о запросе: другая тема, просьба или разговор",
+    }
+    sorter_answer_instructions: str = (
+        "Ассистент ждёт ответа на запрос подтверждения команды. Что пользователь "
+        "отвечает этой фразой на запрос?"
+    )
+    sorter_answer_criteria: dict[str, str] = {
+        "approve": "подтверждает: разрешает выполнить команду",
+        "deny": "отклоняет: запрещает выполнять команду",
+    }
+    sorter_target_instructions: str = (
+        "Ассистент ждёт ответа на несколько запросов подтверждения команд, они "
+        "пронумерованы: запрос 1, запрос 2 и далее. К какому запросу относится "
+        "фраза пользователя?"
+    )
+    sorter_target_request: str = "только к запросу {n}"
+    sorter_target_unclear: str = "к нескольким запросам, ни к одному или непонятно"
+    threshold_low: float = Field(default=0.45, gt=0, le=1)
+    threshold_medium: float = Field(default=0.50, gt=0, le=1)
+    threshold_high: float = Field(default=0.50, gt=0, le=1)
+    threshold_deny: float = Field(default=0.45, gt=0, le=1)
+    clarify_limit: int = Field(default=2, ge=0)
 
     @model_validator(mode="after")
     def complete(self) -> Self:
-        if set(self.verdicts) != set(VERDICTS):
-            raise ValueError("decision.verdicts: нужны " + ", ".join(VERDICTS))
+        if set(self.sorter_criteria) != set(KINDS):
+            raise ValueError("decision.sorter_criteria: нужны " + ", ".join(KINDS))
+        if set(self.sorter_relation_criteria) != set(RELATIONS):
+            raise ValueError(
+                "decision.sorter_relation_criteria: нужны " + ", ".join(RELATIONS)
+            )
+        if set(self.sorter_answer_criteria) != set(REPLIES):
+            raise ValueError(
+                "decision.sorter_answer_criteria: нужны " + ", ".join(REPLIES)
+            )
         texts = {
-            "instructions": self.instructions,
             "url": self.url,
             "model": self.model,
-            **{f"verdicts.{name}": text for name, text in self.verdicts.items()},
+            "sorter_instructions": self.sorter_instructions,
+            **{
+                f"sorter_criteria.{name}": text
+                for name, text in self.sorter_criteria.items()
+            },
+            "sorter_relation_instructions": self.sorter_relation_instructions,
+            **{
+                f"sorter_relation_criteria.{name}": text
+                for name, text in self.sorter_relation_criteria.items()
+            },
+            "sorter_answer_instructions": self.sorter_answer_instructions,
+            **{
+                f"sorter_answer_criteria.{name}": text
+                for name, text in self.sorter_answer_criteria.items()
+            },
+            "sorter_target_instructions": self.sorter_target_instructions,
+            "sorter_target_request": self.sorter_target_request,
+            "sorter_target_unclear": self.sorter_target_unclear,
         }
         for name, text in texts.items():
             if not text.strip():
                 raise ValueError(f"decision.{name}: пустой текст")
+        try:
+            self.sorter_target_request.format(n=1)
+        except (IndexError, KeyError, ValueError):
+            raise ValueError("decision.sorter_target_request: нужен {n}") from None
+        if "{n}" not in self.sorter_target_request:
+            raise ValueError("decision.sorter_target_request: нужен {n}")
+        for word in self.sorter_keep_words:
+            if not WORD.match(word):
+                raise ValueError(f"decision.sorter_keep_words: одно слово: {word!r}")
         return self
 
-    def prompt(self) -> Prompt:
-        return Prompt(
-            instructions=self.instructions,
-            verdicts=dict(self.verdicts),
-            threshold=self.threshold,
+    def sorter_prompt(self) -> SorterPrompt:
+        return SorterPrompt(
+            instructions=self.sorter_instructions,
+            criteria=dict(self.sorter_criteria),
+            keep_words=frozenset(
+                word.lower().replace("ё", "е") for word in self.sorter_keep_words
+            ),
+            max_words=self.sorter_max_words,
+            min_words=self.sorter_min_words,
+            relation_instructions=self.sorter_relation_instructions,
+            relation_criteria=dict(self.sorter_relation_criteria),
+            answer_instructions=self.sorter_answer_instructions,
+            answer_criteria=dict(self.sorter_answer_criteria),
+            target_instructions=self.sorter_target_instructions,
+            target_request=self.sorter_target_request,
+            target_unclear=self.sorter_target_unclear,
+        )
+
+    def rules(self) -> Rules:
+        return Rules(
+            low=self.threshold_low,
+            medium=self.threshold_medium,
+            high=self.threshold_high,
+            deny=self.threshold_deny,
+            clarify_limit=self.clarify_limit,
         )
 
 
@@ -196,11 +264,19 @@ class DelegationConfig(BaseModel):
 
     path: Path = Field(default=Path("~/.voca/tasks.sqlite3"), validate_default=True)
     run_timeout: float = Field(default=900.0, gt=0)
+    approval_timeout_s: float = Field(default=300.0, gt=0)
+    approval_reminder_s: float = Field(default=60.0, ge=0)
 
     @field_validator("path")
     @classmethod
     def expand_path(cls, value: Path) -> Path:
         return value.expanduser()
+
+    @model_validator(mode="after")
+    def reminder_before_timeout(self) -> Self:
+        if self.approval_reminder_s >= self.approval_timeout_s:
+            raise ValueError("delegation: approval_reminder_s < approval_timeout_s")
+        return self
 
 
 class ConfigFile(TomlConfigSettingsSource):
@@ -244,7 +320,6 @@ class Settings(BaseSettings):
     session: SessionConfig = Field(default_factory=SessionConfig)
     compression: CompressionConfig = Field(default_factory=CompressionConfig)
     delegation: DelegationConfig = Field(default_factory=DelegationConfig)
-    approval: ApprovalConfig = Field(default_factory=ApprovalConfig)
     decision: DecisionConfig = Field(default_factory=DecisionConfig)
 
     @field_validator("instructions_dir")

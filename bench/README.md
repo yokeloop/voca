@@ -18,21 +18,28 @@ Scripts:
   and the `VocaAgent` tools) sent to a fake server on loopback:
   `thinking_budget_tokens`, `tools` with `delegate`, no `chat_template_kwargs`;
   no llama-server needed.
-- `decision_ru.py` (VOCA-36) — the decision model of voice approval: the
-  twenty phrases of `corpus/decision.json` against `scripts/decision.sh`
-  (`scripts/up.sh decision`) through the agent's `make_decider`, one warm-up
-  call and `--rounds` (3) rounds; prints `PASS|FAIL id verdict picked
-  confidence ms` and `decision N/20 p50 … ms p95 … ms`, writes
-  `.local/bench/decision/decision.json`.
+- `decision_ru.py` (VOCA-36, VOCA-44) — the E10 sorter on the corpus
+  `corpus/decision.json` (at least 100 phrases with 0, 1 and 2 requests; the
+  question texts live in the corpus) against `scripts/decision.sh`
+  (`scripts/up.sh decision`): the forms `--form a|b|cd|danger|all`, one
+  warm-up call per form and `--rounds` (3) rounds; `--load` — the same while
+  the main model generates in the background (`scripts/up.sh llm`,
+  `--llm-url`); prints `PASS|FAIL id verdict picked confidence ms`, the
+  summary `decision <form> N/M p50 … ms p95 … ms (… false approve …,
+  boundary …)` and `thresholds`; form b also prints `after=` — the outcome
+  after the agent's own code (`drop` with the default keep words, the deny
+  guard of `approval_judge.py`) — and `after b N/M, false deny after guard K`;
+  the summary has `false deny` next to `false approve` for forms a and b;
+  writes `.local/bench/decision/decision.json` and `decision-load.json`.
 - `llm_ru_tools.py` (VOCA-4) — G3: `dialogs`, `delegate`, `all` (the default),
   `dialogs-thinking` (the twenty dialogs with thinking on, VOCA-7),
   `delegate-thinking` (the ten scenarios with thinking on);
   `tools` (VOCA-36) — the ten cases of `corpus/llm_tools.json` (`c10` — the
   stand's correction of a running task, expected `steer_task`): a context of
   messages and delegation facts, then one user turn; the first tool call must be
-  the expected one (`delegate`, `steer_task`, `cancel_task`, `repeat_approval`,
+  the expected one (`delegate`, `steer_task`, `cancel_task`, `open_approval`,
   `list_tasks`), and a `none` case passes with no call (only
-  `list_tasks` in `c05`, `c08`, `c09`) and a Russian answer without a claimed action
+  `list_tasks` or `list_notifications` in `c05`, `c08`, and `list_tasks` in `c09`) and a Russian answer without a claimed action
   or the announcement text. The tools and instructions come from `VocaAgent`
   with `instructions.example`, the model from the agent's `make_llm`; the
   result goes to `tools.json`.

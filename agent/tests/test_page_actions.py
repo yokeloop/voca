@@ -3,7 +3,7 @@ import json
 from typing import Any
 
 from voca.clientio.actions import APPROVE, CANCEL, dispatch
-from voca.conversation.approval import Choice
+from voca.delegation.model import Choice
 
 
 class Handlers:

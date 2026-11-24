@@ -190,7 +190,6 @@ function fillTask(row: HTMLLIElement, card: TaskCard): void {
     parts.push(
       paragraph(`Hermes просит: ${card.approval.description ?? ""}`),
       preformatted(card.approval.command ?? ""),
-      paragraph(card.approval.hint),
     );
   }
   const buttons: HTMLButtonElement[] = [];
