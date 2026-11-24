@@ -200,6 +200,12 @@ class SessionStore:
             for kind, item_id, at, call_id, name, text, data_json in reversed(rows)
         ]
 
+    def last_id(self) -> int:
+        (last,) = self.db.execute(
+            "SELECT MAX(id) FROM messages WHERE kind IN ('user', 'assistant')"
+        ).fetchone()
+        return int(last or 0)
+
     def after(self, message_id: int, limit: int) -> list[tuple[int, ArchiveRow]]:
         rows = self.db.execute(
             "SELECT id, kind, item_id, at, call_id, name, text, data_json"

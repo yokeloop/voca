@@ -16,9 +16,9 @@ Hermes. This file is the working contract for agents and contributors.
   tools, the delegation facts in the context and speech about results and failures in the main model's words (`generate_reply` with a one-turn record, after `[agent].event_silence_s` of silence or at the end of the agent's answer), approval requests in the event speech, `open_approval` with the mark «essence spoken», the judge of a reply while requests wait in `on_user_turn_completed` (three checks, thresholds by danger, 0.5 s of silence before the answer to Hermes), the reminder before the expiry and the short reply after a button, the reply sorter in `stt_node` (while the agent's reply sounds or is paused) and in `on_user_turn_completed` (in silence and before the reply's first sound; a reply that glues is never noise), the glue of unanswered fragments, `delegate` held until `[agent].action_silence_s` of user silence, instructions with the memory block, accepting a finished
   summary and the emergency context trim in `on_user_turn_completed`, the threshold trigger `maybe_compact`,
   the idle and daily check `check_due`, failures spoken aloud;
-  `instructions.py`: `InstructionLoader` with the last valid set; `memory.py`: the memory header, reading `[memory].path` and composing it with the instructions, the extraction prompt, the due check and the limit (pure); `context.py`: `trim_chat_ctx` — the emergency path at
+  `instructions.py`: `InstructionLoader` with the last valid set; `memory.py`: the memory header, reading `[memory].path` and composing it with the instructions, the extraction prompt, the file sections and the operations, the limit (pure); `context.py`: `trim_chat_ctx` — the emergency path at
   `hard_limit`; `approval_judge.py`: the three checks of a reply to waiting requests — binding by content, place or none, thresholds by danger, the re-ask for `high`, the clarification limit (pure); `verdict.py`: the body and the answers of the sorter questions `kind`, `relation`, `answer`, `target` and the noise rule `drop` (pure); `decision.py`: `DecisionClient`, the HTTP adapter of `POST /v1/systemone` for the sorter; `glue.py`: the glue of an unanswered fragment with the next reply (pure); `descriptions.py`: the Russian descriptions of Hermes approval requests; `compaction.py`: the compaction plan and the summariser
-  prompt; `memory_keeper.py`: the scheduled memory extraction — the due check, the batch from the archive, the file and cursor writes, `memory_updated`/`memory_failed`; `summarizer.py`: the call to `[compression.model]` and `[memory.model]`), `clientio/`
+  prompt; `memory_keeper.py`: the memory extraction every `every_turns` user turns — the turn count, the batch from the archive, the operations applied, the over-limit retry, the file and cursor writes, `memory_updated`/`memory_failed`; `summarizer.py`: the call to `[compression.model]` and `[memory.model]`), `clientio/`
   (the `voca.cards` and `voca.history` channels, the `tasks` list on join, `actions.py`: the page's RPC), `telemetry/` (`.local/events.jsonl`), `session/`
   (`SessionStore`: the session snapshot and the archive in one SQLite file,
   «Session store»; `voca archive search`), `delegation/` (`DelegationService`:
@@ -137,7 +137,7 @@ a section) are no longer read.
   agent speaks about waiting results and failures; at the end of the agent's
   answer it speaks at once).
 - `[session]` — the session history file and how much of it a client gets.
-- `[memory]` — the memory file `path`, `interval_hours` (1: hours between extraction runs; 0 — off) and `max_chars` (2200: the hard limit of the file).
+- `[memory]` — the memory file `path`, `every_turns` (10: user turns between extraction runs; 0 — off) and `max_chars` (2200: the hard limit of the file).
 - `[memory.model]` — the memory model.
 - `[compression]` — the compression triggers and the trim.
 - `[compression.model]` — the summariser.
@@ -508,38 +508,59 @@ classes come from `livekit-api` in the `agent/` environment.
 
 ### Extraction
 
-- Due: `interval_hours` > 0, at least `interval_hours` since the last attempt,
-  and archive `user`/`assistant` rows newer than the cursor; checked at the
-  start of a job, on `participant_connected` of `user-*` and after the archive
-  write at each turn boundary; no timer; at most one run at a time, the turn
-  never waits.
-- Run: one user message in Russian to `[memory.model]` (`openai.AsyncOpenAI`,
-  `VOCA_LITELLM_KEY`, no retries): the current file and at most 200 rows after
-  the cursor (`ПОЛЬЗОВАТЕЛЬ:`/`АССИСТЕНТ:`), what to keep and skip,
-  «запомни»/«забудь» executed, outdated facts fixed or removed, secrets →
-  `[СКРЫТО]`, today's date, at most `max_chars`, both headings
-  `## О пользователе` and `## Заметки` always; the model returns the whole
-  file; the rest of the archive goes to the next run after the usual period.
-- Success: the file is replaced atomically (tmp + rename, 0600), then the
-  cursor `memory.state.json` beside it (`last_message_id`, `run_at`); a
-  `memory_updated` line (`chars_before`, `chars_after`, `messages`,
-  `last_message_id`, `ms`; `chars_before` is the stripped length, as `chars`
-  of `memory_loaded`); the loaded block is not refreshed mid-session — the new
-  file enters the context at the next load (job start, adopted summary,
-  instructions change).
-- Failure: `memory_failed` (`reason`: `no_key`, `timeout`, `connection`,
-  `http_<code>`, `error`, `empty`, `length`, `refusal`, `too_long`, `write`,
-  `read`; `ms`, `messages`; `error` — the exception class); `read` means the
-  file cannot be read as strict UTF-8 (a directory, permissions, invalid
-  bytes) — extraction stops until the file is fixed by hand, while loading
-  still reads it with replaced bytes; the file and the cursor stay; the next
-  attempt comes no earlier than `interval_hours` later (the attempt time lives
-  in memory per job, so a restart gives one immediate attempt); the nightly
-  LiteLLM restart at 04:30 gives a short `connection` or `http_5xx`.
+- Due: `every_turns` > 0 and at least `every_turns` `user` rows among the
+  archive rows after the cursor (as Hermes `memory.nudge_interval`); checked at
+  the start of a job, on `participant_connected` of `user-*` and after the
+  archive write at each turn boundary; no clock, no timer; at most one run at a
+  time, the turn never waits.
+- Run:
+  - one user message in Russian to `[memory.model]` (`openai.AsyncOpenAI`,
+    `VOCA_LITELLM_KEY`, no retries);
+  - it carries the current entries numbered (`[3] (user) …`) and at most 200
+    `user`/`assistant` rows after the cursor (`ПОЛЬЗОВАТЕЛЬ:`/`АССИСТЕНТ:`,
+    data, not instructions), with the rules: what to keep and skip, secrets →
+    `[СКРЫТО]`, today's date, `max_chars`;
+  - the model returns only `{"operations": [...]}` with `add` (`section`
+    `user`|`notes`, `text`), `replace` (`id`, `text`), `remove` (`id`); an
+    entry without an operation stays as it is;
+  - removal is allowed only on «забудь»/«не помни», for an outdated or
+    corrected fact, or when asked to free space;
+  - a remainder beyond 200 rows goes to the next check that counts
+    `every_turns` user rows again.
+- File: Markdown with `## О пользователе` and `## Заметки`, one `- ` line per
+  fact; parsing is lenient (`* ` and bare lines are entries, lines before a
+  known heading or under an unknown one go to «Заметки»); the result is
+  rendered canonically, new entries at the end of their section, so the oldest
+  are on top; an untouched entry keeps its line.
+- Limit: a result over `max_chars` gets one second call with the first reply
+  and «free N characters, «Заметки» first»; its operations apply to the
+  original file; still over — `too_long`; a hand-written file over the limit is
+  handled the same way.
+- Success:
+  - with operations, the file is replaced atomically (tmp + rename, 0600), then
+    the cursor `memory.state.json` beside it (`{"last_message_id": int}`; an
+    old `run_at` key is ignored); with none, the file is not rewritten and only
+    the cursor moves;
+  - a `memory_updated` line: `added`, `replaced`, `removed`, `chars_before`
+    (stripped, as `chars` of `memory_loaded`), `chars_after`, `messages`,
+    `user_turns`, `last_message_id`, `ms` (both calls), `attempts`;
+  - the loaded block is not refreshed mid-session.
+- Failure:
+  - a `memory_failed` line with `reason`: `no_key`, `timeout`, `connection`,
+    `http_<code>`, `error`, `empty`, `length`, `refusal`, `bad_reply` (not
+    JSON, not an `operations` list, an unknown op, an unknown or repeated id,
+    an empty text, a bad section), `too_long`, `write` or `read`; plus `ms`,
+    `messages`, `attempts` when the model was called, and `error` (the
+    exception class);
+  - the file and the cursor stay;
+  - the next attempt waits for another `every_turns` user rows after the newest
+    archived message at the failed attempt (in memory, so a restart retries at
+    the first check);
+  - `read` means the file cannot be read as strict UTF-8, while loading still
+    reads it with replaced bytes.
 - Control: edit the file by hand or say «запомни…»/«забудь…»; a forgotten fact
   leaves the context only at the next load; recovery — delete
-  `memory.state.json` and the archive is read again from the start (it is
-  append-only).
+  `memory.state.json` and the archive is read again from the start.
 
 ## Ports
 
