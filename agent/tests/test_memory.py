@@ -7,13 +7,22 @@ import pytest
 
 from voca.conversation.memory import (
     HEADER,
+    Entry,
+    Op,
+    apply_ops,
     build_extract_prompt,
+    build_retry_prompt,
     compose,
-    due,
     fits,
+    parse_file,
+    parse_ops,
     read_memory,
+    render_entries,
+    render_file,
 )
 from voca.session.model import ArchiveRow
+
+TEXT = "## О пользователе\n- Живёт в Казани\n- Собаку зовут Бублик\n\n## Заметки\n- Любит чай"
 
 ROWS = [
     ArchiveRow("user", "u1", 0, None, None, "Моего кота зовут Ёжик", {}),
@@ -71,43 +80,127 @@ def test_read_memory_unreadable_path_warns(
     )
 
 
-def test_due() -> None:
-    assert due(0, None, 1) is True
-    assert due(10**6, None, 0) is False
-    assert due(10**6, 0, 0) is False
-    assert due(3599, 0, 1) is False
-    assert due(3600, 0, 1) is True
-    assert due(900, 0, 0.25) is True
-
-
 def test_fits() -> None:
     assert fits("а" * 2200, 2200) is True
     assert fits("а" * 2201, 2200) is False
 
 
+def test_parse_render_round_trip() -> None:
+    entries = parse_file(TEXT)
+    assert render_file(entries) == TEXT
+    assert [e.id for e in entries] == [1, 2, 3]
+    assert [e.section for e in entries] == ["user", "user", "notes"]
+
+
+def test_parse_hand_written() -> None:
+    entries = parse_file(
+        "Без заголовка\n# Заметки\n* звёздочкой\n\n## Прочее\n  - под чужим   \n"
+        "## О пользователе\n-  с пробелами\nпросто строка\n-\n"
+    )
+    assert entries == [
+        Entry(1, "user", "с пробелами"),
+        Entry(2, "user", "просто строка"),
+        Entry(3, "user", "-"),
+        Entry(4, "notes", "Без заголовка"),
+        Entry(5, "notes", "звёздочкой"),
+        Entry(6, "notes", "под чужим"),
+    ]
+
+
+def test_render_empty() -> None:
+    assert render_file([]) == "## О пользователе\n\n## Заметки"
+    assert render_entries([]) == "(файл пуст)"
+
+
+def test_parse_ops_valid() -> None:
+    entries = parse_file(TEXT)
+    body = (
+        '```json\n{"operations": [{"op": "add", "section": "notes", "text": "a\\nb"}, '
+        '{"op": "replace", "id": 1, "text": "Живёт в Москве"}, '
+        '{"op": "remove", "id": 2}], "note": 1}\n```'
+    )
+    assert parse_ops(body, entries) == [
+        Op("add", section="notes", text="a b"),
+        Op("replace", id=1, text="Живёт в Москве"),
+        Op("remove", id=2),
+    ]
+    assert parse_ops('{"operations": []}', entries) == []
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "не json",
+        "[]",
+        '{"ops": []}',
+        '{"operations": {}}',
+        '{"operations": ["add"]}',
+        '{"operations": [{"op": "edit", "id": 1}]}',
+        '{"operations": [{"op": "remove", "id": 9}]}',
+        '{"operations": [{"op": "remove", "id": true}]}',
+        '{"operations": [{"op": "remove", "id": "1"}]}',
+        '{"operations": [{"op": "remove", "id": 1}, {"op": "replace", "id": 1, "text": "x"}]}',
+        '{"operations": [{"op": "add", "section": "user", "text": "  \\n "}]}',
+        '{"operations": [{"op": "add", "section": "misc", "text": "x"}]}',
+        '{"operations": [{"op": "replace", "id": 1}]}',
+    ],
+)
+def test_parse_ops_bad(body: str) -> None:
+    assert parse_ops(body, parse_file(TEXT)) is None
+
+
+def test_apply_ops() -> None:
+    entries = parse_file(TEXT)
+    text = render_file(
+        apply_ops(
+            entries,
+            [
+                Op("add", section="user", text="Есть кот"),
+                Op("replace", id=3, text="Любит кофе"),
+                Op("remove", id=2),
+            ],
+        )
+    )
+    assert (
+        text
+        == "## О пользователе\n- Живёт в Казани\n- Есть кот\n\n## Заметки\n- Любит кофе"
+    )
+    assert text.splitlines()[1] == TEXT.splitlines()[1]
+
+
 def test_extract_prompt() -> None:
+    entries = parse_file("## О пользователе\n- живёт в Казани\n\n## Заметки\n")
     prompt = build_extract_prompt(
-        "## О пользователе\n- живёт в Казани\n\n## Заметки\n",
-        ROWS,
-        today=date(2026, 11, 24),
-        max_chars=2200,
+        entries, ROWS, today=date(2026, 11, 24), max_chars=2200
     )
     for part in (
+        "[1] (user) живёт в Казани",
         "ПОЛЬЗОВАТЕЛЬ: Моего кота зовут Ёжик",
         "АССИСТЕНТ: Запомнил.",
-        "- живёт в Казани",
         "Сегодня 2026-11-24.",
         "не длиннее 2200 символов",
-        "«## О пользователе» и «## Заметки»",
+        f"сейчас в нём {len(render_file(entries))}",
+        '{"op": "remove", "id": N}',
+        '{"operations": []}',
         "[СКРЫТО]",
         "«забудь…»",
+        "Никогда не убирай то, что по-прежнему верно",
     ):
         assert part in prompt
     assert prompt.count("АССИСТЕНТ:") == 1
 
 
 def test_extract_prompt_empty_file() -> None:
-    prompt = build_extract_prompt(
-        "  \n", ROWS, today=date(2026, 11, 24), max_chars=2200
-    )
-    assert "ТЕКУЩИЙ ФАЙЛ:\n(файл пуст)" in prompt
+    prompt = build_extract_prompt([], ROWS, today=date(2026, 11, 24), max_chars=2200)
+    assert "ТЕКУЩИЕ ЗАПИСИ:\n(файл пуст)" in prompt
+
+
+def test_retry_prompt() -> None:
+    prompt = build_retry_prompt("P", "R", 37)
+    assert prompt.startswith("P\n\nТВОЙ ПРОШЛЫЙ ОТВЕТ:\nR\n\n")
+    for part in (
+        "длиннее предела на 37 символов",
+        "не меньше 37 символов",
+        "сначала убирай из «Заметок»",
+    ):
+        assert part in prompt
