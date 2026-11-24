@@ -1,10 +1,25 @@
 import hashlib
 import logging
+from datetime import date
 from pathlib import Path
 
 import pytest
 
-from voca.conversation.memory import HEADER, compose, read_memory
+from voca.conversation.memory import (
+    HEADER,
+    build_extract_prompt,
+    compose,
+    due,
+    fits,
+    read_memory,
+)
+from voca.session.model import ArchiveRow
+
+ROWS = [
+    ArchiveRow("user", "u1", 0, None, None, "Моего кота зовут Ёжик", {}),
+    ArchiveRow("assistant", "a1", 1, None, None, "Запомнил.", {"interrupted": False}),
+    ArchiveRow("assistant", "a2", 2, None, None, "  ", {"interrupted": True}),
+]
 
 
 def test_compose_empty_memory_keeps_instructions() -> None:
@@ -54,3 +69,45 @@ def test_read_memory_unreadable_path_warns(
         record.name == "voca.memory" and record.levelno == logging.WARNING
         for record in caplog.records
     )
+
+
+def test_due() -> None:
+    assert due(0, None, 1) is True
+    assert due(10**6, None, 0) is False
+    assert due(10**6, 0, 0) is False
+    assert due(3599, 0, 1) is False
+    assert due(3600, 0, 1) is True
+    assert due(900, 0, 0.25) is True
+
+
+def test_fits() -> None:
+    assert fits("а" * 2200, 2200) is True
+    assert fits("а" * 2201, 2200) is False
+
+
+def test_extract_prompt() -> None:
+    prompt = build_extract_prompt(
+        "## О пользователе\n- живёт в Казани\n\n## Заметки\n",
+        ROWS,
+        today=date(2026, 11, 24),
+        max_chars=2200,
+    )
+    for part in (
+        "ПОЛЬЗОВАТЕЛЬ: Моего кота зовут Ёжик",
+        "АССИСТЕНТ: Запомнил.",
+        "- живёт в Казани",
+        "Сегодня 2026-11-24.",
+        "не длиннее 2200 символов",
+        "«## О пользователе» и «## Заметки»",
+        "[СКРЫТО]",
+        "«забудь…»",
+    ):
+        assert part in prompt
+    assert prompt.count("АССИСТЕНТ:") == 1
+
+
+def test_extract_prompt_empty_file() -> None:
+    prompt = build_extract_prompt(
+        "  \n", ROWS, today=date(2026, 11, 24), max_chars=2200
+    )
+    assert "ТЕКУЩИЙ ФАЙЛ:\n(файл пуст)" in prompt

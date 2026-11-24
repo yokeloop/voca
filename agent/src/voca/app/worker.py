@@ -23,6 +23,7 @@ from voca.app.wiring import (
     check_context,
     compaction_limits,
     make_decider,
+    make_memory_model,
     make_summarizer,
 )
 from voca.clientio.actions import bind_actions
@@ -32,6 +33,7 @@ from voca.clientio.metrics import bind_metrics
 from voca.config import Settings, config_path
 from voca.conversation.agent import VocaAgent, records
 from voca.conversation.instructions import InstructionError, InstructionLoader
+from voca.conversation.memory_keeper import MemoryKeeper
 from voca.delegation.hermes import HermesBackend
 from voca.delegation.service import DelegationService
 from voca.delegation.sqlite import SqliteTaskRepository, TaskStoreError
@@ -124,6 +126,7 @@ async def entrypoint(ctx: JobContext) -> None:
     history.bind(ctx.room)
     bind_metrics(ctx.room, log.write)
     summarizer = make_summarizer(settings)
+    memory_model = make_memory_model(settings)
     decider = make_decider(settings)
     agent = VocaAgent(
         loader=loader,
@@ -153,6 +156,9 @@ async def entrypoint(ctx: JobContext) -> None:
         delegation.on_change = agent.on_task_change
         bind_actions(ctx.room, agent.approve_from_page, agent.cancel_from_page)
     recorder = SessionRecorder(store, current.id)
+    keeper = MemoryKeeper(
+        store=store, log=log, config=settings.memory, model=memory_model
+    )
 
     def save() -> None:
         try:
@@ -185,7 +191,11 @@ async def entrypoint(ctx: JobContext) -> None:
 
     agent.on_compacted = on_compacted
 
-    tracker = TurnTracker(log, on_turn=save)
+    def on_turn() -> None:
+        save()
+        keeper.check()
+
+    tracker = TurnTracker(log, on_turn=on_turn)
     executor = ThreadPoolExecutor(max_workers=1)
     session = build_session(
         settings,
@@ -229,7 +239,9 @@ async def entrypoint(ctx: JobContext) -> None:
         await agent.stop_delegation()
         await session.aclose()
         agent.cancel_compaction()
+        keeper.cancel()
         await summarizer.close()
+        await memory_model.close()
         save()
         if backend is not None:
             await backend.aclose()
@@ -264,6 +276,7 @@ async def entrypoint(ctx: JobContext) -> None:
             )
             agent.set_present(True)
             agent.check_due()
+            keeper.check()
 
     def on_left(participant: rtc.RemoteParticipant) -> None:
         if not participant.identity.startswith("user-"):
@@ -287,6 +300,7 @@ async def entrypoint(ctx: JobContext) -> None:
     await agent.enqueue_undelivered()
     agent.start_recover()
     agent.check_due()
+    keeper.check()
 
 
 def server_options(settings: Settings) -> WorkerOptions:

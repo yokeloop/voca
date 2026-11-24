@@ -72,9 +72,23 @@ timeout_s = 60
 
 [memory]
 # Facts about the user, appended to the instructions after the header «[ПАМЯТЬ — ТОЛЬКО СПРАВКА]».
-# A missing or empty file means no memory. Read whole, no length limit.
+# A missing or empty file means no memory. Loading reads it whole; the length limit is on extraction (max_chars).
 # Read at job start, after an adopted summary and when the instructions change.
 path = "~/.voca/memory.md"
+# Hours between memory extraction runs; 0 turns extraction off (loading stays).
+# Checked at the start of a job, when a page joins and after each reply is archived, no timer.
+interval_hours = 1
+# Hard limit of the memory file in characters; a longer model reply is rejected (too_long).
+max_chars = 2200
+
+[memory.model]
+# The key is not written here: VOCA_LITELLM_KEY in .env only (the same key as the summariser).
+# LiteLLM on the rpi, the route works only in the tailnet.
+url = "https://litellm.priney.com/v1"
+# Model name in LiteLLM.
+model = "glm-5.3-flash"
+# Request timeout in seconds.
+timeout_s = 60
 
 [delegation]
 # Hermes URL and key are not written here: VOCA_HERMES_URL and VOCA_HERMES_KEY in .env only.

@@ -22,6 +22,7 @@ from voca.app.wiring import (
     compaction_limits,
     make_decider,
     make_llm,
+    make_memory_model,
     make_summarizer,
     make_tts,
 )
@@ -261,6 +262,23 @@ def test_make_summarizer(monkeypatch: pytest.MonkeyPatch) -> None:
     assert summarizer.client.max_retries == 0
     assert summarizer.client.timeout == 60
     assert summarizer.model == "glm-5.3-flash"
+    asyncio.run(summarizer.close())
+
+
+def test_make_memory_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert make_memory_model(Settings()).ready is False
+    monkeypatch.setenv("VOCA_LITELLM_KEY", "abc")
+    monkeypatch.setenv("VOCA_MEMORY__MODEL__MODEL", "m-x")
+    model = make_memory_model(Settings())
+    assert model.ready is True
+    assert model.client is not None
+    assert str(model.client.base_url) == "https://litellm.priney.com/v1/"
+    assert model.client.max_retries == 0
+    assert model.client.timeout == 60
+    assert model.model == "m-x"
+    summarizer = make_summarizer(Settings())
+    assert summarizer.model == "glm-5.3-flash"
+    asyncio.run(model.close())
     asyncio.run(summarizer.close())
 
 
