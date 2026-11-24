@@ -70,6 +70,12 @@ model = "glm-5.3-flash"
 # Request timeout in seconds.
 timeout_s = 60
 
+[memory]
+# Facts about the user, appended to the instructions after the header «[ПАМЯТЬ — ТОЛЬКО СПРАВКА]».
+# A missing or empty file means no memory. Read whole, no length limit.
+# Read at job start, after an adopted summary and when the instructions change.
+path = "~/.voca/memory.md"
+
 [delegation]
 # Hermes URL and key are not written here: VOCA_HERMES_URL and VOCA_HERMES_KEY in .env only.
 # Tasks given to Hermes (voca bench delegate, later the agent's delegate tool).
