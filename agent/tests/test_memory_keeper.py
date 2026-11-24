@@ -314,8 +314,12 @@ def test_one_run_at_a_time_and_cancel(tmp_path: Path) -> None:
         clock.now = 7200
         assert keeper.check() is False
         assert len(model.prompts) == 1
+        task = keeper.task
+        assert task is not None
         keeper.cancel()
-        await asyncio.sleep(0)
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert task.cancelled()
         assert memory_rows(events) == []
         assert not (tmp_path / "memory.md").exists()
         assert not (tmp_path / "memory.state.json").exists()
