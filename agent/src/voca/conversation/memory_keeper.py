@@ -101,9 +101,10 @@ class MemoryKeeper:
             return False
         batch = probe if since == last_id else self.store.after(last_id, BATCH)
         user_turns = sum(1 for _, row in batch if row.kind == "user")
+        seen = self.store.last_id()
         if not self.model.ready:
             self.log.write("memory_failed", reason="no_key", ms=0, messages=len(batch))
-            self.failed_at = batch[-1][0]
+            self.failed_at = seen
             return False
         try:
             current = read_current(self.config.path)
@@ -115,7 +116,7 @@ class MemoryKeeper:
                 messages=len(batch),
                 error=type(error).__name__,
             )
-            self.failed_at = batch[-1][0]
+            self.failed_at = seen
             return False
         entries = parse_file(current)
         prompt = build_extract_prompt(
@@ -125,7 +126,7 @@ class MemoryKeeper:
             max_chars=self.config.max_chars,
         )
         self.task = asyncio.create_task(
-            self._run(current, entries, batch, user_turns, prompt)
+            self._run(current, entries, batch, user_turns, seen, prompt)
         )
         return True
 
@@ -145,6 +146,7 @@ class MemoryKeeper:
         entries: list[Entry],
         batch: list[tuple[int, ArchiveRow]],
         user_turns: int,
+        seen: int,
         prompt: str,
     ) -> None:
         result, named = await self._ask(prompt)
@@ -158,7 +160,7 @@ class MemoryKeeper:
                 attempts=attempts,
                 **named,
             )
-            self.failed_at = batch[-1][0]
+            self.failed_at = seen
             return
         ms = result.ms
         ops: list[Op] | None = parse_ops(result.body, entries)
@@ -170,7 +172,7 @@ class MemoryKeeper:
                 messages=len(batch),
                 attempts=attempts,
             )
-            self.failed_at = batch[-1][0]
+            self.failed_at = seen
             return
         text = render_file(apply_ops(entries, ops))
         if not fits(text, self.config.max_chars):
@@ -189,7 +191,7 @@ class MemoryKeeper:
                     attempts=attempts,
                     **named,
                 )
-                self.failed_at = batch[-1][0]
+                self.failed_at = seen
                 return
             ops = parse_ops(retry.body, entries)
             if ops is None:
@@ -200,7 +202,7 @@ class MemoryKeeper:
                     messages=len(batch),
                     attempts=attempts,
                 )
-                self.failed_at = batch[-1][0]
+                self.failed_at = seen
                 return
             text = render_file(apply_ops(entries, ops))
             if not fits(text, self.config.max_chars):
@@ -211,7 +213,7 @@ class MemoryKeeper:
                     messages=len(batch),
                     attempts=attempts,
                 )
-                self.failed_at = batch[-1][0]
+                self.failed_at = seen
                 return
         if ops:
             try:
@@ -225,7 +227,7 @@ class MemoryKeeper:
                     attempts=attempts,
                     error=type(error).__name__,
                 )
-                self.failed_at = batch[-1][0]
+                self.failed_at = seen
                 return
         last_message_id = batch[-1][0]
         try:
@@ -239,7 +241,7 @@ class MemoryKeeper:
                 attempts=attempts,
                 error=type(error).__name__,
             )
-            self.failed_at = batch[-1][0]
+            self.failed_at = seen
             return
         self.failed_at = None
         chars_before = len(current.strip())

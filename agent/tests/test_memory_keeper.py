@@ -434,6 +434,23 @@ def test_backoff_after_failure(tmp_path: Path) -> None:
     asyncio.run(main())
 
 
+@pytest.mark.parametrize("ready", [False, True])
+def test_backoff_past_full_batch(tmp_path: Path, ready: bool) -> None:
+    async def main() -> None:
+        model = FakeSummarizer(Failure("connection", 1), ready=ready)
+        keeper, store, events = make_keeper(tmp_path, model, FakeClock(), every_turns=2)
+        fill(store, 250)
+        for _ in range(5):
+            await run(keeper)
+        written = memory_rows(events)
+        assert [row["kind"] for row in written] == ["memory_failed"]
+        assert written[0]["reason"] == ("connection" if ready else "no_key")
+        assert written[0]["messages"] == 200
+        assert len(model.prompts) == (1 if ready else 0)
+
+    asyncio.run(main())
+
+
 def test_backoff_reset_on_restart(tmp_path: Path) -> None:
     async def main() -> None:
         model = FakeSummarizer(Failure("connection", 1))

@@ -553,8 +553,9 @@ classes come from `livekit-api` in the `agent/` environment.
     `messages`, `attempts` when the model was called, and `error` (the
     exception class);
   - the file and the cursor stay;
-  - the next attempt waits for another `every_turns` user rows after the failed
-    batch (in memory, so a restart retries at the first check);
+  - the next attempt waits for another `every_turns` user rows after the newest
+    archived message at the failed attempt (in memory, so a restart retries at
+    the first check);
   - `read` means the file cannot be read as strict UTF-8, while loading still
     reads it with replaced bytes.
 - Control: edit the file by hand or say «запомни…»/«забудь…»; a forgotten fact

@@ -386,3 +386,18 @@ def test_after_reads_user_and_assistant_by_id(tmp_path: Path) -> None:
     assert store.after(rows[1][0], 10) == rows[2:]
     assert store.after(rows[-1][0], 10) == []
     store.close()
+
+
+def test_last_id_is_newest_user_or_assistant(tmp_path: Path) -> None:
+    path = tmp_path / "s.sqlite3"
+    store, rec = recorder(path)
+    assert store.last_id() == 0
+    for row in (
+        ArchiveRow("user", "u1", 1.0, None, None, "вопрос", {}),
+        ArchiveRow("assistant", "a1", 2.0, None, None, "ответ", {}),
+        ArchiveRow("tool_call", "t1", 3.0, "c1", "delegate", "{}", {}),
+    ):
+        rec.add_row(row)
+    rec.flush({"items": []})
+    assert store.last_id() == ids(path)[1]
+    store.close()
