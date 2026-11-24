@@ -231,7 +231,7 @@ class MemoryConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     path: Path = Field(default=Path("~/.voca/memory.md"), validate_default=True)
-    interval_hours: float = Field(default=1, ge=0)
+    every_turns: int = Field(default=10, ge=0)
     max_chars: int = Field(default=2200, gt=0)
     model: MemoryModel = Field(default_factory=MemoryModel)
 

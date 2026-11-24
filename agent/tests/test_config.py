@@ -67,23 +67,24 @@ def test_memory_extraction_settings(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     memory = Settings().memory
-    assert memory.interval_hours == 1
+    assert memory.every_turns == 10
     assert memory.max_chars == 2200
     assert memory.model.url == "https://litellm.priney.com/v1"
     assert memory.model.model == "glm-5.3-flash"
     assert memory.model.timeout_s == 60
-    monkeypatch.setenv("VOCA_MEMORY__INTERVAL_HOURS", "0.02")
+    monkeypatch.setenv("VOCA_MEMORY__EVERY_TURNS", "3")
     monkeypatch.setenv("VOCA_MEMORY__MODEL__TIMEOUT_S", "9")
     memory = Settings().memory
-    assert memory.interval_hours == 0.02
+    assert memory.every_turns == 3
     assert memory.model.timeout_s == 9
-    monkeypatch.delenv("VOCA_MEMORY__INTERVAL_HOURS")
+    monkeypatch.delenv("VOCA_MEMORY__EVERY_TURNS")
     monkeypatch.delenv("VOCA_MEMORY__MODEL__TIMEOUT_S")
-    write_config(tmp_path, monkeypatch, "[memory]\ninterval_hours = 0\n")
-    assert Settings().memory.interval_hours == 0
+    write_config(tmp_path, monkeypatch, "[memory]\nevery_turns = 0\n")
+    assert Settings().memory.every_turns == 0
     for text in (
-        "[memory]\ninterval_hours = -1\n",
+        "[memory]\nevery_turns = -1\n",
         "[memory]\nmax_chars = 0\n",
+        "[memory]\ninterval_hours = 1\n",
         '[memory.model]\napi_key = "x"\n',
     ):
         write_config(tmp_path, monkeypatch, text)
