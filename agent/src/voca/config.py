@@ -219,6 +219,17 @@ class SessionConfig(BaseModel):
         return value.expanduser()
 
 
+class MemoryConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: Path = Field(default=Path("~/.voca/memory.md"), validate_default=True)
+
+    @field_validator("path")
+    @classmethod
+    def expand_path(cls, value: Path) -> Path:
+        return value.expanduser()
+
+
 class CompressionModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -318,6 +329,7 @@ class Settings(BaseSettings):
     model: ModelConfig = Field(default_factory=ModelConfig)
     agent: AgentConfig = Field(default_factory=AgentConfig)
     session: SessionConfig = Field(default_factory=SessionConfig)
+    memory: MemoryConfig = Field(default_factory=MemoryConfig)
     compression: CompressionConfig = Field(default_factory=CompressionConfig)
     delegation: DelegationConfig = Field(default_factory=DelegationConfig)
     decision: DecisionConfig = Field(default_factory=DecisionConfig)

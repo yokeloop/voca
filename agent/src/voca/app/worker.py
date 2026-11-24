@@ -147,6 +147,7 @@ async def entrypoint(ctx: JobContext) -> None:
         rules=settings.decision.rules(),
         approval_timeout_s=settings.delegation.approval_timeout_s,
         approval_reminder_s=settings.delegation.approval_reminder_s,
+        memory_path=settings.memory.path,
     )
     if delegation is not None:
         delegation.on_change = agent.on_task_change
