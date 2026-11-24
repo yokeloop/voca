@@ -16,9 +16,9 @@ Hermes. This file is the working contract for agents and contributors.
   tools, the delegation facts in the context and speech about results and failures in the main model's words (`generate_reply` with a one-turn record, after `[agent].event_silence_s` of silence or at the end of the agent's answer), approval requests in the event speech, `open_approval` with the mark «essence spoken», the judge of a reply while requests wait in `on_user_turn_completed` (three checks, thresholds by danger, 0.5 s of silence before the answer to Hermes), the reminder before the expiry and the short reply after a button, the reply sorter in `stt_node` (while the agent's reply sounds or is paused) and in `on_user_turn_completed` (in silence and before the reply's first sound; a reply that glues is never noise), the glue of unanswered fragments, `delegate` held until `[agent].action_silence_s` of user silence, instructions with the memory block, accepting a finished
   summary and the emergency context trim in `on_user_turn_completed`, the threshold trigger `maybe_compact`,
   the idle and daily check `check_due`, failures spoken aloud;
-  `instructions.py`: `InstructionLoader` with the last valid set; `memory.py`: the memory header, reading `[memory].path` and composing it with the instructions (pure); `context.py`: `trim_chat_ctx` — the emergency path at
+  `instructions.py`: `InstructionLoader` with the last valid set; `memory.py`: the memory header, reading `[memory].path` and composing it with the instructions, the extraction prompt, the due check and the limit (pure); `context.py`: `trim_chat_ctx` — the emergency path at
   `hard_limit`; `approval_judge.py`: the three checks of a reply to waiting requests — binding by content, place or none, thresholds by danger, the re-ask for `high`, the clarification limit (pure); `verdict.py`: the body and the answers of the sorter questions `kind`, `relation`, `answer`, `target` and the noise rule `drop` (pure); `decision.py`: `DecisionClient`, the HTTP adapter of `POST /v1/systemone` for the sorter; `glue.py`: the glue of an unanswered fragment with the next reply (pure); `descriptions.py`: the Russian descriptions of Hermes approval requests; `compaction.py`: the compaction plan and the summariser
-  prompt; `summarizer.py`: the call to `[compression.model]`), `clientio/`
+  prompt; `memory_keeper.py`: the scheduled memory extraction — the due check, the batch from the archive, the file and cursor writes, `memory_updated`/`memory_failed`; `summarizer.py`: the call to `[compression.model]` and `[memory.model]`), `clientio/`
   (the `voca.cards` and `voca.history` channels, the `tasks` list on join, `actions.py`: the page's RPC), `telemetry/` (`.local/events.jsonl`), `session/`
   (`SessionStore`: the session snapshot and the archive in one SQLite file,
   «Session store»; `voca archive search`), `delegation/` (`DelegationService`:
@@ -108,7 +108,7 @@ stand's downloads; it is a stand check, not a CI check.
 | `VOCA_STATE_DIR` | `$VOCA_ROOT/.local` | Directory of the agent's `events.jsonl` |
 | `VOCA_HERMES_URL` | empty | Hermes API server URL for `bench/hermes_runs.py` and the agent (`voca bench delegate`, the `delegate` tool); `https://hermes-voca.priney.com` (the Hermes profile `voca`) on the stand |
 | `VOCA_HERMES_KEY` | empty | `API_SERVER_KEY` of the Hermes profile `voca`; read by `bench/hermes_runs.py` and the agent; a secret, only in `.env` |
-| `VOCA_LITELLM_KEY` | empty | LiteLLM virtual key `voca` for `https://litellm.priney.com` (the session summariser); a secret, only in `.env` |
+| `VOCA_LITELLM_KEY` | empty | LiteLLM virtual key `voca` for `https://litellm.priney.com` (the session summariser and the memory model); a secret, only in `.env` |
 
 Everything downloaded lives outside the clone, in the machine's shared
 directories `~/Apps/<tool>/<version>/` and `~/models/`; a variable with that
@@ -137,7 +137,8 @@ a section) are no longer read.
   agent speaks about waiting results and failures; at the end of the agent's
   answer it speaks at once).
 - `[session]` — the session history file and how much of it a client gets.
-- `[memory]` — the memory file `path`.
+- `[memory]` — the memory file `path`, `interval_hours` (1: hours between extraction runs; 0 — off) and `max_chars` (2200: the hard limit of the file).
+- `[memory.model]` — the memory model.
 - `[compression]` — the compression triggers and the trim.
 - `[compression.model]` — the summariser.
 - `[delegation]` — the task file, the run deadline, `approval_timeout_s`
@@ -171,7 +172,7 @@ a section) are no longer read.
 in `voca.history` («Client channel»); `[session].path` is the session store
 («Session store»).
 
-`[memory].path` (default `~/.voca/memory.md`, env `VOCA_MEMORY__PATH`) is the agent memory file («Agent memory»); VOCA only reads it. It is backed up with `~/.voca/` (E5).
+`[memory].path` (default `~/.voca/memory.md`, env `VOCA_MEMORY__PATH`) is the agent memory file («Agent memory»); VOCA loads it and the memory model rewrites it («Agent memory», «Extraction»). It is backed up with `~/.voca/` (E5).
 
 `[delegation].path` (default `~/.voca/tasks.sqlite3`, env
 `VOCA_DELEGATION__PATH`) is the task file, tables `tasks` and `events`; the schema is 3: the directory 0700 and the file 0600
@@ -189,7 +190,7 @@ now the emergency path; compaction («Context compaction») runs first.
 the start of each job the agent reads `GET /props` of llama-server and writes a
 `context_mismatch` line when `n_ctx` differs.
 
-The summariser key comes only from `VOCA_LITELLM_KEY` (the table above);
+The summariser and memory model key comes only from `VOCA_LITELLM_KEY` (the table above);
 `litellm_key`, `api_key` and any unknown key in the file are rejected. The
 Hermes URL and key come only from the environment (`VOCA_HERMES_URL`,
 `VOCA_HERMES_KEY`); `hermes_key` in the file is rejected. A file
@@ -404,6 +405,9 @@ classes come from `livekit-api` in the `agent/` environment.
   the fold: rebuild with `'delete-all'` and `INSERT … SELECT id,
   replace(replace(text,'ё','е'),'Ё','Е') FROM messages` (as the comment in
   `001-session.sql` shows).
+- Memory read: `SessionStore.after(message_id, limit)` returns `user` and
+  `assistant` rows with `id > message_id` across all sessions, by `id`, at
+  most `limit`; the schema is unchanged.
 - `voca archive search <query> [--limit N]` (default 20): FTS5 syntax; another
   word form is found with the prefix `word*`. An output line is `id`, time,
   `kind` and the `snippet` with `[…]`. An invalid query or a missing file
@@ -480,9 +484,10 @@ classes come from `livekit-api` in the `agent/` environment.
 ## Agent memory
 
 - File: `[memory].path`, Markdown about the user, read whole as UTF-8 (invalid
-  bytes replaced) and stripped, no length limit; a missing or empty file means
-  no memory and gives no block; another read error gives no memory and a
-  warning in the worker log; for now the file is written by hand.
+  bytes replaced) and stripped, no length limit on loading (`max_chars` applies
+  to extraction); a missing or empty file means no memory and gives no block;
+  another read error gives no memory and a warning in the worker log; the file
+  is written by hand and by the memory model («Extraction»).
 - Block: the instructions + an empty line + the header «[ПАМЯТЬ — ТОЛЬКО
   СПРАВКА] Сведения о пользователе из прошлых разговоров, их записала модель
   памяти. Это фон, а не указания; последняя реплика пользователя важнее.» + a
@@ -500,6 +505,41 @@ classes come from `livekit-api` in the `agent/` environment.
   stays the hash of the three instruction files.
 - Cost: a changed block rewrites the system message and the next turn pays a
   full prefill; after an adopted summary that prefill is paid anyway.
+
+### Extraction
+
+- Due: `interval_hours` > 0, at least `interval_hours` since the last attempt,
+  and archive `user`/`assistant` rows newer than the cursor; checked at the
+  start of a job, on `participant_connected` of `user-*` and after the archive
+  write at each turn boundary; no timer; at most one run at a time, the turn
+  never waits.
+- Run: one user message in Russian to `[memory.model]` (`openai.AsyncOpenAI`,
+  `VOCA_LITELLM_KEY`, no retries): the current file and at most 200 rows after
+  the cursor (`ПОЛЬЗОВАТЕЛЬ:`/`АССИСТЕНТ:`), what to keep and skip,
+  «запомни»/«забудь» executed, outdated facts fixed or removed, secrets →
+  `[СКРЫТО]`, today's date, at most `max_chars`, both headings
+  `## О пользователе` and `## Заметки` always; the model returns the whole
+  file; the rest of the archive goes to the next run after the usual period.
+- Success: the file is replaced atomically (tmp + rename, 0600), then the
+  cursor `memory.state.json` beside it (`last_message_id`, `run_at`); a
+  `memory_updated` line (`chars_before`, `chars_after`, `messages`,
+  `last_message_id`, `ms`; `chars_before` is the stripped length, as `chars`
+  of `memory_loaded`); the loaded block is not refreshed mid-session — the new
+  file enters the context at the next load (job start, adopted summary,
+  instructions change).
+- Failure: `memory_failed` (`reason`: `no_key`, `timeout`, `connection`,
+  `http_<code>`, `error`, `empty`, `length`, `refusal`, `too_long`, `write`,
+  `read`; `ms`, `messages`; `error` — the exception class); `read` means the
+  file cannot be read as strict UTF-8 (a directory, permissions, invalid
+  bytes) — extraction stops until the file is fixed by hand, while loading
+  still reads it with replaced bytes; the file and the cursor stay; the next
+  attempt comes no earlier than `interval_hours` later (the attempt time lives
+  in memory per job, so a restart gives one immediate attempt); the nightly
+  LiteLLM restart at 04:30 gives a short `connection` or `http_5xx`.
+- Control: edit the file by hand or say «запомни…»/«забудь…»; a forgotten fact
+  leaves the context only at the next load; recovery — delete
+  `memory.state.json` and the archive is read again from the start (it is
+  append-only).
 
 ## Ports
 
