@@ -126,8 +126,10 @@ class MemoryKeeper:
         (outcome,) = await asyncio.gather(
             self.model.summarize(prompt), return_exceptions=True
         )
+        if isinstance(outcome, BaseException) and not isinstance(outcome, Exception):
+            raise outcome
         result: Summary | Failure
-        if isinstance(outcome, BaseException):
+        if isinstance(outcome, Exception):
             result = Failure("error", 0)
             named = {"error": type(outcome).__name__}
         else:

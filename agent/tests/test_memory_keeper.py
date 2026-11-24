@@ -385,3 +385,26 @@ def test_real_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         assert [row["kind"] for row in memory_rows(events)] == ["memory_updated"]
 
     asyncio.run(main())
+
+
+class CancellingSummarizer(FakeSummarizer):
+    async def summarize(self, prompt: str) -> Summary | Failure:
+        self.prompts.append(prompt)
+        raise asyncio.CancelledError
+
+
+def test_model_cancelled_error_propagates(tmp_path: Path) -> None:
+    async def main() -> None:
+        model = CancellingSummarizer(Summary(BODY.strip(), 1, 5))
+        keeper, store, events = make_keeper(tmp_path, model, FakeClock())
+        fill(store, 4)
+        assert keeper.check() is True
+        task = keeper.task
+        assert task is not None
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert len(model.prompts) == 1
+        assert memory_rows(events) == []
+        assert not (tmp_path / "memory.md").exists()
+
+    asyncio.run(main())
