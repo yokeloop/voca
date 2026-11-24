@@ -13,6 +13,7 @@ from collections.abc import (
 )
 from dataclasses import dataclass
 from datetime import date, datetime
+from pathlib import Path
 from typing import Any
 
 from livekit import rtc
@@ -59,6 +60,7 @@ from voca.conversation.context import Item, approx_tokens, split_turns, trim_cha
 from voca.conversation.descriptions import describe
 from voca.conversation.glue import Entry, glue
 from voca.conversation.instructions import InstructionLoader, InstructionSet
+from voca.conversation.memory import compose, read_memory
 from voca.conversation.summarizer import Failure, Summarizer, Summary
 from voca.conversation.verdict import (
     DecisionFailure,
@@ -463,12 +465,24 @@ class VocaAgent(Agent):
         rules: Rules | None = None,
         approval_timeout_s: float = APPROVAL_TIMEOUT_S,
         approval_reminder_s: float = APPROVAL_REMINDER_S,
+        memory_path: Path | None = None,
     ) -> None:
         assert sorter is None or sorter_prompt is not None
-        super().__init__(instructions=instructions.text, chat_ctx=chat_ctx)
+        memory = read_memory(memory_path) if memory_path is not None else None
+        text = (
+            instructions.text
+            if memory is None
+            else compose(instructions.text, memory.text)
+        )
+        super().__init__(instructions=text, chat_ctx=chat_ctx)
         self.loader = loader
         self.current = instructions
         self.log = log
+        self.memory_path = memory_path
+        if memory is not None:
+            self.log.write(
+                "memory_loaded", chars=len(memory.text), sha256=memory.sha256
+            )
         self.cards = cards
         self.ctx_high = ctx_high
         self.ctx_low = ctx_low
@@ -1186,6 +1200,19 @@ class VocaAgent(Agent):
             self.on_compacted(message.id, at, result.body, data)
         return True
 
+    async def refresh_instructions(self) -> bool:
+        text = self.current.text
+        if self.memory_path is not None:
+            memory = read_memory(self.memory_path)
+            self.log.write(
+                "memory_loaded", chars=len(memory.text), sha256=memory.sha256
+            )
+            text = compose(text, memory.text)
+        if text == self.instructions:
+            return False
+        await self.update_instructions(text)
+        return True
+
     def cancel_compaction(self) -> None:
         if self.pending is not None:
             self.pending.task.cancel()
@@ -1395,6 +1422,7 @@ class VocaAgent(Agent):
         if pairs:
             notes = await self._judge(new_message, pairs, cached)
             changed = changed or notes.changed
+        reload = False
         loaded = self.loader.load()
         if (loaded.sha256, loaded.source, loaded.error) != (
             self.current.sha256,
@@ -1402,8 +1430,7 @@ class VocaAgent(Agent):
             self.current.error,
         ):
             if loaded.sha256 != self.current.sha256:
-                await self.update_instructions(loaded.text)
-                changed = True
+                reload = True
             self.current = loaded
             self.log.write(
                 "instructions",
@@ -1413,6 +1440,9 @@ class VocaAgent(Agent):
             )
             self.cards.set_instructions(loaded)
         if await self.accept_compaction():
+            changed = True
+            reload = True
+        if reload and await self.refresh_instructions():
             changed = True
         ctx = self.chat_ctx.copy()
         trim = trim_chat_ctx(records(ctx), high=self.ctx_high, low=self.ctx_low)
