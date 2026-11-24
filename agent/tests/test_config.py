@@ -39,6 +39,7 @@ def test_defaults_without_file(monkeypatch: pytest.MonkeyPatch) -> None:
     assert settings.trim_to_tokens() == 6553
     assert settings.trim_at_tokens() == 13926
     assert settings.session.path == Path.home() / ".voca" / "sessions.sqlite3"
+    assert settings.memory.path == Path.home() / ".voca" / "memory.md"
     assert settings.compression.model.url == "https://litellm.priney.com/v1"
     assert settings.litellm_key is None
     assert settings.delegation.path == Path.home() / ".voca" / "tasks.sqlite3"
@@ -49,6 +50,17 @@ def test_defaults_without_file(monkeypatch: pytest.MonkeyPatch) -> None:
     assert Settings().agent_port == 9999
     monkeypatch.setenv("VOCA_INSTRUCTIONS_DIR", "~/x")
     assert Settings().instructions_dir == Path.home() / "x"
+
+
+def test_memory_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("VOCA_MEMORY__PATH", "~/m.md")
+    assert Settings().memory.path == Path.home() / "m.md"
+    monkeypatch.delenv("VOCA_MEMORY__PATH")
+    write_config(tmp_path, monkeypatch, '[memory]\npath = "/tmp/x.md"\n')
+    assert Settings().memory.path == Path("/tmp/x.md")
+    write_config(tmp_path, monkeypatch, "[memory]\nunknown = 1\n")
+    with pytest.raises(ValueError):
+        Settings()
 
 
 def test_file_overrides_defaults_env_overrides_file(
