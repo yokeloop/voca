@@ -357,3 +357,32 @@ def test_open_session_times(tmp_path: Path) -> None:
     assert again.id == session.id
     assert again.started_at == session.started_at
     assert again.compacted_at == 123.0
+
+
+def test_after_reads_user_and_assistant_by_id(tmp_path: Path) -> None:
+    path = tmp_path / "s.sqlite3"
+    store, rec = recorder(path)
+    for row in (
+        ArchiveRow("user", "u1", 1.0, None, None, "вопрос", {}),
+        ArchiveRow("assistant", "a1", 2.0, None, None, "ответ", {}),
+        ArchiveRow("tool_call", "t1", 3.0, "c1", "delegate", "{}", {}),
+        ArchiveRow("tool_result", "r1", 4.0, "c1", None, "итог", {}),
+        ArchiveRow("summary", "s1", 5.0, None, None, "пересказ", {}),
+        ArchiveRow("user", "u2", 6.0, None, None, "ещё", {}),
+    ):
+        rec.add_row(row)
+    rec.flush({"items": []})
+    store.db.execute("INSERT INTO sessions (id, started_at) VALUES ('s2', 0)")
+    other = SessionRecorder(store, "s2")
+    other.add_row(ArchiveRow("assistant", "a2", 7.0, None, None, "там", {}))
+    other.flush({"items": []})
+    rows = store.after(0, 10)
+    all_ids = ids(path)
+    assert [row.kind for _, row in rows] == ["user", "assistant", "user", "assistant"]
+    assert [row.item_id for _, row in rows] == ["u1", "a1", "u2", "a2"]
+    assert [row.text for _, row in rows] == ["вопрос", "ответ", "ещё", "там"]
+    assert [i for i, _ in rows] == [all_ids[0], all_ids[1], all_ids[5], all_ids[6]]
+    assert store.after(0, 2) == rows[:2]
+    assert store.after(rows[1][0], 10) == rows[2:]
+    assert store.after(rows[-1][0], 10) == []
+    store.close()
