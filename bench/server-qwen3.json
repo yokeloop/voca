@@ -1,0 +1,224 @@
+{
+  "host": "127.0.0.1",
+  "port": 8085,
+  "backend": "cuda",
+  "threads": 6,
+  "lazy_load": true,
+  "max_loaded_models": 1,
+  "ui": false,
+  "models": [
+    {
+      "id": "qwen-0.6b",
+      "family": "qwen3_tts",
+      "path": "${VOCA_MODELS_DIR}/audio-cpp/Qwen3-TTS-12Hz-0.6B-Base-GGUF/qwen3-tts-12hz-0.6b-base-q8_0.gguf",
+      "task": "tts",
+      "mode": "streaming",
+      "voice_presets": {
+        "clone": {
+          "voice_ref": "${VOCA_ROOT}/scripts/voices/qwen3-vd-ru-f.wav",
+          "reference_text": "Здравствуйте. Я ваш голосовой помощник: подскажу ответ, напомню о деле и найду нужную заметку.",
+          "options": {
+            "seed": 42
+          }
+        },
+        "clone-fixed1": {
+          "voice_ref": "${VOCA_ROOT}/scripts/voices/qwen3-vd-ru-f.wav",
+          "reference_text": "Здравствуйте. Я ваш голосовой помощник: подскажу ответ, напомню о деле и найду нужную заметку.",
+          "options": {
+            "seed": 42,
+            "stream_chunk_policy": "fixed",
+            "stream_frames_per_event": 1
+          }
+        },
+        "clone-fixed4": {
+          "voice_ref": "${VOCA_ROOT}/scripts/voices/qwen3-vd-ru-f.wav",
+          "reference_text": "Здравствуйте. Я ваш голосовой помощник: подскажу ответ, напомню о деле и найду нужную заметку.",
+          "options": {
+            "seed": 42,
+            "stream_chunk_policy": "fixed",
+            "stream_frames_per_event": 4
+          }
+        }
+      },
+      "default_voice_preset": "clone"
+    },
+    {
+      "id": "qwen-1.7b",
+      "family": "qwen3_tts",
+      "path": "${VOCA_MODELS_DIR}/audio-cpp/Qwen3-TTS-12Hz-1.7B-Base-GGUF/qwen3-tts-12hz-1.7b-base-q8_0_v2.gguf",
+      "task": "tts",
+      "mode": "streaming",
+      "voice_presets": {
+        "clone": {
+          "voice_ref": "${VOCA_ROOT}/scripts/voices/qwen3-vd-ru-f.wav",
+          "reference_text": "Здравствуйте. Я ваш голосовой помощник: подскажу ответ, напомню о деле и найду нужную заметку.",
+          "options": {
+            "seed": 42
+          }
+        },
+        "clone-fixed1": {
+          "voice_ref": "${VOCA_ROOT}/scripts/voices/qwen3-vd-ru-f.wav",
+          "reference_text": "Здравствуйте. Я ваш голосовой помощник: подскажу ответ, напомню о деле и найду нужную заметку.",
+          "options": {
+            "seed": 42,
+            "stream_chunk_policy": "fixed",
+            "stream_frames_per_event": 1
+          }
+        },
+        "clone-fixed4": {
+          "voice_ref": "${VOCA_ROOT}/scripts/voices/qwen3-vd-ru-f.wav",
+          "reference_text": "Здравствуйте. Я ваш голосовой помощник: подскажу ответ, напомню о деле и найду нужную заметку.",
+          "options": {
+            "seed": 42,
+            "stream_chunk_policy": "fixed",
+            "stream_frames_per_event": 4
+          }
+        }
+      },
+      "default_voice_preset": "clone"
+    },
+    {
+      "id": "qwen-vd",
+      "family": "qwen3_tts",
+      "path": "${VOCA_MODELS_DIR}/audio-cpp/Qwen3-TTS-12Hz-1.7B-VoiceDesign-GGUF/qwen3-tts-12hz-1.7b-voicedesign-q8_0.gguf",
+      "task": "tts",
+      "mode": "streaming",
+      "voice_presets": {
+        "design": {
+          "options": {
+            "seed": 42,
+            "instruct": "Спокойный приветливый голос взрослой женщины, чистая литературная русская речь, ровный неторопливый темп, мягкая интонация."
+          }
+        },
+        "design-fixed1": {
+          "options": {
+            "seed": 42,
+            "stream_chunk_policy": "fixed",
+            "stream_frames_per_event": 1,
+            "instruct": "Спокойный приветливый голос взрослой женщины, чистая литературная русская речь, ровный неторопливый темп, мягкая интонация."
+          }
+        },
+        "design-fixed4": {
+          "options": {
+            "seed": 42,
+            "stream_chunk_policy": "fixed",
+            "stream_frames_per_event": 4,
+            "instruct": "Спокойный приветливый голос взрослой женщины, чистая литературная русская речь, ровный неторопливый темп, мягкая интонация."
+          }
+        }
+      },
+      "default_voice_preset": "design"
+    },
+    {
+      "id": "qwen-0.6b-perf",
+      "family": "qwen3_tts",
+      "path": "${VOCA_MODELS_DIR}/audio-cpp/Qwen3-TTS-12Hz-0.6B-Base-GGUF/qwen3-tts-12hz-0.6b-base-q8_0.gguf",
+      "task": "tts",
+      "mode": "streaming",
+      "session_options": {
+        "qwen3_tts.perf_mode": "cuda_perf"
+      },
+      "voice_presets": {
+        "clone": {
+          "voice_ref": "${VOCA_ROOT}/scripts/voices/qwen3-vd-ru-f.wav",
+          "reference_text": "Здравствуйте. Я ваш голосовой помощник: подскажу ответ, напомню о деле и найду нужную заметку.",
+          "options": {
+            "seed": 42
+          }
+        },
+        "clone-fixed1": {
+          "voice_ref": "${VOCA_ROOT}/scripts/voices/qwen3-vd-ru-f.wav",
+          "reference_text": "Здравствуйте. Я ваш голосовой помощник: подскажу ответ, напомню о деле и найду нужную заметку.",
+          "options": {
+            "seed": 42,
+            "stream_chunk_policy": "fixed",
+            "stream_frames_per_event": 1
+          }
+        },
+        "clone-fixed4": {
+          "voice_ref": "${VOCA_ROOT}/scripts/voices/qwen3-vd-ru-f.wav",
+          "reference_text": "Здравствуйте. Я ваш голосовой помощник: подскажу ответ, напомню о деле и найду нужную заметку.",
+          "options": {
+            "seed": 42,
+            "stream_chunk_policy": "fixed",
+            "stream_frames_per_event": 4
+          }
+        }
+      },
+      "default_voice_preset": "clone"
+    },
+    {
+      "id": "qwen-1.7b-perf",
+      "family": "qwen3_tts",
+      "path": "${VOCA_MODELS_DIR}/audio-cpp/Qwen3-TTS-12Hz-1.7B-Base-GGUF/qwen3-tts-12hz-1.7b-base-q8_0_v2.gguf",
+      "task": "tts",
+      "mode": "streaming",
+      "session_options": {
+        "qwen3_tts.perf_mode": "cuda_perf"
+      },
+      "voice_presets": {
+        "clone": {
+          "voice_ref": "${VOCA_ROOT}/scripts/voices/qwen3-vd-ru-f.wav",
+          "reference_text": "Здравствуйте. Я ваш голосовой помощник: подскажу ответ, напомню о деле и найду нужную заметку.",
+          "options": {
+            "seed": 42
+          }
+        },
+        "clone-fixed1": {
+          "voice_ref": "${VOCA_ROOT}/scripts/voices/qwen3-vd-ru-f.wav",
+          "reference_text": "Здравствуйте. Я ваш голосовой помощник: подскажу ответ, напомню о деле и найду нужную заметку.",
+          "options": {
+            "seed": 42,
+            "stream_chunk_policy": "fixed",
+            "stream_frames_per_event": 1
+          }
+        },
+        "clone-fixed4": {
+          "voice_ref": "${VOCA_ROOT}/scripts/voices/qwen3-vd-ru-f.wav",
+          "reference_text": "Здравствуйте. Я ваш голосовой помощник: подскажу ответ, напомню о деле и найду нужную заметку.",
+          "options": {
+            "seed": 42,
+            "stream_chunk_policy": "fixed",
+            "stream_frames_per_event": 4
+          }
+        }
+      },
+      "default_voice_preset": "clone"
+    },
+    {
+      "id": "qwen-vd-perf",
+      "family": "qwen3_tts",
+      "path": "${VOCA_MODELS_DIR}/audio-cpp/Qwen3-TTS-12Hz-1.7B-VoiceDesign-GGUF/qwen3-tts-12hz-1.7b-voicedesign-q8_0.gguf",
+      "task": "tts",
+      "mode": "streaming",
+      "session_options": {
+        "qwen3_tts.perf_mode": "cuda_perf"
+      },
+      "voice_presets": {
+        "design": {
+          "options": {
+            "seed": 42,
+            "instruct": "Спокойный приветливый голос взрослой женщины, чистая литературная русская речь, ровный неторопливый темп, мягкая интонация."
+          }
+        },
+        "design-fixed1": {
+          "options": {
+            "seed": 42,
+            "stream_chunk_policy": "fixed",
+            "stream_frames_per_event": 1,
+            "instruct": "Спокойный приветливый голос взрослой женщины, чистая литературная русская речь, ровный неторопливый темп, мягкая интонация."
+          }
+        },
+        "design-fixed4": {
+          "options": {
+            "seed": 42,
+            "stream_chunk_policy": "fixed",
+            "stream_frames_per_event": 4,
+            "instruct": "Спокойный приветливый голос взрослой женщины, чистая литературная русская речь, ровный неторопливый темп, мягкая интонация."
+          }
+        }
+      },
+      "default_voice_preset": "design"
+    }
+  ]
+}
