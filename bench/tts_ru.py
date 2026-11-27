@@ -32,6 +32,8 @@ from livekit import rtc
 from livekit.agents import APIError
 from livekit.plugins import openai
 
+from voca.speech.stress import load_accent, place
+
 TTS_DIR = BENCH_DIR / "tts"
 CORPUS = ROOT / "bench" / "corpus" / "tts_ru.txt"
 VARIANTS: dict[str, str | None] = {"default": None, "ru": "ru"}
@@ -64,10 +66,42 @@ AB2_VARIANTS: dict[str, tuple[str, str, int]] = {
 }
 STRESS_CORPUS = ROOT / "bench" / "corpus" / "tts_ru_stress.tsv"
 STRESS_VARIANT = ("s", TTS_MODEL, "F4", 8)
+CORPORA = {"orig": CORPUS, "norm": NORM_CORPUS, "stress": STRESS_CORPUS}
+
+
+def load_texts(name: str) -> list[tuple[int, str]]:
+    lines = CORPORA[name].read_text(encoding="utf-8").splitlines()
+    if name == "stress":
+        return [(int(n), text) for n, text in (line.split("\t") for line in lines)]
+    return list(enumerate(lines, start=1))
 
 
 def load_corpus() -> list[str]:
-    return CORPUS.read_text(encoding="utf-8").splitlines()
+    return [text for _, text in load_texts("orig")]
+
+
+def out_dir(args: argparse.Namespace) -> Path:
+    return TTS_DIR / args.tag if args.tag else TTS_DIR
+
+
+def selected_variants(args: argparse.Namespace) -> dict[str, str | None]:
+    names = args.variants.split(",")
+    unknown = [name for name in names if name not in VARIANTS]
+    if unknown:
+        raise SystemExit(
+            f"неизвестный вариант {', '.join(unknown)}: есть {', '.join(VARIANTS)}"
+        )
+    return {name: VARIANTS[name] for name in names}
+
+
+def bench_tts(args: argparse.Namespace, language: str | None) -> openai.TTS:
+    return make_tts(
+        args.base_url,
+        args.voice,
+        language,
+        model=args.tts_model,
+        sample_rate=args.sample_rate,
+    )
 
 
 def duration(frame: rtc.AudioFrame) -> float:
@@ -95,11 +129,11 @@ def verdict(name: str, ok: bool, detail: str) -> bool:
 
 async def cmd_check(args: argparse.Namespace) -> int:
     text = load_corpus()[0]
-    tts = make_tts(args.base_url, args.voice, "ru")
+    tts = bench_tts(args, "ru")
     frame, _, _ = await synthesize(tts, text)
     await tts.aclose()
     body = {
-        "model": TTS_MODEL,
+        "model": args.tts_model,
         "input": text,
         "voice": args.voice,
         "language": "ru",
@@ -119,10 +153,10 @@ async def cmd_check(args: argparse.Namespace) -> int:
             await stream.aread()
     plugin_seconds = duration(frame)
     results = [
-        verdict("wav sample rate", wav_rate == TTS_SAMPLE_RATE, f"{wav_rate} Гц"),
+        verdict("wav sample rate", wav_rate == args.sample_rate, f"{wav_rate} Гц"),
         verdict(
             "plugin sample rate",
-            frame.sample_rate == TTS_SAMPLE_RATE,
+            frame.sample_rate == args.sample_rate,
             f"{frame.sample_rate} Гц",
         ),
         verdict(
@@ -141,11 +175,15 @@ async def cmd_check(args: argparse.Namespace) -> int:
 
 async def cmd_render(args: argparse.Namespace) -> int:
     rows = []
-    for variant, language in VARIANTS.items():
-        tts = make_tts(args.base_url, args.voice, language)
-        for number, text in enumerate(load_corpus(), start=1):
+    variants = selected_variants(args)
+    stress = load_accent() if args.accent else None
+    for variant, language in variants.items():
+        tts = bench_tts(args, language)
+        for number, text in load_texts(args.corpus):
+            if stress is not None:
+                text = place(stress, text)
             frame, ttfb, total = await synthesize(tts, text)
-            write_wav(TTS_DIR / variant / f"{number:02d}.wav", frame)
+            write_wav(out_dir(args) / variant / f"{number:02d}.wav", frame)
             seconds = duration(frame)
             print(
                 f"{variant}\t{number:02d}\tTTFB {ttfb:.3f} с\tвсего {total:.3f} с"
@@ -164,13 +202,15 @@ async def cmd_render(args: argparse.Namespace) -> int:
                 ]
             )
         await tts.aclose()
-    write_tsv(TTS_DIR / "render.tsv", RENDER_HEADER, rows)
-    for variant in VARIANTS:
+    write_tsv(out_dir(args) / "render.tsv", RENDER_HEADER, rows)
+    for variant in variants:
         ttfbs = [float(r[3]) for r in rows if r[0] == variant]
         totals = [float(r[4]) for r in rows if r[0] == variant]
+        audio = [float(r[5]) for r in rows if r[0] == variant]
         print(
             f"{variant}: TTFB p50 {percentile(ttfbs, 50):.3f} p95 {percentile(ttfbs, 95):.3f},"
-            f" всего p50 {percentile(totals, 50):.3f} p95 {percentile(totals, 95):.3f}"
+            f" всего p50 {percentile(totals, 50):.3f} p95 {percentile(totals, 95):.3f},"
+            f" RTF {sum(totals) / sum(audio):.3f}"
         )
     return 0
 
@@ -199,15 +239,16 @@ def load_listening(path: Path) -> dict[tuple[str, str], list[str]]:
 
 
 def cmd_listen(args: argparse.Namespace) -> int:
-    path = TTS_DIR / "listening.tsv"
+    path = out_dir(args) / "listening.tsv"
     answers = load_listening(path)
     start = int(args.start or 1)
-    for number, text in enumerate(load_corpus(), start=1):
+    variants = selected_variants(args)
+    for number, text in load_texts(args.corpus):
         if number < start:
             continue
         print(f"\n{number:02d}. {text}")
-        for variant in VARIANTS:
-            wav = TTS_DIR / variant / f"{number:02d}.wav"
+        for variant in variants:
+            wav = out_dir(args) / variant / f"{number:02d}.wav"
             while True:
                 print(f"  {variant}")
                 play(wav)
@@ -223,15 +264,16 @@ def cmd_listen(args: argparse.Namespace) -> int:
             answers.pop(key, None)
             answers[key] = [answer, note, text]
             save_listening(path, answers)
-    difference = read_key("\nразница default/ru слышна? [y/n] ", ["y", "n"])
-    better = read_key("какой вариант лучше? [d — default, r — ru] ", ["d", "r"])
-    for name, value in [
-        ("difference", difference),
-        ("better", "default" if better == "d" else "ru"),
-    ]:
-        answers.pop(("summary", name), None)
-        answers[("summary", name)] = [value, "", ""]
-    save_listening(path, answers)
+    if list(variants) == list(VARIANTS):
+        difference = read_key("\nразница default/ru слышна? [y/n] ", ["y", "n"])
+        better = read_key("какой вариант лучше? [d — default, r — ru] ", ["d", "r"])
+        for name, value in [
+            ("difference", difference),
+            ("better", "default" if better == "d" else "ru"),
+        ]:
+            answers.pop(("summary", name), None)
+            answers[("summary", name)] = [value, "", ""]
+        save_listening(path, answers)
     print(f"ответы: {path}")
     return 0
 
@@ -342,8 +384,7 @@ def cmd_ab(args: argparse.Namespace) -> int:
 
 
 def load_stress() -> dict[int, str]:
-    lines = STRESS_CORPUS.read_text(encoding="utf-8").splitlines()
-    return {int(n): text for n, text in (line.split("\t") for line in lines)}
+    return dict(load_texts("stress"))
 
 
 async def cmd_ab2_render(args: argparse.Namespace) -> int:
@@ -484,6 +525,13 @@ def plain_words(text: str) -> str:
     return " ".join(text.split())
 
 
+def asr_score(reference: str, recognized: str) -> float:
+    plain = reference.replace("\u0301", "")
+    return difflib.SequenceMatcher(
+        None, plain_words(plain), plain_words(recognized)
+    ).ratio()
+
+
 async def cmd_voiceprobe(args: argparse.Namespace) -> int:
     corpus = NORM_CORPUS.read_text(encoding="utf-8").splitlines()
     rows = []
@@ -512,9 +560,7 @@ async def cmd_voiceprobe(args: argparse.Namespace) -> int:
                 )
                 heard.raise_for_status()
                 recognized = heard.json()["text"]
-                score = difflib.SequenceMatcher(
-                    None, plain_words(text), plain_words(recognized)
-                ).ratio()
+                score = asr_score(text, recognized)
                 scores.append(score)
                 print(f"{voice}\t{number:02d}\t{score:.3f}\t{recognized}")
                 rows.append([voice, f"{number:02d}", f"{score:.3f}", recognized])
@@ -527,9 +573,8 @@ async def cmd_voiceprobe(args: argparse.Namespace) -> int:
     return 0
 
 
-def render_rates(variant: str, voice: str) -> dict[int, float]:
+def render_rates(path: Path, variant: str, voice: str) -> dict[int, float]:
     rates: dict[int, float] = {}
-    path = TTS_DIR / "render.tsv"
     if not path.exists():
         return rates
     with path.open(encoding="utf-8") as source:
@@ -540,8 +585,8 @@ def render_rates(variant: str, voice: str) -> dict[int, float]:
 
 
 async def cmd_soak(args: argparse.Namespace) -> int:
-    corpus = load_corpus()
-    rates = render_rates(args.variant, args.voice)
+    corpus = load_texts(args.corpus)
+    rates = render_rates(out_dir(args) / "render.tsv", args.variant, args.voice)
     if not rates:
         print(
             f"нет строк render для варианта {args.variant} и голоса {args.voice}:"
@@ -549,15 +594,14 @@ async def cmd_soak(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 1
-    tts = make_tts(args.base_url, args.voice, VARIANTS[args.variant])
+    tts = bench_tts(args, VARIANTS[args.variant])
     rows = []
     errors = 0
     flags = 0
     ttfbs: list[float] = []
     totals: list[float] = []
     for index in range(args.count):
-        number = index % len(corpus) + 1
-        text = corpus[number - 1]
+        number, text = corpus[index % len(corpus)]
         try:
             frame, ttfb, total = await synthesize(tts, text)
         except APIError as exc:
@@ -596,7 +640,7 @@ async def cmd_soak(args: argparse.Namespace) -> int:
         )
     await tts.aclose()
     write_tsv(
-        TTS_DIR / f"soak-{args.variant}.tsv",
+        out_dir(args) / f"soak-{args.variant}.tsv",
         ["i", "n", "ttfb_s", "total_s", "audio_s", "flag"],
         rows,
     )
@@ -609,15 +653,140 @@ async def cmd_soak(args: argparse.Namespace) -> int:
     return 1 if errors else 0
 
 
-def main() -> int:
+async def cmd_asr(args: argparse.Namespace) -> int:
+    variants = selected_variants(args)
+    texts = load_texts(args.corpus)
+    for variant in variants:
+        for number, _ in texts:
+            wav = out_dir(args) / variant / f"{number:02d}.wav"
+            if not wav.exists():
+                print(
+                    f"нет {wav}: tts_ru.py --tag {args.tag} --corpus {args.corpus}"
+                    f" --variants {args.variants} render",
+                    file=sys.stderr,
+                )
+                return 1
+    rows = []
+    async with httpx.AsyncClient(timeout=300) as client:
+        for variant in variants:
+            scores = []
+            for number, text in texts:
+                wav = out_dir(args) / variant / f"{number:02d}.wav"
+                heard = await client.post(
+                    f"{args.asr_url}/audio/transcriptions",
+                    files={"file": ("speech.wav", wav.read_bytes(), "audio/wav")},
+                    data={"model": "asr"},
+                )
+                heard.raise_for_status()
+                recognized = heard.json()["text"]
+                score = asr_score(text, recognized)
+                scores.append(score)
+                print(f"{variant}\t{number:02d}\t{score:.3f}\t{recognized}")
+                rows.append(
+                    [variant, f"{number:02d}", f"{score:.3f}", recognized, text]
+                )
+            print(f"== {variant} ASR {sum(scores) / len(scores):.3f}")
+    write_tsv(out_dir(args) / "asr.tsv", ["variant", "n", "score", "asr", "text"], rows)
+    return 0
+
+
+def blind_labels(
+    tags: list[str], numbers: list[int]
+) -> tuple[dict[str, str], dict[int, list[str]]]:
+    rng = random.Random(AB2_SEED)
+    shuffled = tags[:]
+    rng.shuffle(shuffled)
+    labels = {tag: str(i) for i, tag in enumerate(shuffled, start=1)}
+    orders = {}
+    for number in numbers:
+        order = tags[:]
+        rng.shuffle(order)
+        orders[number] = order
+    return labels, orders
+
+
+def cmd_blind(args: argparse.Namespace) -> int:
+    texts = dict(load_texts(args.corpus))
+    tags = args.tags.split(",")
+    numbers = parse_numbers(args.numbers)
+    path = TTS_DIR / f"{args.name}.tsv"
+    header = ["n", "label", "tag", "clear", "note", "text"]
+    answers: dict[tuple[str, str], list[str]] = {}
+
+    def save() -> None:
+        write_tsv(path, header, [[n, *rest] for (n, _), rest in answers.items()])
+
+    labels, orders = blind_labels(tags, numbers)
+    for number in numbers:
+        text = texts[number]
+        print(f"\n{number:02d}. {text}")
+        for tag in orders[number]:
+            label = labels[tag]
+            wav = TTS_DIR / tag / "ru" / f"{number:02d}.wav"
+            while True:
+                print(f"  вариант {label}")
+                play(wav)
+                answer = read_key(
+                    "  разборчиво? [y/n, p — повторить] ", ["y", "n", "p"]
+                )
+                if answer != "p":
+                    break
+            flush_input()
+            note = read_line("  заметка (Enter — пусто): ").strip()
+            answers[(f"{number:02d}", tag)] = [label, tag, answer, note, text]
+            save()
+    choices = [str(i) for i in range(1, len(tags) + 1)]
+    best = read_key(f"\nлучший [1-{len(tags)}] ", choices)
+    revealed = next(tag for tag, label in labels.items() if label == best)
+    answers[("summary", "best")] = [best, revealed, "", "", ""]
+    save()
+    print(f"лучший: {best} — {revealed}")
+    print(f"ответы: {path}")
+    return 0
+
+
+def parse_groups(value: str) -> list[list[int]]:
+    groups = []
+    for part in value.split(","):
+        first, last = part.split("-")
+        groups.append(list(range(int(first), int(last) + 1)))
+    return groups
+
+
+async def cmd_replies(args: argparse.Namespace) -> int:
+    texts = dict(load_texts(args.corpus))
+    tts = bench_tts(args, "ru")
+    for k, group in enumerate(parse_groups(args.groups), start=1):
+        frames = []
+        parts = [texts[number] for number in group]
+        for text in parts:
+            frame, ttfb, total = await synthesize(tts, text)
+            frames.append(frame)
+            print(f"{k:02d}\tTTFB {ttfb:.3f} с\tвсего {total:.3f} с\t{text}")
+        path = out_dir(args) / "replies" / f"{k:02d}.wav"
+        write_wav(path, rtc.combine_audio_frames(frames))
+        path.with_suffix(".txt").write_text(" ".join(parts) + "\n", encoding="utf-8")
+        print(f"ответ {k:02d}: {path}")
+    await tts.aclose()
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="G2: русский TTS через audiocpp_server"
     )
     parser.add_argument("--base-url", default=AUDIO_URL)
     parser.add_argument("--voice", default="F1")
+    parser.add_argument("--model", dest="tts_model", default=TTS_MODEL)
+    parser.add_argument("--sample-rate", type=int, default=TTS_SAMPLE_RATE)
+    parser.add_argument("--tag", default="")
+    parser.add_argument("--variants", default="default,ru")
+    parser.add_argument("--corpus", choices=list(CORPORA), default="orig")
+    parser.add_argument("--asr-url", default=AUDIO_URL)
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("check")
-    sub.add_parser("render")
+    render = sub.add_parser("render")
+    render.add_argument("--accent", action="store_true")
     listen = sub.add_parser("listen")
     listen.add_argument("--from", dest="start")
     soak = sub.add_parser("soak")
@@ -632,14 +801,27 @@ def main() -> int:
     voiceprobe.add_argument("--steps", type=int, default=16)
     sub.add_parser("ab2-render")
     sub.add_parser("ab2")
-    args = parser.parse_args()
+    sub.add_parser("asr")
+    blind = sub.add_parser("blind")
+    blind.add_argument("--tags", required=True)
+    blind.add_argument("--numbers", default="1,2,4")
+    blind.add_argument("--name", default="blind")
+    replies = sub.add_parser("replies")
+    replies.add_argument("--groups", default="1-3,4-6,7-9")
+    return parser
+
+
+def main() -> int:
+    args = build_parser().parse_args()
     if args.command == "ab2":
         return cmd_ab2(args)
     if args.command == "listen":
         return cmd_listen(args)
     if args.command == "ab":
         return cmd_ab(args)
-    health(args.base_url)
+    if args.command == "blind":
+        return cmd_blind(args)
+    health(args.asr_url if args.command == "asr" else args.base_url)
     commands = {
         "check": cmd_check,
         "render": cmd_render,
@@ -647,6 +829,8 @@ def main() -> int:
         "ab-render": cmd_ab_render,
         "ab2-render": cmd_ab2_render,
         "voiceprobe": cmd_voiceprobe,
+        "asr": cmd_asr,
+        "replies": cmd_replies,
     }
     try:
         return asyncio.run(commands[args.command](args))
