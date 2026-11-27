@@ -219,6 +219,28 @@ class SessionConfig(BaseModel):
         return value.expanduser()
 
 
+class MemoryModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    url: str = "https://litellm.priney.com/v1"
+    model: str = "glm-5.3-flash"
+    timeout_s: float = Field(default=60, gt=0)
+
+
+class MemoryConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: Path = Field(default=Path("~/.voca/memory.md"), validate_default=True)
+    every_turns: int = Field(default=10, ge=0)
+    max_chars: int = Field(default=2200, gt=0)
+    model: MemoryModel = Field(default_factory=MemoryModel)
+
+    @field_validator("path")
+    @classmethod
+    def expand_path(cls, value: Path) -> Path:
+        return value.expanduser()
+
+
 class CompressionModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -318,6 +340,7 @@ class Settings(BaseSettings):
     model: ModelConfig = Field(default_factory=ModelConfig)
     agent: AgentConfig = Field(default_factory=AgentConfig)
     session: SessionConfig = Field(default_factory=SessionConfig)
+    memory: MemoryConfig = Field(default_factory=MemoryConfig)
     compression: CompressionConfig = Field(default_factory=CompressionConfig)
     delegation: DelegationConfig = Field(default_factory=DelegationConfig)
     decision: DecisionConfig = Field(default_factory=DecisionConfig)

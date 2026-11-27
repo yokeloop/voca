@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import shutil
 import time
@@ -22,6 +23,7 @@ from voca.conversation.agent import (
 )
 from voca.conversation.compaction import Limits, estimate
 from voca.conversation.instructions import InstructionLoader
+from voca.conversation.memory import HEADER
 from voca.conversation.summarizer import Failure, Summarizer, Summary
 from voca.conversation.verdict import DecisionFailure, Sorted, SorterPrompt
 from voca.telemetry.jsonl import JsonlLog
@@ -61,6 +63,7 @@ def make_agent(
     compacted_at: float | None = None,
     sorter: FakeSorter | None = None,
     sorter_prompt: SorterPrompt | None = None,
+    memory_path: Path | None = None,
 ) -> tuple[VocaAgent, Path, Path, CardState]:
     directory = tmp_path / "instructions"
     shutil.copytree(EXAMPLE, directory)
@@ -82,6 +85,7 @@ def make_agent(
         compacted_at=compacted_at,
         sorter=sorter,
         sorter_prompt=sorter_prompt,
+        memory_path=memory_path,
     )
     return agent, directory, events, cards
 
@@ -307,6 +311,148 @@ def test_summary_position_survives_insert_and_merge(tmp_path: Path) -> None:
         "Ещё",
         "Ответ",
     ]
+
+
+MEMORY = "## О пользователе\n- Кота зовут Ёжик.\n"
+MEMORY_TEXT = "## О пользователе\n- Кота зовут Ёжик."
+
+
+def spy_updates(agent: VocaAgent, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    calls: list[str] = []
+    original = agent.update_instructions
+
+    async def spy(instructions: str) -> None:
+        calls.append(instructions)
+        await original(instructions)
+
+    monkeypatch.setattr(agent, "update_instructions", spy)
+    return calls
+
+
+def memory_file(tmp_path: Path, text: str = MEMORY) -> Path:
+    path = tmp_path / "memory.md"
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def test_memory_in_instructions_at_start(tmp_path: Path) -> None:
+    agent, directory, events, _ = make_agent(
+        tmp_path, memory_path=memory_file(tmp_path)
+    )
+    assert isinstance(agent.instructions, str)
+    assert agent.instructions.startswith(InstructionLoader(directory).load().text)
+    assert HEADER in agent.instructions
+    assert agent.instructions.endswith("- Кота зовут Ёжик.")
+    loaded = kinds_of(events, "memory_loaded")
+    assert len(loaded) == 1
+    assert loaded[0]["chars"] == len(MEMORY_TEXT)
+    assert loaded[0]["sha256"] == hashlib.sha256(MEMORY_TEXT.encode()).hexdigest()
+
+
+def test_memory_edit_reaches_after_compaction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = memory_file(tmp_path)
+
+    async def main() -> tuple[VocaAgent, Path, list[str]]:
+        fake = FakeSummarizer(Summary("## О чём говорили\nфакт 1", 50, 1200))
+        agent, _, events, _ = make_agent(
+            tmp_path, limits=LIMITS, summarizer=fake, memory_path=path
+        )
+        calls = spy_updates(agent, monkeypatch)
+        await agent.update_chat_ctx(history(6))
+        path.write_text("- Собаку зовут Шарик.\n", encoding="utf-8")
+        await compact_and_accept(agent)
+        return agent, events, calls
+
+    agent, events, calls = asyncio.run(main())
+    assert isinstance(agent.instructions, str)
+    assert "Шарик" in agent.instructions
+    assert "Ёжик" not in agent.instructions
+    loaded = kinds_of(events, "memory_loaded")
+    assert len(loaded) == 2
+    assert loaded[1]["sha256"] != loaded[0]["sha256"]
+    assert len(calls) == 1
+
+
+def test_memory_unchanged_after_compaction_no_update(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = memory_file(tmp_path)
+
+    async def main() -> tuple[VocaAgent, Path, list[str], str]:
+        fake = FakeSummarizer(Summary("## О чём говорили\nфакт 1", 50, 1200))
+        agent, _, events, _ = make_agent(
+            tmp_path, limits=LIMITS, summarizer=fake, memory_path=path
+        )
+        before = agent.instructions
+        assert isinstance(before, str)
+        calls = spy_updates(agent, monkeypatch)
+        await agent.update_chat_ctx(history(6))
+        await compact_and_accept(agent)
+        return agent, events, calls, before
+
+    agent, events, calls, before = asyncio.run(main())
+    assert calls == []
+    assert len(kinds_of(events, "memory_loaded")) == 2
+    assert agent.instructions == before
+
+
+def test_agent_md_change_keeps_memory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    agent, directory, events, _ = make_agent(
+        tmp_path, memory_path=memory_file(tmp_path)
+    )
+    calls = spy_updates(agent, monkeypatch)
+    (directory / "agent.md").write_text("Новый агент.", encoding="utf-8")
+    asyncio.run(agent.on_user_turn_completed(llm.ChatContext.empty(), user_message()))
+    assert isinstance(agent.instructions, str)
+    assert agent.instructions.endswith(
+        "Новый агент.\n\n" + HEADER + "\n## О пользователе\n- Кота зовут Ёжик."
+    )
+    assert len(calls) == 1
+    assert len(kinds_of(events, "memory_loaded")) == 2
+
+
+def test_agent_md_same_content_no_update(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    agent, directory, events, _ = make_agent(
+        tmp_path, memory_path=memory_file(tmp_path)
+    )
+    calls = spy_updates(agent, monkeypatch)
+    same = (directory / "agent.md").read_text(encoding="utf-8")
+    (directory / "agent.md").write_text(same, encoding="utf-8")
+    asyncio.run(agent.on_user_turn_completed(llm.ChatContext.empty(), user_message()))
+    assert calls == []
+    assert len(kinds_of(events, "memory_loaded")) == 1
+
+
+@pytest.mark.parametrize("content", [None, "", "  \n"])
+def test_missing_or_blank_memory_gives_no_block(
+    tmp_path: Path, content: str | None
+) -> None:
+    path = tmp_path / "memory.md"
+    if content is not None:
+        path.write_text(content, encoding="utf-8")
+    agent, directory, events, _ = make_agent(tmp_path, memory_path=path)
+    assert agent.instructions == InstructionLoader(directory).load().text
+    assert isinstance(agent.instructions, str)
+    assert HEADER not in agent.instructions
+    loaded = kinds_of(events, "memory_loaded")
+    assert len(loaded) == 1
+    assert loaded[0]["chars"] == 0
+
+
+def test_turn_without_changes_no_update(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    agent, _, events, _ = make_agent(tmp_path, memory_path=memory_file(tmp_path))
+    calls = spy_updates(agent, monkeypatch)
+    asyncio.run(agent.on_user_turn_completed(llm.ChatContext.empty(), user_message()))
+    assert calls == []
+    assert len(kinds_of(events, "memory_loaded")) == 1
 
 
 def test_second_compaction_replaces_summary(tmp_path: Path) -> None:

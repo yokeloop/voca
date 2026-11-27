@@ -200,6 +200,36 @@ class SessionStore:
             for kind, item_id, at, call_id, name, text, data_json in reversed(rows)
         ]
 
+    def last_id(self) -> int:
+        (last,) = self.db.execute(
+            "SELECT MAX(id) FROM messages WHERE kind IN ('user', 'assistant')"
+        ).fetchone()
+        return int(last or 0)
+
+    def after(self, message_id: int, limit: int) -> list[tuple[int, ArchiveRow]]:
+        rows = self.db.execute(
+            "SELECT id, kind, item_id, at, call_id, name, text, data_json"
+            " FROM messages"
+            " WHERE id > ? AND kind IN ('user', 'assistant')"
+            " ORDER BY id LIMIT ?",
+            (message_id, limit),
+        ).fetchall()
+        return [
+            (
+                row_id,
+                ArchiveRow(
+                    kind=kind,
+                    item_id=item_id,
+                    at=at,
+                    call_id=call_id,
+                    name=name,
+                    text=text,
+                    data=json.loads(data_json),
+                ),
+            )
+            for row_id, kind, item_id, at, call_id, name, text, data_json in rows
+        ]
+
     def search(self, query: str, limit: int) -> list[Hit]:
         try:
             rows = self.db.execute(

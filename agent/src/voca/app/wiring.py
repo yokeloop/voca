@@ -18,8 +18,9 @@ from livekit.agents.voice import AgentSession, SessionConnectOptions
 from livekit.agents.voice.transcription.text_transforms import TextTransforms
 from livekit.plugins import openai
 from openai._models import FinalRequestOptions
+from pydantic import SecretStr
 
-from voca.config import Settings
+from voca.config import CompressionModel, MemoryModel, Settings
 from voca.conversation.compaction import Limits
 from voca.conversation.decision import DecisionClient
 from voca.conversation.summarizer import Summarizer
@@ -162,18 +163,28 @@ def compaction_limits(settings: Settings) -> Limits:
     )
 
 
-def make_summarizer(settings: Settings) -> Summarizer:
-    if settings.litellm_key is None:
-        return Summarizer(None, model=settings.compression.model.model)
+def litellm_model(
+    key: SecretStr | None, section: CompressionModel | MemoryModel
+) -> Summarizer:
+    if key is None:
+        return Summarizer(None, model=section.model)
     return Summarizer(
         openai_sdk.AsyncOpenAI(
-            api_key=settings.litellm_key.get_secret_value(),
-            base_url=settings.compression.model.url,
-            timeout=settings.compression.model.timeout_s,
+            api_key=key.get_secret_value(),
+            base_url=section.url,
+            timeout=section.timeout_s,
             max_retries=0,
         ),
-        model=settings.compression.model.model,
+        model=section.model,
     )
+
+
+def make_summarizer(settings: Settings) -> Summarizer:
+    return litellm_model(settings.litellm_key, settings.compression.model)
+
+
+def make_memory_model(settings: Settings) -> Summarizer:
+    return litellm_model(settings.litellm_key, settings.memory.model)
 
 
 def make_decider(settings: Settings) -> DecisionClient:

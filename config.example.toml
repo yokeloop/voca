@@ -70,6 +70,26 @@ model = "glm-5.3-flash"
 # Request timeout in seconds.
 timeout_s = 60
 
+[memory]
+# Facts about the user, appended to the instructions after the header «[ПАМЯТЬ — ТОЛЬКО СПРАВКА]».
+# A missing or empty file means no memory. Loading reads it whole; the length limit is on extraction (max_chars).
+# Read at job start, after an adopted summary and when the instructions change.
+path = "~/.voca/memory.md"
+# User turns between memory extraction runs (as Hermes memory.nudge_interval); 0 turns extraction off (loading stays).
+# Counted from the cursor at the start of a job, when a page joins and after each reply is archived, no timer.
+every_turns = 10
+# Hard limit of the memory file in characters; a result over it gets one retry that frees space, then too_long.
+max_chars = 2200
+
+[memory.model]
+# The key is not written here: VOCA_LITELLM_KEY in .env only (the same key as the summariser).
+# LiteLLM on the rpi, the route works only in the tailnet.
+url = "https://litellm.priney.com/v1"
+# Model name in LiteLLM.
+model = "glm-5.3-flash"
+# Request timeout in seconds.
+timeout_s = 60
+
 [delegation]
 # Hermes URL and key are not written here: VOCA_HERMES_URL and VOCA_HERMES_KEY in .env only.
 # Tasks given to Hermes (voca bench delegate, later the agent's delegate tool).
