@@ -28,7 +28,6 @@ from voca.speech.fragments import FirstFragmentTokenizer
 from voca.speech.markup import strip_latex_and_tables, strip_tool_calls
 from voca.speech.numbers import normalize_numbers
 from voca.speech.prepare import prepare, spell_digits
-from voca.speech.stress import load_accent
 
 OUT_DIR = BENCH_DIR / "prepare"
 CORPUS_DIR = ROOT / "bench" / "corpus"
@@ -104,7 +103,6 @@ def cmd_norm(args: argparse.Namespace) -> int:
 
 
 async def cmd_run(args: argparse.Namespace) -> int:
-    stress = load_accent(args.omograph)
     rows = []
     timings: list[float] = []
     digits = 0
@@ -117,7 +115,7 @@ async def cmd_run(args: argparse.Namespace) -> int:
             for mark in MARKUP:
                 markup[mark] += spelled.count(mark)
             start = time.perf_counter()
-            prepared = prepare(segment, stress)
+            prepared = prepare(segment)
             elapsed = (time.perf_counter() - start) * 1000
             timings.append(elapsed)
             digits += len(re.findall(r"\d", prepared.text))
@@ -148,12 +146,11 @@ async def cmd_run(args: argparse.Namespace) -> int:
 
 async def cmd_render(args: argparse.Namespace) -> int:
     health(AUDIO_URL)
-    stress = load_accent(args.omograph)
     tts = make_tts(AUDIO_URL, VOICE, "ru")
     lines = SOURCE.read_text(encoding="utf-8").splitlines()
     for number in CLIPS:
         line = lines[number - 1]
-        prepared = prepare(line, stress)
+        prepared = prepare(line)
         frame, _, _ = await synthesize(tts, prepared.text)
         path = OUT_DIR / f"clip-{number:02d}.wav"
         write_wav(path, frame)
@@ -182,10 +179,8 @@ def main() -> int:
     )
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("norm")
-    run = sub.add_parser("run")
-    run.add_argument("--omograph", default="turbo3.1")
-    render = sub.add_parser("render")
-    render.add_argument("--omograph", default="turbo3.1")
+    sub.add_parser("run")
+    sub.add_parser("render")
     sub.add_parser("listen")
     args = parser.parse_args()
     if args.command == "norm":

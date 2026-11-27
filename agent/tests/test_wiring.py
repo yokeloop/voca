@@ -44,7 +44,6 @@ def test_build_session_options() -> None:
             session = build_session(
                 settings,
                 vad=vad,
-                stress=lambda text: text,
                 executor=executor,
                 on_prepared=lambda text, prepared, ms: None,
             )
@@ -90,7 +89,6 @@ def test_prepared_tts_body() -> None:
             with ThreadPoolExecutor(max_workers=1) as executor:
                 adapter = make_tts(
                     settings,
-                    lambda text: text,
                     executor,
                     lambda text, prepared, ms: calls.append((text, prepared, ms)),
                 )

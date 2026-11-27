@@ -10,14 +10,10 @@ from voca.speech.prepare import prepare, spell_digits
 CORPUS = Path(__file__).resolve().parents[2] / "bench" / "corpus"
 
 
-def same(text: str) -> str:
-    return text
-
-
 def test_pipeline_answers_leave_no_digits() -> None:
     corpus = json.loads((CORPUS / "tts_pipeline.json").read_text(encoding="utf-8"))
     for item in corpus:
-        assert not re.search(r"\d", prepare(item["answer"], same).text), item
+        assert not re.search(r"\d", prepare(item["answer"]).text), item
 
 
 async def whole(text: str) -> AsyncIterator[str]:
@@ -35,12 +31,12 @@ def cleaned(text: str) -> str:
 def test_reply_corpus_leaves_no_digits() -> None:
     corpus = json.loads((CORPUS / "tts_prepare.json").read_text(encoding="utf-8"))
     for item in corpus["replies"]:
-        text = prepare(cleaned(item["reply"]), same).text
+        text = prepare(cleaned(item["reply"])).text
         assert not re.search(r"\d", text), item["id"]
 
 
 def test_leftover_digits_spelled() -> None:
-    prepared = prepare("COVID19", same)
+    prepared = prepare("COVID19")
     assert prepared.leftover_digits == 1
     assert "один девять" in prepared.text
     assert not re.search(r"\d", prepared.text)
@@ -52,9 +48,9 @@ def test_spell_digits_counts_sequences() -> None:
 
 def test_prepare_maps_rejected_quotes() -> None:
     text = "Скажите „Подтверждаю“ или „Отклоняю”, ‟да‟, ‚нет‘ и ‹может›."
-    assert prepare(text, same).text == (
+    assert prepare(text).text == (
         "Скажите «Подтверждаю» или «Отклоняю», «да«, «нет‘ и «может»."
     )
-    assert prepare("«Ёлка» и \"дом\" и 'сад' и ’", same).text == (
+    assert prepare("«Ёлка» и \"дом\" и 'сад' и ’").text == (
         "«Ёлка» и \"дом\" и 'сад' и ’"
     )

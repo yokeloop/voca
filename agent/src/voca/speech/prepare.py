@@ -2,7 +2,6 @@ import re
 from dataclasses import dataclass
 
 from voca.speech.numbers import cardinal, normalize_numbers
-from voca.speech.stress import Stress, place
 
 DIGITS = re.compile(r"\d+")
 QUOTES = str.maketrans("„‟‚‹“”›", "««««»»»")
@@ -26,6 +25,6 @@ def spell_digits(text: str) -> tuple[str, int]:
     return DIGITS.subn(spell, text)
 
 
-def prepare(sentence: str, stress: Stress) -> Prepared:
+def prepare(sentence: str) -> Prepared:
     text, leftover = spell_digits(normalize_numbers(sentence.translate(QUOTES)))
-    return Prepared(place(stress, text), leftover)
+    return Prepared(text, leftover)

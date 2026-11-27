@@ -39,7 +39,6 @@ from voca.delegation.service import DelegationService
 from voca.delegation.sqlite import SqliteTaskRepository, TaskStoreError
 from voca.session.model import ArchiveRow
 from voca.session.store import SessionRecorder, SessionStore, StoreError
-from voca.speech.stress import load_accent
 from voca.telemetry.jsonl import JsonlLog, TurnTracker
 
 
@@ -73,7 +72,6 @@ def prewarm(proc: JobProcess) -> None:
     proc.userdata["vad"] = silero.VAD.load(
         min_silence_duration=Settings().agent.vad_min_silence
     )
-    proc.userdata["stress"] = load_accent()
 
 
 async def entrypoint(ctx: JobContext) -> None:
@@ -200,7 +198,6 @@ async def entrypoint(ctx: JobContext) -> None:
     session = build_session(
         settings,
         vad=ctx.proc.userdata["vad"],
-        stress=ctx.proc.userdata["stress"],
         executor=executor,
         on_prepared=tracker.on_prepared,
     )

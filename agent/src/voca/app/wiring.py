@@ -27,7 +27,6 @@ from voca.conversation.summarizer import Summarizer
 from voca.speech.fragments import FirstFragmentTokenizer
 from voca.speech.markup import strip_latex_and_tables
 from voca.speech.prepare import Prepared, prepare
-from voca.speech.stress import Stress
 from voca.telemetry.jsonl import JsonlLog
 
 OnPrepared = Callable[[str, Prepared, float], None]
@@ -73,7 +72,6 @@ class PreparedTTS(tts.TTS[Any]):
     def __init__(
         self,
         inner: tts.TTS[Any],
-        stress: Stress,
         executor: concurrent.futures.Executor,
         on_prepared: OnPrepared,
     ) -> None:
@@ -83,7 +81,6 @@ class PreparedTTS(tts.TTS[Any]):
             num_channels=inner.num_channels,
         )
         self.inner = inner
-        self.stress = stress
         self.executor = executor
         self.on_prepared = on_prepared
 
@@ -107,7 +104,7 @@ class PreparedStream(tts.ChunkedStream):
         owner = self._prepared_tts
         start = time.perf_counter()
         prepared = await asyncio.get_running_loop().run_in_executor(
-            owner.executor, prepare, self.input_text, owner.stress
+            owner.executor, prepare, self.input_text
         )
         owner.on_prepared(
             self.input_text, prepared, (time.perf_counter() - start) * 1000
@@ -229,7 +226,6 @@ async def check_context(
 
 def make_tts(
     settings: Settings,
-    stress: Stress,
     executor: concurrent.futures.Executor,
     on_prepared: OnPrepared,
 ) -> tts.StreamAdapter:
@@ -246,7 +242,7 @@ def make_tts(
         ),
     )
     return tts.StreamAdapter(
-        tts=PreparedTTS(inner, stress, executor, on_prepared),
+        tts=PreparedTTS(inner, executor, on_prepared),
         sentence_tokenizer=FirstFragmentTokenizer(),
     )
 
@@ -255,7 +251,6 @@ def build_session(
     settings: Settings,
     *,
     vad: vad.VAD,
-    stress: Stress,
     executor: concurrent.futures.Executor,
     on_prepared: OnPrepared,
 ) -> AgentSession[None]:
@@ -263,7 +258,7 @@ def build_session(
         vad=vad,
         stt=make_stt(settings, vad),
         llm=make_llm(settings),
-        tts=make_tts(settings, stress, executor, on_prepared),
+        tts=make_tts(settings, executor, on_prepared),
         tts_text_transforms=TTS_TEXT_TRANSFORMS,
         conn_options=SessionConnectOptions(
             stt_conn_options=APIConnectOptions(max_retry=1, timeout=5.0),
