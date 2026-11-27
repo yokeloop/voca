@@ -1,0 +1,16 @@
+{
+  "model": "qwen-vd",
+  "input": "В зале было триста двенадцать человек, а пришло только девяносто семь.",
+  "voice": "design",
+  "language": "ru",
+  "response_format": "pcm",
+  "speed": 1.0,
+  "stream_format": "sse",
+  "preset_options": {
+    "instruct": "Спокойный приветливый голос взрослой женщины, чистая литературная русская речь, ровный неторопливый темп, мягкая интонация.",
+    "seed": 42
+  },
+  "obtained_by": "uv run --project agent python bench/tts_ru.py --base-url http://127.0.0.1:8085/v1 --model qwen-vd --sample-rate 24000 --voice design --variants ru --tag qvd-norm --corpus norm render (VOCA-54, phrase 06; PCM frames of the SSE stream written as WAV)",
+  "reproducible_by_request": false,
+  "note": "This body alone gives another, repeatable clip (218880 bytes of PCM against 219360, both SSE and offline); the WAV here is the one the render run produced."
+}
