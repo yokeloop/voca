@@ -17,6 +17,8 @@ from audio_stand import (
     AUDIO_URL,
     BENCH_DIR,
     ROOT,
+    TTS_MODEL,
+    TTS_SAMPLE_RATE,
     flush_input,
     health,
     make_tts,
@@ -71,6 +73,16 @@ POEZD = {
     "p3": "Наш по́езд прибывает утром.",
     "p4": "ПО́езд прибывает утром.",
 }
+
+
+def bench_tts(args: argparse.Namespace) -> openai.TTS:
+    return make_tts(
+        args.base_url,
+        args.voice,
+        "ru",
+        model=args.tts_model,
+        sample_rate=args.sample_rate,
+    )
 
 
 def load_accent(omograph: str) -> RUAccent:
@@ -246,7 +258,7 @@ async def cmd_run(args: argparse.Namespace) -> int:
     corpus = json.loads(CORPUS.read_text(encoding="utf-8"))
     accent = load_accent(args.omograph)
     model = make_llm()
-    tts = make_tts(args.base_url, VOICE, "ru")
+    tts = bench_tts(args)
     await ask_llm(model, "Сколько будет два плюс два?")
     warm, _ = place(accent, "Прогревочная фраза номер один.")
     await synthesize(tts, warm)
@@ -334,7 +346,7 @@ async def cmd_chunks(args: argparse.Namespace) -> int:
     corpus = json.loads(CORPUS.read_text(encoding="utf-8"))
     accent = load_accent(args.omograph)
     model = make_llm()
-    tts = make_tts(args.base_url, VOICE, "ru")
+    tts = bench_tts(args)
     await ask_llm(model, "Сколько будет два плюс два?")
     warm, _ = place(accent, "Прогревочная фраза номер один.")
     await synthesize(tts, warm)
@@ -377,7 +389,11 @@ async def cmd_chunks(args: argparse.Namespace) -> int:
     for kind in ("sentence", "fragment"):
         header += [f"{kind}_llm_ms", f"{kind}_accent_ms", f"{kind}_tts_ms"]
         header += [f"{kind}_total_ms", f"{kind}_text"]
-    write_tsv(llm_dir() / "chunks.tsv", header, rows)
+    write_tsv(
+        llm_dir() / (f"chunks-{args.tag}.tsv" if args.tag else "chunks.tsv"),
+        header,
+        rows,
+    )
     split = sum(1 for row in rows if row[10] != row[5])
     print(f"\nреплик {len(rows)}, первый фрагмент короче предложения в {split}")
     for name, values in links.items():
@@ -475,7 +491,7 @@ async def ask_thinking(
 async def cmd_think(args: argparse.Namespace) -> int:
     corpus = json.loads(CORPUS.read_text(encoding="utf-8"))
     accent = load_accent(args.omograph)
-    tts = make_tts(args.base_url, VOICE, "ru")
+    tts = bench_tts(args)
     warm, _ = place(accent, "Прогревочная фраза номер один.")
     await synthesize(tts, warm)
     system = SYSTEM_RU if args.digits else SYSTEM
@@ -588,7 +604,7 @@ async def cmd_think(args: argparse.Namespace) -> int:
 
 
 async def cmd_poezd(args: argparse.Namespace) -> int:
-    tts = make_tts(args.base_url, VOICE, "ru")
+    tts = bench_tts(args)
     rows = []
     async with httpx.AsyncClient(timeout=120) as client:
         for name, text in POEZD.items():
@@ -610,7 +626,7 @@ async def cmd_poezd(args: argparse.Namespace) -> int:
 
 
 async def cmd_caps(args: argparse.Namespace) -> int:
-    tts = make_tts(args.base_url, VOICE, "ru")
+    tts = bench_tts(args)
     rows = []
     async with httpx.AsyncClient(timeout=120) as client:
         for index, (lower, upper, tail) in enumerate(CAPS, start=1):
@@ -710,6 +726,10 @@ def main() -> int:
         description="Сквозной тракт: ответ LLM → ударения → синтез"
     )
     parser.add_argument("--base-url", default=AUDIO_URL)
+    parser.add_argument("--voice", default=VOICE)
+    parser.add_argument("--model", dest="tts_model", default=TTS_MODEL)
+    parser.add_argument("--sample-rate", type=int, default=TTS_SAMPLE_RATE)
+    parser.add_argument("--tag", default="")
     sub = parser.add_subparsers(dest="command", required=True)
     accent = sub.add_parser("accent")
     accent.add_argument("--omograph", default="tiny2.1,turbo3.1")
