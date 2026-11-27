@@ -33,21 +33,28 @@ def make_stt(base_url: str) -> openai.STT:
     )
 
 
-def make_tts(base_url: str, voice: str, language: str | None) -> openai.TTS:
+def make_tts(
+    base_url: str,
+    voice: str,
+    language: str | None,
+    *,
+    model: str = TTS_MODEL,
+    sample_rate: int = TTS_SAMPLE_RATE,
+) -> openai.TTS:
     if language is None:
         return openai.TTS(
-            model=TTS_MODEL,
+            model=model,
             voice=voice,
             response_format="pcm",
-            sample_rate=TTS_SAMPLE_RATE,
+            sample_rate=sample_rate,
             base_url=base_url,
             api_key=API_KEY,
         )
     return openai.TTS(
-        model=TTS_MODEL,
+        model=model,
         voice=voice,
         response_format="pcm",
-        sample_rate=TTS_SAMPLE_RATE,
+        sample_rate=sample_rate,
         client=SpeechLanguageClient(
             speech_language=language,
             base_url=base_url,
