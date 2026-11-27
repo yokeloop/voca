@@ -23,6 +23,7 @@ def test_defaults_without_file(monkeypatch: pytest.MonkeyPatch) -> None:
     assert settings.instructions_dir == Path.home() / ".voca" / "instructions"
     agent = settings.agent
     assert agent.tts_voice == "F4"
+    assert agent.tts_sample_rate == 44100
     assert agent.vad_min_silence == 0.3
     assert agent.interruption_min_duration == 0.5
     assert agent.interruption_min_words == 0

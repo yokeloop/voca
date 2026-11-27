@@ -233,10 +233,10 @@ def make_tts(
         model="tts",
         voice=settings.agent.tts_voice,
         response_format="pcm",
-        sample_rate=44100,
+        sample_rate=settings.agent.tts_sample_rate,
         client=SpeechLanguageClient(
             speech_language="ru",
-            base_url=settings.audio_url,
+            base_url=settings.tts_url or settings.audio_url,
             api_key="none",
             max_retries=0,
         ),

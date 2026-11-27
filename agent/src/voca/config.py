@@ -49,6 +49,7 @@ class AgentConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     tts_voice: str = "F4"
+    tts_sample_rate: int = Field(default=44100, gt=0)
     vad_min_silence: float = 0.3
     interruption_min_duration: float = 0.5
     interruption_min_words: int = 0
@@ -329,6 +330,7 @@ class Settings(BaseSettings):
     livekit_api_secret: str = "secret"
     livekit_url: str = "ws://127.0.0.1:7880"
     audio_url: str = "http://127.0.0.1:8082/v1"
+    tts_url: str = ""
     llm_url: str = "http://127.0.0.1:8081/v1"
     llm_profile: str = "bolt-e4b"
     agent_port: int = 8084

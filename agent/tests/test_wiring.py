@@ -107,6 +107,35 @@ def test_prepared_tts_body() -> None:
     assert calls[0][1].leftover_digits == 0
 
 
+def test_tts_url_and_sample_rate() -> None:
+    bodies: list[dict[str, Any]] = []
+
+    async def speech(request: web.Request) -> web.Response:
+        bodies.append(await request.json())
+        return web.Response(body=bytes(2400 * 2), content_type="audio/pcm")
+
+    async def main() -> None:
+        app = web.Application()
+        app.router.add_post("/v1/audio/speech", speech)
+        async with TestServer(app, host="127.0.0.1") as server:
+            settings = Settings(
+                audio_url="http://127.0.0.1:9/v1",
+                tts_url=str(server.make_url("/v1")),
+                agent={"tts_voice": "clone-perf", "tts_sample_rate": 24000},
+            )
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                adapter = make_tts(settings, executor, lambda text, prepared, ms: None)
+                assert adapter.sample_rate == 24000
+                async with adapter.synthesize("Привет.") as stream:
+                    async for _ in stream:
+                        pass
+                await adapter.aclose()
+
+    asyncio.run(main())
+    assert len(bodies) == 1
+    assert bodies[0]["voice"] == "clone-perf"
+
+
 def test_server_options() -> None:
     options = server_options(Settings())
     assert options.port == 8084
