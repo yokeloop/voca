@@ -88,6 +88,27 @@ while read -r sum path source rest || [ -n "${sum:-}" ]; do
         exit 1
       fi
       ;;
+    zip:*)
+      archive="$dir/${source#zip:}"
+      name="$(basename "$dest")"
+      if ! python3 -I -c '
+import shutil, sys, zipfile
+archive = zipfile.ZipFile(sys.argv[1])
+members = [n for n in archive.namelist() if n.rsplit("/", 1)[-1] == sys.argv[2]]
+if len(members) != 1:
+    sys.exit(1)
+with archive.open(members[0]) as source, open(sys.argv[3], "wb") as target:
+    shutil.copyfileobj(source, target)
+' "$archive" "$name" "$dest"; then
+        rm -f "$dest"
+        echo "SHA256SUMS:$number: в ${source#zip:} нет одного $name" >&2
+        exit 1
+      fi
+      if [ "$(digest "$dest")" != "$sum" ]; then
+        echo "SHA256SUMS:$number: sha256 $dest из ${source#zip:} не совпадает: удалите файл и повторите" >&2
+        exit 1
+      fi
+      ;;
     untar:*)
       tar -xzf "$dir/${source#untar:}" -C "$dir" --strip-components=1 --skip-old-files
       if [ "$(digest "$dest")" != "$sum" ]; then
@@ -96,7 +117,7 @@ while read -r sum path source rest || [ -n "${sum:-}" ]; do
       fi
       ;;
     *)
-      echo "SHA256SUMS:$number: неизвестный источник $source (https://…|tar:<archive>|untar:<archive>)" >&2
+      echo "SHA256SUMS:$number: неизвестный источник $source (https://…|tar:<archive>|untar:<archive>|zip:<archive>)" >&2
       exit 2
       ;;
   esac

@@ -88,6 +88,7 @@ stand's downloads; it is a stand check, not a CI check.
 | `VOCA_MODELS_DIR` | `$HOME/models` | Root of downloaded models, `models/` in `SHA256SUMS` |
 | `VOCA_LIVEKIT_BIN` | `$VOCA_APPS_DIR/livekit/1.13.11/livekit-server` | livekit-server release binary |
 | `VOCA_AUDIOCPP_BIN` | `$VOCA_APPS_DIR/audio.cpp/0.9.4/audiocpp_server` | audio.cpp server release binary (CPU); its ggml libraries sit next to it |
+| `VOCA_AUDIOCPP_CUDA_BIN` | `$VOCA_APPS_DIR/audio.cpp/0.9.4-cuda12.8/audiocpp_server` | audio.cpp server, CUDA 12.8 release build; only the Qwen3-TTS bench server (`bench/server-qwen3.json`, port 8085); its ggml and cudart libraries sit next to it |
 | `VOCA_LLAMA_BIN` | `$VOCA_APPS_DIR/llama.cpp/llama-b12167/llama-server` | llama-server of the llama.cpp CUDA release; its libraries sit next to it |
 | `VOCA_LLM_PROFILE` | `bolt-e4b` | llama-server model profile, `scripts/llm-profiles/<name>.sh`; only this model is loaded. `bolt-e4b` is the agent's model; `lfm2.5-2.6b` and `lfm3-1.7b` are alternatives, set explicitly |
 | `VOCA_LIVEKIT_NODE_IP` | `127.0.0.1` | `--node-ip`: the address livekit-server announces for media |
@@ -216,12 +217,16 @@ by spaces, `#` starts a comment:
 - `<source>`: `https://…` downloads the file; `tar:<archive>` extracts `<file>`
   from `<archive>`, where the member is `<file>` or `./<file>`;
   `untar:<archive>` unpacks the whole `<archive>` without its top-level
-  directory. The archive is in the same directory, listed on an earlier line.
+  directory; `zip:<archive>` extracts from the zip `<archive>` (a wheel) the
+  one member named `<file>`, in any directory. The archive is in the same
+  directory, listed on an earlier line.
 
 `scripts/fetch.sh` walks the file in order. An existing file is verified and
 never overwritten: a mismatch stops with «удалите файл и повторите». A missing
 `https` file is downloaded to `<file>.part`, verified and moved in place; a
-missing `tar:` file is extracted and verified. A missing `untar:` file unpacks
+missing `tar:` or `zip:` file is extracted and verified (`zip:` reads the
+archive with `python3`'s `zipfile`; none or several members of that name stop
+the line). A missing `untar:` file unpacks
 the whole archive into its directory without the archive's top-level directory,
 keeping files that already exist, and is verified; the next lines of the same
 archive then find their files and only verify them. Each line prints
@@ -233,6 +238,11 @@ with the line number.
 
 A new download (audio.cpp, llama-server, models) is one line in `SHA256SUMS`
 plus a path variable with its default in `scripts/env.sh` and `.env.example`.
+The audio.cpp CUDA build lives in its own version directory 0.9.4-cuda12.8: its library names match the CPU build in 0.9.4.
+Its `audiocpp_server` has RUNPATH `/usr/local/cuda/lib64` and needs
+`libnccl.so.2`, which neither audio.cpp archive carries: it comes from the
+PyPI wheel `nvidia-nccl-cu12` 2.32.3 (`zip:`), and the server runs with
+`LD_LIBRARY_PATH="$(dirname "$VOCA_AUDIOCPP_CUDA_BIN")"`.
 
 ## Stand
 

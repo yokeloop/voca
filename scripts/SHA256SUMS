@@ -1,6 +1,6 @@
 # <sha256>  <root>/<tool>/<version>/<file>  <source>
 # <root>: apps -> $VOCA_APPS_DIR (~/Apps), models -> $VOCA_MODELS_DIR (~/models); relative, no "..".
-# <source>: https://... downloads the file; tar:<archive> extracts <file> from <archive>; untar:<archive> unpacks the whole <archive> without its top-level directory (existing files kept); the archive is in the same directory, listed above.
+# <source>: https://... downloads the file; tar:<archive> extracts <file> from <archive>; untar:<archive> unpacks the whole <archive> without its top-level directory (existing files kept); zip:<archive> extracts the one member named <file> in any directory of the zip <archive>; the archive is in the same directory, listed above.
 1e9ee90ca301e1842b2887fc77cb122759756a9c8aeb4334ee91de3325ec43fb  apps/livekit/1.13.11/livekit_1.13.11_linux_amd64.tar.gz  https://github.com/livekit/livekit/releases/download/v1.13.11/livekit_1.13.11_linux_amd64.tar.gz
 85a58024d9b36542712514e0e926c0adb74f6182bcb19a664b9d9eb98ad01b52  apps/livekit/1.13.11/livekit-server  tar:livekit_1.13.11_linux_amd64.tar.gz
 554f4006f4e2456c4dcc0482a207230602758d3f5a700f55c8754c58f4088a29  apps/llama.cpp/llama-b11869/llama-b11869-bin-ubuntu-cuda-13.4-x64.tar.gz  https://github.com/ggml-org/llama.cpp/releases/download/b11869/llama-b11869-bin-ubuntu-cuda-13.4-x64.tar.gz
@@ -50,6 +50,17 @@ f566d505c942662deb30c60e54d6cdb148181840a016933de48b573d11d31a90  apps/audio.cpp
 2f10f7e17f6c2fed62931c192a6a1601bca72e2f75e35ee46cb8972a4d29042c  apps/audio.cpp/0.9.4/libggml-cpu-x64.so  tar:audio-v0.9.4-bin-ubuntu-x64-cpu-portable.tar.gz
 cf892ea22d6bc6932905728cf61ab0753780f1181c8eeb1f441cbf68ad5b2e99  apps/audio.cpp/0.9.4/libggml-cpu-zen4.so  tar:audio-v0.9.4-bin-ubuntu-x64-cpu-portable.tar.gz
 c49d529d031df33c2b015c7e69c28da38cfefff35e762f0822126579b6446e87  apps/audio.cpp/0.9.4/libggml.so.0  tar:audio-v0.9.4-bin-ubuntu-x64-cpu-portable.tar.gz
+# audio.cpp 0.9.4 CUDA 12.8 build: the Qwen3-TTS bench server on :8085 (VOCA-54); Parakeet stays on the CPU build above.
+5b6708aa781a8a7b08d506abc6104ff9e642cb33c4271c768e81205c4c8df686  apps/audio.cpp/0.9.4-cuda12.8/audio-v0.9.4-bin-ubuntu-x64-cuda12.8-colab.tar.gz  https://github.com/0xShug0/audio.cpp/releases/download/v0.9.4/audio-v0.9.4-bin-ubuntu-x64-cuda12.8-colab.tar.gz
+48ab6515a4a924c128309bdeebed10c8e6a647f0399e66d46c986c6ba4e7c50f  apps/audio.cpp/0.9.4-cuda12.8/audio-v0.9.4-cudart-ubuntu-x64-cuda12.8.tar.gz  https://github.com/0xShug0/audio.cpp/releases/download/v0.9.4/audio-v0.9.4-cudart-ubuntu-x64-cuda12.8.tar.gz
+3a0893aeef3f44785301b2b93fcae568cf9a4951f815363161835a602a6ce22b  apps/audio.cpp/0.9.4-cuda12.8/audiocpp_server  tar:audio-v0.9.4-bin-ubuntu-x64-cuda12.8-colab.tar.gz
+c3a75b33af334a3486d197dbd1584a2985183ba4688d237a2be5f2f679329920  apps/audio.cpp/0.9.4-cuda12.8/libcudart.so.12  tar:audio-v0.9.4-cudart-ubuntu-x64-cuda12.8.tar.gz
+031ce6c2cbfbb9468f040527cab5c599069ce5609e73e28f87503881063eac21  apps/audio.cpp/0.9.4-cuda12.8/libcublas.so.12  tar:audio-v0.9.4-cudart-ubuntu-x64-cuda12.8.tar.gz
+10b5e6631cf8115c661eb895ed1533826308b58f7956466f53d236a40c9b622c  apps/audio.cpp/0.9.4-cuda12.8/libcublasLt.so.12  tar:audio-v0.9.4-cudart-ubuntu-x64-cuda12.8.tar.gz
+db7a606984097fdb7ad04f4bd09ade30b493e7cb360bb400037ff634dc208425  apps/audio.cpp/0.9.4-cuda12.8/libcufft.so.11  tar:audio-v0.9.4-cudart-ubuntu-x64-cuda12.8.tar.gz
+# NCCL 2.32.3 (PyPI nvidia-nccl-cu12): libnccl.so.2, which audiocpp_server needs and neither audio.cpp archive carries.
+bb94b2348e4861d5e8aa00b36c3d12d9bdf9c6369b82cbb723de0b582280a21c  apps/audio.cpp/0.9.4-cuda12.8/nvidia_nccl_cu12-2.32.3-py3-none-manylinux_2_27_x86_64.whl  https://files.pythonhosted.org/packages/f3/f8/9dce3698eed6fae28078eb38f748feb1665767693d8017c099de9fbf0b08/nvidia_nccl_cu12-2.32.3-py3-none-manylinux_2_27_x86_64.whl
+a23d2e3e47ad7f8987ac73eb04a373d6d40cfbb3a7a5bf41a9e0e8434817559b  apps/audio.cpp/0.9.4-cuda12.8/libnccl.so.2  zip:nvidia_nccl_cu12-2.32.3-py3-none-manylinux_2_27_x86_64.whl
 6fa498f10f8cb606f041aa9512733cfee842a932359b00b0c45b9b723c4f4f4b  models/audio-cpp/Parakeet-TDT-0.6B-v3-GGUF/parakeet-tdt-0.6b-v3-q8_0.gguf  https://huggingface.co/audio-cpp/audio.cpp-gguf/resolve/6f45df32f8fb283e4cfce3d3e1cb7688986fcbe6/Parakeet-TDT-0.6B-v3-GGUF/parakeet-tdt-0.6b-v3-q8_0.gguf
 9edd05cf92feab49c6b29721d14c86566459dca7f4a6eeb99306372cdce03697  models/audio-cpp/Supertonic-3-GGUF/supertonic-3-q8_0.gguf  https://huggingface.co/audio-cpp/audio.cpp-gguf/resolve/6f45df32f8fb283e4cfce3d3e1cb7688986fcbe6/Supertonic-3-GGUF/supertonic-3-q8_0.gguf
 # G2 fallback: Supertonic 3 f16, compared against q8_0 in bench/tts_ru.py ab.
